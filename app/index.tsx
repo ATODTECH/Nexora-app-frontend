@@ -1,25 +1,15 @@
 import React,{useEffect,useRef,useState}from'react';
-import{ActivityIndicator,Animated,Image,PanResponder,Platform,Pressable,ScrollView,StyleSheet,Text,TextInput,View,useWindowDimensions}from'react-native';
+import{ActivityIndicator,Alert,Animated,LogBox,AppState,BackHandler,Image,KeyboardAvoidingView,Linking,Modal,PanResponder,Platform,Pressable,ScrollView,Share,StyleSheet,Switch,Text,TextInput,View,useWindowDimensions}from'react-native';
 import { Image as ExpoImage } from 'expo-image';
+// Dev-only notices raised inside third-party libraries (not by this file); they don't affect the app.
+LogBox.ignoreLogs(['[Reanimated] Reduced motion setting', "It looks like you might be using shared value's .value inside reanimated inline style"]);
+import Svg, { Circle, Defs, G, Line, LinearGradient, Path, RadialGradient, Rect, Stop, SvgXml, Text as SvgText } from 'react-native-svg';
+// In-app browser: a real WebView on phones (run once: npx expo install react-native-webview).
+// On the web version, pages open in Nexora's reader view instead (react-native-webview has no web support).
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const WebView: any = Platform.OS === 'web' ? null : require('react-native-webview').WebView;
 import{StatusBar}from'expo-status-bar';
-import LaunchSVG from'../assets/launch/launch.svg';
-import Onboarding1SVG from'../assets/onboarding/onboarding-1.svg';
-import Onboarding2SVG from'../assets/onboarding/onboarding-2.svg';
-import Onboarding3SVG from'../assets/onboarding/onboarding-3.svg';
-import Onboarding4SVG from'../assets/onboarding/onboarding-4.svg';
-import SignUpSVG from'../assets/signup/sign-up.svg';
-import InputDetails1SVG from'../assets/signup/Input details-1.svg';
-import InputDetails2SVG from'../assets/signup/Input details-2.svg';
-import WrongEmailSVG from'../assets/signup/Wrong email address.svg';
-import TermsAgreedSVG from'../assets/signup/Terms and Policy Agreed.svg';
-import LoadPageSVG from'../assets/signup/Load Page.svg';
-import TermOfUseSVG from'../assets/signup/Term of use.svg';
-import PrivacyPolicySVG from'../assets/signup/privacy and policy.svg';
-import LogInSVG from'../assets/login/log-in.svg';
-import LoginInputEmailSVG from'../assets/login/input-email.svg';
-import LoginInputDetailsSVG from'../assets/login/input-details.svg';
-import LoginKeepLoggedIn1SVG from'../assets/login/keep-logged-in-1.svg';
-import LoginKeepLoggedIn2SVG from'../assets/login/keep-logged-in-2.svg';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import{supabase}from'../lib/supabase';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
@@ -29,7 +19,8 @@ import * as ImageManipulator from 'expo-image-manipulator';
 
 const FIGMA_WIDTH=393,FIGMA_HEIGHT=852;
 const BUTTON_X=16.5,BUTTON_Y=762.5,BUTTON_WIDTH=360,BUTTON_HEIGHT=45,BUTTON_R=20.5,BUTTON_COLOR='#1E56A0',BUTTON_BORDER='#5381BB';
-const SKIP_X=300,SKIP_Y=50,SKIP_WIDTH=55,SKIP_HEIGHT=38;
+// Figma 244:919: "Skip" text at x345 y65 (32x22); the tap area is a little larger than the word.
+const SKIP_X=331,SKIP_Y=54,SKIP_WIDTH=58,SKIP_HEIGHT=44;
 const INPUT_X=16.25,INPUT_WIDTH=360.5,INPUT_HEIGHT=45.5,MASK_INSET=3;
 const SIGNUP_FULLNAME_Y=323.25,SIGNUP_EMAIL_Y=387.25,SIGNUP_PASSWORD_Y=451.25,SIGNUP_CONFIRM_PASSWORD_Y=515.25;
 const EYE_WIDTH=36,EYE_HEIGHT=36,SIGNUP_PASSWORD_EYE_X=330,SIGNUP_PASSWORD_EYE_Y=456,SIGNUP_CONFIRM_EYE_X=330,SIGNUP_CONFIRM_EYE_Y=520;
@@ -50,6 +41,136 @@ const LOGIN_SIGNUP_X=242,LOGIN_SIGNUP_Y=662,LOGIN_SIGNUP_WIDTH=60,LOGIN_SIGNUP_H
 const EMAIL_REGEX=/^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const AUTH_TIMEOUT_MS=15000;
 const SUPABASE_URL=process.env.EXPO_PUBLIC_SUPABASE_URL!;
+const IS_WEB = Platform.OS === 'web';
+// ---- Web version support ----
+// React Native's Alert does nothing in a browser, so confirmations use the browser's own dialogs there.
+if (IS_WEB) {
+  const w: any = globalThis as any;
+  (Alert as any).alert = (title: string, message?: string, buttons?: { text?: string; style?: string; onPress?: () => void }[]) => {
+    const text = [title, message].filter(Boolean).join('\n\n');
+    const list = (buttons ?? []).filter(Boolean);
+    if (list.length <= 1) { w.alert?.(text); list[0]?.onPress?.(); return; }
+    const actions = list.filter(b => b.style !== 'cancel');
+    if (actions.length === 1) {
+      if (w.confirm?.(text)) actions[0].onPress?.(); else list.find(b => b.style === 'cancel')?.onPress?.();
+      return;
+    }
+    const pick = w.prompt?.(`${text}\n\n${actions.map((b, i) => `${i + 1}. ${b.text}`).join('\n')}\n\nType a number:`);
+    const n = Number(pick);
+    if (n >= 1 && n <= actions.length) actions[n - 1].onPress?.();
+  };
+}
+// Browsers give text boxes a built-in minimum width (~20 characters), which pushes buttons next to them
+// (like Brain's send button) out of narrow rows, and draw a black focus outline. Fix both once for the web version.
+if (IS_WEB) {
+  try {
+    const d: any = (globalThis as any).document;
+    if (d && !d.getElementById('nexora-web-fixes')) {
+      const st = d.createElement('style');
+      st.id = 'nexora-web-fixes';
+      st.textContent = 'input,textarea{min-width:0!important;outline:none!important;box-shadow:none!important;}';
+      d.head.appendChild(st);
+    }
+  } catch { /* not in a browser */ }
+}
+// Upload a local file to Supabase Storage: streamed from disk on phones, sent as a Blob in browsers.
+async function uploadBinary(url: string, uri: string, headers: Record<string, string>): Promise<{ status: number; body: string }> {
+  if (IS_WEB) {
+    const blob = await (await fetch(uri)).blob();
+    const r = await fetch(url, { method: 'POST', headers, body: blob });
+    return { status: r.status, body: await r.text() };
+  }
+  const r = await FileSystem.uploadAsync(url, uri, { httpMethod: 'POST', uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT, headers });
+  return { status: r.status, body: r.body };
+}
+
+// ---- Screen artwork hosted in Supabase Storage (public bucket "assets") ----
+// The launch / onboarding / sign-up / login SVGs no longer ship inside the app.
+// Each one is downloaded once, saved on the phone, and drawn from that copy afterwards (works offline).
+// After replacing a file in the bucket, bump REMOTE_ASSET_VERSION so phones fetch the new copy.
+const REMOTE_ASSET_BUCKET = 'assets';
+const REMOTE_ASSET_VERSION = 1;
+const remoteAssetUrl = (path: string) =>
+  `${SUPABASE_URL}/storage/v1/object/public/${REMOTE_ASSET_BUCKET}/${path.split('/').map(encodeURIComponent).join('/')}`;
+const svgMemory = new Map<string, string>();
+const svgLoading = new Map<string, Promise<string | null>>();
+const svgCacheFile = (path: string) =>
+  FileSystem.documentDirectory ? `${FileSystem.documentDirectory}nexora-art-v${REMOTE_ASSET_VERSION}-${path.replace(/[^a-z0-9.]+/gi, '_')}` : '';
+function loadRemoteSvg(path: string): Promise<string | null> {
+  const hit = svgMemory.get(path);
+  if (hit) return Promise.resolve(hit);
+  const pending = svgLoading.get(path);
+  if (pending) return pending;
+  const job = (async () => {
+    const file = svgCacheFile(path);
+    try {
+      if (file && (await FileSystem.getInfoAsync(file)).exists) {
+        const xml = await FileSystem.readAsStringAsync(file);
+        if (xml.includes('<svg')) { svgMemory.set(path, xml); return xml; }
+      }
+    } catch { /* fall through to download */ }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const res = await fetch(remoteAssetUrl(path));
+        if (res.ok) {
+          const xml = await res.text();
+          if (xml.includes('<svg')) {
+            svgMemory.set(path, xml);
+            if (file) FileSystem.writeAsStringAsync(file, xml).catch(() => {});
+            return xml;
+          }
+        }
+      } catch { /* offline: retry */ }
+      await new Promise(r => setTimeout(r, 800 * (attempt + 1)));
+    }
+    return null;
+  })().finally(() => svgLoading.delete(path));
+  svgLoading.set(path, job);
+  return job;
+}
+function remoteSvg(path: string) {
+  const RemoteArt = (props: Record<string, any>) => {
+    const [xml, setXml] = React.useState<string | null>(svgMemory.get(path) ?? null);
+    const [failed, setFailed] = React.useState(false);
+    React.useEffect(() => {
+      let alive = true;
+      if (!xml && !failed) loadRemoteSvg(path).then(x => { if (!alive) return; if (x) setXml(x); else setFailed(true); });
+      return () => { alive = false; };
+    }, [xml, failed]);
+    if (xml) return <SvgXml xml={xml} {...props} />;
+    return (
+      <View style={{ width: props.width, height: props.height, alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFFFFF' }}>
+        {failed
+          ? <Pressable onPress={() => setFailed(false)} style={{ alignItems: 'center', padding: 16 }}><Text style={{ color: '#0B1220', fontWeight: '600' }}>Couldn't load this screen</Text><Text style={{ color: '#1E56A0', marginTop: 6 }}>Check your connection and tap to retry</Text></Pressable>
+          : <ActivityIndicator color="#1E56A0" />}
+      </View>
+    );
+  };
+  RemoteArt.displayName = `RemoteArt(${path})`;
+  return RemoteArt;
+}
+const LaunchSVG = remoteSvg('launch/launch.svg');
+const Onboarding1SVG = remoteSvg('onboarding/onboarding-1.svg');
+const Onboarding2SVG = remoteSvg('onboarding/onboarding-2.svg');
+const Onboarding3SVG = remoteSvg('onboarding/onboarding-3.svg');
+const Onboarding4SVG = remoteSvg('onboarding/onboarding-4.svg');
+const SignUpSVG = remoteSvg('signup/sign-up.svg');
+const InputDetails1SVG = remoteSvg('signup/Input details-1.svg');
+const InputDetails2SVG = remoteSvg('signup/Input details-2.svg');
+const WrongEmailSVG = remoteSvg('signup/Wrong email address.svg');
+const TermsAgreedSVG = remoteSvg('signup/Terms and Policy Agreed.svg');
+const LoadPageSVG = remoteSvg('signup/Load Page.svg');
+const TermOfUseSVG = remoteSvg('signup/Term of use.svg');
+const PrivacyPolicySVG = remoteSvg('signup/privacy and policy.svg');
+const LogInSVG = remoteSvg('login/log-in.svg');
+const LoginInputEmailSVG = remoteSvg('login/input-email.svg');
+const LoginInputDetailsSVG = remoteSvg('login/input-details.svg');
+const LoginKeepLoggedIn1SVG = remoteSvg('login/keep-logged-in-1.svg');
+const LoginKeepLoggedIn2SVG = remoteSvg('login/keep-logged-in-2.svg');
+// Start downloading every screen as soon as the app opens, so each one is ready before it's shown.
+const REMOTE_ART_PATHS = ['launch/launch.svg', 'onboarding/onboarding-1.svg', 'onboarding/onboarding-2.svg', 'onboarding/onboarding-3.svg', 'onboarding/onboarding-4.svg', 'signup/sign-up.svg', 'signup/Input details-1.svg', 'signup/Input details-2.svg', 'signup/Wrong email address.svg', 'signup/Terms and Policy Agreed.svg', 'signup/Load Page.svg', 'signup/Term of use.svg', 'signup/privacy and policy.svg', 'login/log-in.svg', 'login/input-email.svg', 'login/input-details.svg', 'login/keep-logged-in-1.svg', 'login/keep-logged-in-2.svg'];
+REMOTE_ART_PATHS.reduce((chain, p) => chain.then(() => loadRemoteSvg(p)).then(() => undefined), Promise.resolve() as Promise<unknown>).catch(() => {});
+
 const SUPABASE_ANON_KEY=process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!;
 const SUPABASE_FUNCTIONS_URL=`${SUPABASE_URL}/functions/v1`;
 // generated-password suggestion link (sits in the gap between the password
@@ -78,7 +199,51 @@ const GENERATE_LINK_X=INPUT_X,GENERATE_LINK_Y=SIGNUP_PASSWORD_Y+INPUT_HEIGHT+1,G
 // same URL after a same-name file swap in Supabase still serves the old
 // cached bytes until this changes. Bumped 4 -> 5 for this pass (Home-1/
 // Home-2's truth image and product-speaker.jpg were both re-uploaded).
-const ASSET_VERSION = 6;
+const ASSET_VERSION = 10;   // 10: Figma truth screens re-exported 20 Oct 2026
+// Home-1 / Home-2 get their own version so they can be bumped on their own
+// whenever either PNG is re-uploaded under the same name. Bumped 7 -> 9 so
+// the latest Home screens replace the stale cached copies.
+// Date.now() makes every app launch request a brand-new URL, so neither the
+// device's image cache nor Supabase's CDN can serve an old copy of the Home
+// PNGs. Once the Home screens are final, swap it for a fixed number (e.g.
+// 10) to get caching back.
+// FIX (deploy): this used to be Date.now(), which re-downloaded every Home
+// PNG on every launch (slow, eats customers' mobile data). Bump this number
+// whenever Home-1 / 1b / 1c / 1d / Home-2 are re-uploaded under the same name.
+const HOME_ASSET_VERSION = 11;
+// Bucket the Home-1 / Home-2 truth PNGs are read from. Change this to
+// 'social-media' if the latest Home PNGs were uploaded there instead.
+const HOME_TRUTH_BUCKET = 'brain-gallery';
+// The latest Home-1 / Home-2 exports are 394 x 852 (not 393), and include the
+// top bar, search bar and bottom nav inside the image.
+const HOME_FRAME_W = 394, HOME_FRAME_H = 852;
+// Home shows ONE of these four frames at a time, picked from the business's
+// live state (see homeInsightState in the component). They are identical
+// except for the top insight card:
+//   home1  - "Your business is doing well this week"  (default)
+//   home1b - "Your sales dropped 8% this week"         (revenue down vs last week)
+//   home1c - "ASX Headphone is trending"               (a product's sales are rising)
+//   home1d - "While you were away"                     (Away mode on / just turned off)
+type HomeSegmentKey = 'home1' | 'home1b' | 'home1c' | 'home1d';
+// Where each frame's card title / description sit (394-wide frame px,
+// measured from the PNGs). The baked text there is covered with the card's
+// own background colour and the live text is drawn on top, so the artwork
+// itself never changes. `chipX` places the Now/Away toggle after the label.
+const HOME_CARD_TEXT: Record<HomeSegmentKey, { bg: string; title: { x: number; y: number; w: number; h: number; lines: number }; desc: { x: number; y: number; w: number; h: number; lines: number }; chipX: number }> = {
+  home1: { bg: '#FFFFFF', title: { x: 33, y: 220, w: 182, h: 45, lines: 2 }, desc: { x: 33, y: 276, w: 193, h: 30, lines: 2 }, chipX: 134 },
+  home1b: { bg: '#F5FCF6', title: { x: 39, y: 221, w: 176, h: 42, lines: 2 }, desc: { x: 39, y: 276, w: 185, h: 30, lines: 2 }, chipX: 162 },
+  home1c: { bg: '#F5FCF6', title: { x: 38, y: 221, w: 180, h: 44, lines: 2 }, desc: { x: 39, y: 276, w: 194, h: 31, lines: 2 }, chipX: 160 },
+  home1d: { bg: '#FFFFFF', title: { x: 38, y: 224, w: 190, h: 24, lines: 1 }, desc: { x: 39, y: 257, w: 186, h: 44, lines: 3 }, chipX: 140 },
+};
+const HOME_SEGMENTS: { key: HomeSegmentKey; file: string }[] = [
+  { key: 'home1', file: 'Home-1.png' },
+  { key: 'home1b', file: 'Home-1b.png' },
+  { key: 'home1c', file: 'Home-1c.png' },
+  { key: 'home1d', file: 'Home-1d.png' },
+];
+// The insight card (title, description, state artwork, "View analysis") inside the Home-1 frames, in 394-wide frame px.
+// The desktop Home shows exactly this part of the current Figma frame, with live text drawn over it like the phone.
+const HOME_CARD_CROP = { x: 16, y: 171, w: 361, h: 180 };   // Figma: NEXORA-AI › Home › Frame 491 › Frame 490 (node 2087:1479)
 const withCacheBust = (url: string) => `${url}?v=${ASSET_VERSION}`;
 
 // Product photos straight out of the Figma "Product list-5" export (the
@@ -389,14 +554,63 @@ const IMAGE_SUGGESTIONS = [
 // status types the truth screens show: AI can handle, Needs Information,
 // AI Low confidence, and Human attention.
 type ConversationStatus = 'AI can handle' | 'Needs Information' | 'AI Low confidence' | 'Human attention';
-type ConversationMessage = { id: string; from: 'customer' | 'business'; text: string; time: string };
+type ConversationMessage = { id: string; from: 'customer' | 'business'; text: string; time: string; checklist?: { label: string; done: boolean }[]; viaBroadcast?: boolean };
 type Conversation = {
-  id: string; name: string; platform: 'Whatsapp' | 'Facebook' | 'Instagram' | 'Email';
+  id: string; name: string; platform: 'Whatsapp' | 'Facebook' | 'Instagram' | 'Email' | 'SMS';
+  // Live conversations come from the 'conversations' table (filled by the
+  // meta-webhook function from real WhatsApp / Messenger / Instagram DMs).
+  live?: boolean; channel?: string; externalId?: string; handle?: string; blocked?: boolean; lastAt?: string;
+  messagesLoaded?: boolean;
   status: ConversationStatus; unread: number; lastMessage: string; lastTime: string;
   messages: ConversationMessage[];
   aiSuggestion?: { confidence: number; text: string; reasons: string[] };
   needInfo?: string;
+  // NEW: orange "Refund request needs approval" banner (Request Refund
+  // Needs Approval truth) shown at the top of the chat.
+  refundRequest?: { amount: string };
+  // NEW: "Waiting for owner input" banner shown just above the composer
+  // (Nexora is checking available stock truth).
+  waitingForOwner?: string;
+  // NEW: static "<name> is typing..." bubble under the message list —
+  // not a real typing-detection signal, just a fixed display flag to
+  // match the truth screens that show it.
+  customerTyping?: boolean;
 };
+// NEW: Customers CRM (Customers / Customer Profile / Add Customer /
+// Interaction History truth screens) — reached from the Inbox header.
+type Customer = {
+  id: string; name: string; avatarColor?: string; initials?: string;
+  channel: 'Facebook' | 'Whatsapp' | 'Instagram' | 'Email'; handle: string;
+  segment: 'New' | 'VIP' | 'Active'; lastInteraction: string;
+  location: string; totalOrders: number; totalSpent: string; lastOrder: string; customerSince: string;
+  aiRecommendation: string; segments: string[]; tags: string[];
+};
+const CUSTOMERS: Customer[] = [
+  { id: 'c1', name: 'Sam Johnson', channel: 'Facebook', handle: 'Fashion hub', segment: 'New', lastInteraction: '2hr ago', location: 'Lagos, Nigeria', totalOrders: 12, totalSpent: '$20.39M', lastOrder: '12 May 2026', customerSince: 'May 2024', aiRecommendation: 'This customer showed interest in product bundles (smartphone accessories).', segments: ['Electronics'], tags: ['Loyal', 'VIP', 'High valued', 'Referred'] },
+  { id: 'c2', name: 'Enola Chelsey', avatarColor: '#C2367C', initials: 'EC', channel: 'Whatsapp', handle: '+234 903 343 4562', segment: 'New', lastInteraction: '2hr ago', location: 'Abuja, Nigeria', totalOrders: 3, totalSpent: '$450.00', lastOrder: '2 May 2026', customerSince: 'Apr 2026', aiRecommendation: 'This customer has asked about bulk pricing twice this month.', segments: ['Wearables'], tags: ['New'] },
+  { id: 'c3', name: 'Sarah Johnson', channel: 'Instagram', handle: '@lucre_nexus', segment: 'VIP', lastInteraction: '2hr ago', location: 'Lagos, Nigeria', totalOrders: 8, totalSpent: '$3.2M', lastOrder: '18 Sep 2026', customerSince: 'Jan 2025', aiRecommendation: 'This customer prefers the blue color variant across purchases.', segments: ['Electronics'], tags: ['VIP', 'Repeat buyer'] },
+  { id: 'c4', name: 'Thony Adams', channel: 'Email', handle: 'thionyedm@gmail.com', segment: 'VIP', lastInteraction: '2hr ago', location: 'Port Harcourt, Nigeria', totalOrders: 15, totalSpent: '$5.1M', lastOrder: '1 Sep 2026', customerSince: 'Nov 2023', aiRecommendation: 'This customer responds well to email product updates.', segments: ['Electronics', 'Accessories'], tags: ['VIP', 'Loyal'] },
+  { id: 'c5', name: 'Tunde Ednus', channel: 'Facebook', handle: 'Tunde Ednus', segment: 'Active', lastInteraction: '2hr ago', location: 'Ibadan, Nigeria', totalOrders: 2, totalSpent: '$90.00', lastOrder: '19 Sep 2026', customerSince: 'Sep 2026', aiRecommendation: 'This customer recently requested a refund — monitor satisfaction.', segments: ['Accessories'], tags: ['New'] },
+];
+// Interaction History entries (per-customer timeline). Reused across every
+// customer in this mock rather than modeled per-id — the truth screen's
+// own filter chips (All/Messages/Calls/Orders) are what matters for the
+// UI, not unique per-customer data.
+const INTERACTION_HISTORY = [
+  { id: 'ih1', type: 'Messages' as const, icon: 'logo-facebook', color: '#1877F2', title: 'Facebook Message', detail: 'Asked about bulk pricing for 10 units', time: 'Today, 10:24 AM' },
+  { id: 'ih2', type: 'Orders' as const, icon: 'bag-handle', color: '#0F2942', title: 'Order Placed', detail: '#ORD 782  \u2022  N 45,000', time: 'Today, 10:24 AM' },
+  { id: 'ih3', type: 'Calls' as const, icon: 'call', color: '#1E56A0', title: 'Phone call', detail: 'Answered  \u2022  2m 14s', time: 'Today, 10:24 AM' },
+  { id: 'ih4', type: 'Orders' as const, icon: 'cube', color: '#0F2942', title: 'Order Placed', detail: 'Asked about bulk pricing for 10 units', time: 'Today, 10:24 AM' },
+  { id: 'ih5', type: 'Messages' as const, icon: 'mail', color: '#7C3AED', title: 'Email', detail: 'Replied to product update newsletter', time: 'Today, 10:24 AM' },
+  { id: 'ih6', type: 'Messages' as const, icon: 'document-text', color: '#0F2942', title: 'Note added', detail: 'Customer interested in new accessories.', time: 'Today, 10:24 AM' },
+  { id: 'ih7', type: 'Orders' as const, icon: 'cube', color: '#0F2942', title: 'Order Placed', detail: 'Asked about bulk pricing for 10 units', time: 'Today, 10:24 AM' },
+];
+const CUSTOMER_CHANNEL_ICON: Record<Customer['channel'], string> = { Facebook: 'logo-facebook', Whatsapp: 'logo-whatsapp', Instagram: 'logo-instagram', Email: 'mail' };
+const CUSTOMER_CHANNEL_COLOR: Record<Customer['channel'], string> = { Facebook: '#1877F2', Whatsapp: '#25D366', Instagram: '#E1306C', Email: '#7C3AED' };
+const CUSTOMER_SEGMENT_STYLE: Record<Customer['segment'], { bg: string; color: string }> = {
+  New: { bg: '#EAF1FB', color: '#1E56A0' }, VIP: { bg: '#FDEFE0', color: '#C2760C' }, Active: { bg: '#E6F4ED', color: '#1E9E6D' },
+};
+
 const CONVERSATIONS: Conversation[] = [
   {
     id: 'sarah', name: 'Sarah Johnson', platform: 'Whatsapp', status: 'AI can handle', unread: 3,
@@ -407,6 +621,41 @@ const CONVERSATIONS: Conversation[] = [
       text: 'Yes the black smartwatch is currently available. Its N45,000 and we can deliver to Lagos within 1-2 business days. Would you like me to place an order for you?',
       reasons: ['Product information found', 'Price remain unchanged', 'Delivery policy', "Customer's previous conversation"],
     },
+  },
+  // NEW: same customer, different channel — Sarah's WhatsApp thread above
+  // (smartwatch pricing) already matches its own truth screens and drives
+  // the aiSuggestion demo, so this is a separate conversation rather than
+  // repurposing it, exactly like a real inbox would show one thread per
+  // channel per customer. Matches "Nexora is checking available stock" and
+  // the Call Summary screen's "Blue variant of Oraimo headphone request
+  // (Sarah Johnson)" — both reference this Facebook thread specifically.
+  {
+    id: 'sarah-ig', name: 'Sarah Johnson', platform: 'Facebook', status: 'Needs Information', unread: 0,
+    lastMessage: 'NEXORA — Checking availability...', lastTime: '10:47 AM',
+    customerTyping: true,
+    waitingForOwner: 'Sales employee is confirming the blue variant availability.',
+    messages: [
+      { id: 'm1', from: 'customer', text: 'Hi, do you have the oraimo headphones in blue color? I really like them but I prefer blue.', time: '10:45 AM' },
+      { id: 'm2', from: 'business', text: "Hi! We currently have this headphone in stock, but the blue color isn't available right now.\nI'm checking with our team to confirm whether the blue version is expected soon or if another option is available.\nPlease give me a little while to confirm this for you. I'll get back to you as soon as I have an update.", time: '10:47 AM' },
+      { id: 'm3', from: 'business', text: '', time: '10:47 AM', checklist: [
+        { label: 'Checking current stock', done: true },
+        { label: 'Checking for restock schedule', done: true },
+        { label: 'Confirming with owner (blue variant)', done: false },
+      ] },
+    ],
+  },
+  // NEW: Request Refund Needs Approval truth — a customer whose refund
+  // request needs the business owner's manual approval before NEXORA can
+  // proceed, distinct from the auto-handled "AI can handle" conversations.
+  {
+    id: 'tunde', name: 'Tunde Ednus', platform: 'Facebook', status: 'Human attention', unread: 1,
+    lastMessage: "Hi, I'll like a refund for my order...", lastTime: '10:47 AM',
+    customerTyping: true,
+    refundRequest: { amount: 'N45,000' },
+    messages: [
+      { id: 'm1', from: 'customer', text: "Hi, I'll like a refund for my order. I changed my mind. Please process as soon as possible", time: '10:45 AM' },
+      { id: 'm2', from: 'business', text: "Hi, Tunde. I understand you'd like a refund. Your order is on its way and will arrive tomorrow.\nAccording to our policy, refunds can't be processed once the order has been dispatched. You can return the item within 7 days of delivery, if there is an issue.", time: '10:47 AM' },
+    ],
   },
   {
     id: 'ayra', name: 'Ayra Stelph', platform: 'Facebook', status: 'AI can handle', unread: 1,
@@ -451,17 +700,39 @@ const STATUS_BADGE_STYLE: Record<ConversationStatus, { bg: string; color: string
   'Human attention': { bg: '#FDEDED', color: '#D32F2F' },
 };
 const PLATFORM_ICON: Record<Conversation['platform'], string> = {
-  Whatsapp: 'logo-whatsapp', Facebook: 'logo-facebook', Instagram: 'logo-instagram', Email: 'mail',
+  Whatsapp: 'logo-whatsapp', Facebook: 'logo-facebook', Instagram: 'logo-instagram', Email: 'mail', SMS: 'chatbox',
 };
 const PLATFORM_COLOR: Record<Conversation['platform'], string> = {
-  Whatsapp: '#25D366', Facebook: '#1877F2', Instagram: '#E1306C', Email: '#5C6B7A',
+  Whatsapp: '#25D366', Facebook: '#1877F2', Instagram: '#E1306C', Email: '#EA4335', SMS: '#1E56A0',
 };
+// DB channel key <-> inbox platform label.
+const CHANNEL_TO_PLATFORM: Record<string, Conversation['platform']> = { whatsapp: 'Whatsapp', facebook: 'Facebook', instagram: 'Instagram', email: 'Email', sms: 'SMS' };
 const CONNECT_CHANNELS = [
-  { key: 'whatsapp', name: 'Whatsapp', desc: 'Chat with your customers', icon: 'logo-whatsapp', color: '#25D366', connected: true },
-  { key: 'instagram', name: 'Instagram', desc: 'Manage DMs and comments', icon: 'logo-instagram', color: '#E1306C', connected: true },
-  { key: 'facebook', name: 'Facebook', desc: 'Respond to messages', icon: 'logo-facebook', color: '#1877F2', connected: false },
-  { key: 'email', name: 'Email', desc: 'Handle customers email', icon: 'mail', color: '#5C6B7A', connected: false },
-  { key: 'sms', name: 'SMS', desc: 'Text message conversion', icon: 'chatbox-outline', color: '#1E56A0', connected: false },
+  // FIX (deploy): nothing starts "connected" any more — the real state comes
+  // from channel_connections, which only the channel-connect function marks
+  // connected after Meta has accepted the business's real credentials.
+  { key: 'whatsapp', name: 'Whatsapp', desc: 'Chat with your customers', icon: 'logo-whatsapp', color: '#25D366', connected: false, handleLabel: 'Phone number', handleValue: '', connectedOn: '', connectedAt: '' },
+  { key: 'instagram', name: 'Instagram', desc: 'Manage DMs and comments', icon: 'logo-instagram', color: '#E1306C', connected: false, handleLabel: 'Instagram handle', handleValue: '', connectedOn: '', connectedAt: '' },
+  { key: 'facebook', name: 'Facebook', desc: 'Respond to messages', icon: 'logo-facebook', color: '#1877F2', connected: false, handleLabel: 'Facebook page', handleValue: '', connectedOn: '', connectedAt: '' },
+  { key: 'email', name: 'Email', desc: 'Handle customers email', icon: 'mail', color: '#EA4335', connected: false, handleLabel: 'Email address', handleValue: '', connectedOn: '', connectedAt: '' },
+  { key: 'sms', name: 'SMS', desc: 'Text message conversion', icon: 'chatbox-outline', color: '#1E56A0', connected: false, handleLabel: 'Phone number', handleValue: '', connectedOn: '', connectedAt: '' },
+];
+// AI behavior toggles shown on the "Channel settings" screen (per channel).
+// Same three toggles/labels for every channel in the truth screens
+// (Instagram and WhatsApp both show identical AI-behavior copy) — only the
+// channel details above them (handle vs phone number) differ per channel.
+const AI_BEHAVIOR_TOGGLES = [
+  { key: 'autoReply', title: 'Auto-reply to common questions', subtitle: 'NEXORA replies to FAQs and basic requests' },
+  { key: 'askApproval', title: 'Ask for approval for refunds', subtitle: 'AI will wait for your confirmation' },
+  { key: 'escalate', title: 'Escalate complex issues', subtitle: 'Forward to you for manual handling' },
+];
+// "What can AI do?" toggles on the AI Permissions screen — same list
+// regardless of channel in the truth screen.
+const AI_PERMISSION_TOGGLES = [
+  { key: 'answerQuestions', icon: 'chatbubble-ellipses-outline', title: 'Answer common questions', subtitle: 'Business info' },
+  { key: 'followUp', icon: 'chatbox-ellipses-outline', title: 'Send follow-up messages', subtitle: 'Order updates and delivery info' },
+  { key: 'handleRefunds', icon: 'help-circle-outline', title: 'Handle refunds', subtitle: 'Within policy limits' },
+  { key: 'supportTickets', icon: 'pricetag-outline', title: 'Create support tickets', subtitle: 'For complex issues' },
 ];
 // iconColor defaults to white in the render below — Snapchat's brand
 // yellow (#FFFC00) is too light for a white glyph to read against, so it
@@ -489,6 +760,9 @@ const SCHEDULE_EVENTS: { date: string; time: string; title: string; withWhom: st
 
 const BRAIN_GALLERY_FILENAMES = [
   { label: 'Home 1', file: 'Home-1.png' },
+  { label: 'Home 1b', file: 'Home-1b.png' },
+  { label: 'Home 1c', file: 'Home-1c.png' },
+  { label: 'Home 1d', file: 'Home-1d.png' },
   { label: 'Home 2', file: 'Home-2.png' },
   { label: 'Brain Interface 1', file: 'Brain General Interface-1.png' },
   { label: 'Brain Interface 2', file: 'Brain General Interface-2.png' },
@@ -510,9 +784,9 @@ const BRAIN_GALLERY_FILENAMES = [
   { label: 'Product Details 5', file: 'Product details-5.png' },
   { label: 'Product Details 6', file: 'Product details-6.png' },
   { label: 'Service List', file: 'Service list.png' },
-  { label: 'Operations List', file: 'Operation list.png' },
+  { label: 'Operations List', file: 'Operations list.png' },
   { label: 'Policies List', file: 'Policies list.png' },
-  { label: 'FAQs List', file: 'FAQ list.png' },
+  { label: 'FAQs List', file: 'FAQs list.png' },
   { label: 'Add Knowledge 1', file: 'Add Knowledge-1.png' },
   { label: 'Add Knowledge 2', file: 'Add Knowledge-2.png' },
   { label: 'Add Image 1', file: 'Add image-1.png' },
@@ -541,8 +815,11 @@ const BRAIN_GALLERY_SCREENS = BRAIN_GALLERY_FILENAMES.map(({ label, file }) => (
 // ASSET_VERSION above); Home-1/Home-2's truth image was the one truth
 // screen still fetched as a bare URL, so any re-upload of it was
 // invisible until the app's image cache happened to clear on its own.
-const HOME1_TRUTH_URL = withCacheBust(supabase.storage.from('brain-gallery').getPublicUrl('Home-1.png').data.publicUrl);
-const HOME2_TRUTH_URL = withCacheBust(supabase.storage.from('brain-gallery').getPublicUrl('Home-2.png').data.publicUrl);
+const HOME1_TRUTH_URL = `${supabase.storage.from(HOME_TRUTH_BUCKET).getPublicUrl('Home-1.png').data.publicUrl}?v=${HOME_ASSET_VERSION}`;
+const HOME2_TRUTH_URL = `${supabase.storage.from(HOME_TRUTH_BUCKET).getPublicUrl('Home-2.png').data.publicUrl}?v=${HOME_ASSET_VERSION}`;
+const HOME_SEGMENT_URLS: Record<HomeSegmentKey, string> = Object.fromEntries(
+  HOME_SEGMENTS.map(seg => [seg.key, `${supabase.storage.from(HOME_TRUTH_BUCKET).getPublicUrl(seg.file).data.publicUrl}?v=${HOME_ASSET_VERSION}`])
+) as Record<HomeSegmentKey, string>;
 
 // Contact photo for the Inbox chat screen (Figma node 1335:306, "Nexora/Inbox").
 // Not uploaded yet — see the note at the end of this fix for the exact file
@@ -579,7 +856,7 @@ const PROCESSING_ORB_URL = withCacheBust(supabase.storage.from('brain-gallery').
 
 const SOCIAL_MEDIA_FILENAMES=[
   {label:'Brain Chat Share',file:'Brain chat share.png',width:394,height:855},
-  {label:'File UI',file:'file -ui.png',width:529,height:852},
+  {label:'File UI',file:'file -ui.png',width:393,height:852},
   {label:'Frame 916',file:'Frame 916.png',width:393,height:852},
   {label:'Frame 917',file:'Frame 917.png',width:393,height:852},
   {label:'Inbox 1',file:'Inbox-1.png',width:393,height:852},
@@ -599,10 +876,236 @@ const SOCIAL_MEDIA_FILENAMES=[
   {label:'Message Failed',file:'Message failed.png',width:393,height:852},
   {label:'Nexora AI Processing',file:'Nexora ai processing.png',width:393,height:852},
   {label:'Offline Message',file:'Offline Message.png',width:393,height:852},
+  // NEW: Customers CRM reference screens (Customers/Customer Profile/Add
+  // Customer/Interaction History) — filenames matched exactly to what's
+  // saved in the social-media bucket, typo included ("Interractive"),
+  // since correcting it here would just 404 against the real file.
+  {label:'Customers',file:'Customers.png',width:393,height:852},
+  {label:'Customer Profile',file:'Customer Profile.png',width:393,height:852},
+  {label:'Add Customer',file:'Add Customer.png',width:393,height:852},
+  {label:'Interaction History',file:'Interractive History.png',width:393,height:852},
+  {label:'Lead to Customers',file:'Lead to Customers.png',width:393,height:852},
+  {label:'Lead to Customer profile',file:'Lead to Customer profile.png',width:393,height:852},
+  {label:'Send personalized product demo invite',file:'Send opersonalized product demo invite.png',width:393,height:852},
+  {label:'Inbox connect channel options',file:'inbox-connect channel options.png',width:393,height:852},
+  {label:'Channel details Instagram',file:'Channel details and AI behavior settings Instagram.png',width:393,height:852},
+  {label:'Channel details WhatsApp',file:'Channel details and AI behavior settings WhatsApp.png',width:393,height:852},
+  {label:'Schedule 1',file:'Schedule-1.png',width:393,height:852},
+  {label:'Schedule 2',file:'Schedule-2.png',width:393,height:852},
+  {label:'Create Schedule',file:'Create Schedule.png',width:393,height:852},
+  {label:'Schedule 3',file:'Schedule-3.png',width:393,height:852},
+  {label:'Conflict time',file:'Conflict time.png',width:393,height:852},
+  {label:'Schedule 4',file:'Schedule-4.png',width:393,height:852},
 ];
 const SOCIAL_MEDIA_SCREENS=SOCIAL_MEDIA_FILENAMES.map(({label,file,width,height})=>({label,file,width,height,url:withCacheBust(supabase.storage.from('social-media').getPublicUrl(file).data.publicUrl)}));
 
-type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar';
+// ---- Truth-screen flows (Connect Apps / Lead / Schedule) ---------------
+// Each flow screen below is the real Figma PNG from the 'social-media'
+// bucket, drawn full-width with invisible tap areas on top at Figma
+// coordinates (393x852 space) -- the same technique Home-1/Home-2 use.
+// File names match the bucket exactly (typos included).
+type TruthKey =
+  | 'inbox1' | 'inbox2' | 'inbox3' | 'inbox4' | 'channelOptions' | 'channelDetailsIg' | 'channelDetailsWa'
+  | 'leadsList' | 'leadProfile' | 'leadDemoInvite'
+  | 'customers' | 'customerProfile' | 'addCustomer' | 'interactionHistory'
+  | 'scheduleHome' | 'scheduleList' | 'createSchedule' | 'scheduleTask' | 'scheduleMeeting' | 'conflictTime'
+  | 'createPostHome' | 'productPostSuggested' | 'productPostAll' | 'productAdd' | 'servicePostSuggested' | 'servicePostAll' | 'serviceAdd' | 'aiContent'
+  | 'editPost' | 'platformAdapt' | 'platformAdapt2'
+  // Added from the 20 Oct 2026 Figma export (all in 'social-media2').
+  | 'announcement' | 'promoPick' | 'promoSelect' | 'promoForm' | 'promoType' | 'promoReady' | 'promoStart' | 'promoEnd' | 'promoPost' | 'servicePostEdit'
+  | 'aiGen1' | 'aiGen2' | 'aiGen3' | 'publishing' | 'published' | 'postScheduled' | 'publishFailed' | 'scheduledPost' | 'schedulePostDate' | 'platformAdaptFb';
+const TRUTH_FILES: Record<TruthKey, string> = {
+  inbox1: 'Inbox-1.png',
+  inbox2: 'Inbox-2.png',
+  inbox3: 'Inbox-3.png',
+  inbox4: 'Inbox-4.png',
+  channelOptions: 'inbox-connect channel options.png',
+  channelDetailsIg: 'Channel details and AI behavior settings Instagram.png',
+  channelDetailsWa: 'Channel details and AI behavior settings WhatsApp.png',
+  leadsList: 'Lead to Customers.png',
+  leadProfile: 'Lead to Customer profile.png',
+  leadDemoInvite: 'Send opersonalized product demo invite.png',
+  customers: 'Customers.png',
+  customerProfile: 'Customer Profile.png',
+  addCustomer: 'Add Customer.png',
+  interactionHistory: 'Interractive History.png',
+  scheduleHome: 'Schedule-1.png',
+  scheduleList: 'Schedule-2.png',
+  createSchedule: 'Create Schedule.png',
+  scheduleTask: 'Schedule-3.png',
+  scheduleMeeting: 'Schedule-4.png',
+  conflictTime: 'Conflict time.png',
+  createPostHome: 'Create product post home.png',
+  productPostSuggested: 'Create product post.png',
+  productPostAll: 'Create product post 2.png',
+  productAdd: 'Add Product Image Detail.png',
+  servicePostSuggested: 'create service post.png',
+  servicePostAll: 'create service post 2.png',
+  serviceAdd: 'add service image.png',
+  aiContent: 'AI Content Creation.png',
+  editPost: 'Edit Post Description.png',
+  platformAdapt: 'Platform Adaptation.png',
+  platformAdapt2: 'Platform Adaptation2.png',
+  announcement: 'Announcement post.png',
+  promoPick: 'Create promotion.png',
+  promoSelect: 'Create promotion select.png',
+  promoForm: 'Create promotion filled.png',
+  promoType: 'Create promotion type.png',
+  promoReady: 'Create promotion ready.png',
+  promoStart: 'Create promotion start date.png',
+  promoEnd: 'Create promotion end date.png',
+  promoPost: 'Promotion post 2.png',
+  servicePostEdit: 'Promotion post.png',
+  aiGen1: 'AI Content Creation 1.png',
+  aiGen2: 'AI Content Creation 2.png',
+  aiGen3: 'AI Content Creation 3.png',
+  publishing: 'Publishing content.png',
+  published: 'Post published.png',
+  postScheduled: 'Post scheduled.png',
+  publishFailed: 'Publishing failed.png',
+  scheduledPost: 'Scheduled post.png',
+  schedulePostDate: 'Schedule post date.png',
+  platformAdaptFb: 'Platform Adaptation Facebook.png',
+};
+// Every truth screen reads from 'social-media' unless listed here. The Create
+// Post screens live in their own 'social-media2' bucket.
+const TRUTH_BUCKET: Partial<Record<TruthKey, string>> = {
+  createPostHome: 'social-media2', productPostSuggested: 'social-media2', productPostAll: 'social-media2', productAdd: 'social-media2',
+  servicePostSuggested: 'social-media2', servicePostAll: 'social-media2', serviceAdd: 'social-media2', aiContent: 'social-media2',
+  editPost: 'social-media2', platformAdapt: 'social-media2', platformAdapt2: 'social-media2',
+  announcement: 'social-media2', promoPick: 'social-media2', promoSelect: 'social-media2', promoForm: 'social-media2', promoType: 'social-media2', promoReady: 'social-media2',
+  promoStart: 'social-media2', promoEnd: 'social-media2', promoPost: 'social-media2', servicePostEdit: 'social-media2', aiGen1: 'social-media2', aiGen2: 'social-media2', aiGen3: 'social-media2',
+  publishing: 'social-media2', published: 'social-media2', postScheduled: 'social-media2', publishFailed: 'social-media2', scheduledPost: 'social-media2', schedulePostDate: 'social-media2', platformAdaptFb: 'social-media2',
+};
+// Exports wider than the 393px phone frame (Add Product Image Detail.png is
+// 599px: the phone on the left plus a stray text layer to its right). They are
+// drawn at the phone's scale and the extra width is clipped, instead of being
+// squashed into the screen, which skewed the screen and its buttons.
+const TRUTH_SRC_WIDTH: Partial<Record<TruthKey, number>> = { productAdd: 599 };
+const TRUTH_URLS = Object.fromEntries(
+  (Object.keys(TRUTH_FILES) as TruthKey[]).map(k => [k, withCacheBust(supabase.storage.from(TRUTH_BUCKET[k] ?? 'social-media').getPublicUrl(TRUTH_FILES[k]).data.publicUrl)])
+) as Record<TruthKey, string>;
+// Flip to true to draw every tap area on top of the screens (red = measured
+// from the Figma SVG, orange = estimated, needs checking against the PNG).
+const TRUTH_DEBUG_HOTSPOTS = false;
+// After Instagram is connected, "Connect Apps" opens Inbox-4 (the connected
+// state) instead of Inbox-1. Set to false to always open Inbox-1.
+const CONNECT_APPS_SHOWS_CONNECTED_STATE = true;
+type Hotspot = { x: number; y: number; w: number; h: number; label: string; onPress: () => void; estimated?: boolean; chip?: string };
+type TruthInput = { label: string; x: number; y: number; w: number; h: number; value: string; onChangeText: (t: string) => void; padLeft?: number; keyboardType?: 'default' | 'email-address' | 'phone-pad'; autoCapitalize?: 'none' | 'words'; multiline?: boolean; fontSize?: number; maxLength?: number };
+// Which inbox conversations belong to which connectable channel (used by
+// the "send once, appears everywhere" broadcast).
+const CHANNEL_PLATFORM: Record<string, Conversation['platform'] | undefined> = {
+  whatsapp: 'Whatsapp', instagram: 'Instagram', facebook: 'Facebook', email: 'Email', sms: 'SMS',
+};
+// Channels the backend can really connect and send through today
+// (channel-connect + send-message + meta-webhook edge functions).
+const LIVE_CHANNELS = ['whatsapp', 'instagram', 'facebook'];
+// WhatsApp / Messenger / Instagram only allow free-form replies within 24h of
+// the customer's last message, so broadcasts only go to those conversations.
+const REPLY_WINDOW_MS = 24 * 60 * 60 * 1000;
+// The old hard-coded sample inbox. Kept for screenshots / design QA only;
+// production shows the business's real conversations.
+const SHOW_DEMO_INBOX = false;
+// Lets companies subscribe through Paystack inside the app. If Google Play
+// review asks you to use Play Billing for the subscription, set this to false:
+// the Plans screen then only shows the plans and the company's current status.
+const IN_APP_SUBSCRIBE_ENABLED = true;
+// Public pages Google Play requires (privacy policy + account deletion).
+// Replace with your real URLs before submitting.
+const PRIVACY_POLICY_URL = 'https://nexora.ai/privacy';
+// The Terms of Use live inside Nexora: a public page on the web (?page=terms) and the 'terms' screen in the app.
+// The web address of the Nexora site. Set EXPO_PUBLIC_SITE_URL when the site moves (for example to the company
+// Vercel account or a custom domain); on the web it otherwise follows the address the page was opened from.
+const SITE_URL: string = (() => {
+  const env = (process.env.EXPO_PUBLIC_SITE_URL || '').trim().replace(/\/+$/, '');
+  if (/^https:\/\//.test(env)) return env;
+  if (Platform.OS === 'web' && typeof window !== 'undefined' && /^https:$/.test(window.location?.protocol || '')) return window.location.origin;
+  return 'https://nexorabusinessai.com';
+})();
+const TERMS_URL = `${SITE_URL}/?page=terms`;
+const SUPPORT_EMAIL = 'support@nexorabusinessai.com';
+const REPORT_REASONS: { key: 'spam' | 'harassment' | 'scam' | 'inappropriate' | 'other'; label: string }[] = [
+  { key: 'spam', label: 'Spam' },
+  { key: 'harassment', label: 'Harassment or threats' },
+  { key: 'scam', label: 'Scam or fraud' },
+  { key: 'inappropriate', label: 'Inappropriate or offensive' },
+  { key: 'other', label: 'Something else' },
+];
+const relTime = (iso?: string | null) => {
+  if (!iso) return '';
+  const d = new Date(iso); const diff = Date.now() - d.getTime();
+  if (diff < 60_000) return 'Just now';
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (new Date().toDateString() === d.toDateString()) return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  if (diff < 7 * 86_400_000) return d.toLocaleDateString('en-US', { weekday: 'short' });
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+};
+
+// Real-looking brand marks for the Inbox (WhatsApp green bubble, Facebook
+// blue "f" disc, Instagram gradient camera tile) instead of a white glyph on
+// a flat colour circle. Built from the official glyphs in @expo/vector-icons
+// plus an SVG gradient, so no image downloads are needed.
+function BrandIcon({ platform, size = 36, ring = false }: { platform: Conversation['platform'] | 'All'; size?: number; ring?: boolean }) {
+  const glyph = Math.round(size * 0.62);
+  const ringStyle = ring ? { borderWidth: 2, borderColor: '#0B1220' } : null;
+  if (platform === 'Instagram') {
+    const r = size * 0.28;
+    return (
+      <View style={[{ width: size, height: size, borderRadius: r, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }, ringStyle]}>
+        <Svg width={size} height={size} style={{ position: 'absolute' }}>
+          <Defs>
+            <RadialGradient id="igA" cx="30%" cy="107%" r="150%">
+              <Stop offset="0" stopColor="#FDF497" />
+              <Stop offset="0.05" stopColor="#FDF497" />
+              <Stop offset="0.45" stopColor="#FD5949" />
+              <Stop offset="0.6" stopColor="#D6249F" />
+              <Stop offset="0.9" stopColor="#285AEB" />
+            </RadialGradient>
+          </Defs>
+          <Rect x="0" y="0" width={size} height={size} fill="url(#igA)" />
+        </Svg>
+        <Ionicons name="logo-instagram" size={glyph} color="#FFF" />
+      </View>
+    );
+  }
+  if (platform === 'Facebook') {
+    // Ionicons' logo-facebook *is* the blue disc with a cut-out "f".
+    return (
+      <View style={[{ width: size, height: size, borderRadius: size / 2, backgroundColor: '#FFF', alignItems: 'center', justifyContent: 'center' }, ringStyle]}>
+        <Ionicons name="logo-facebook" size={size} color="#1877F2" />
+      </View>
+    );
+  }
+  if (platform === 'Whatsapp') {
+    return (
+      <View style={[{ width: size, height: size, borderRadius: size / 2, backgroundColor: '#25D366', alignItems: 'center', justifyContent: 'center' }, ringStyle]}>
+        <Ionicons name="logo-whatsapp" size={glyph} color="#FFF" />
+      </View>
+    );
+  }
+  if (platform === 'Email') {
+    return (
+      <View style={[{ width: size, height: size, borderRadius: size / 2, backgroundColor: '#FFF', borderWidth: 1, borderColor: '#E7EAEC', alignItems: 'center', justifyContent: 'center' }, ringStyle]}>
+        <MaterialCommunityIcons name="gmail" size={glyph} color="#EA4335" />
+      </View>
+    );
+  }
+  if (platform === 'SMS') {
+    return (
+      <View style={[{ width: size, height: size, borderRadius: size / 2, backgroundColor: '#34C759', alignItems: 'center', justifyContent: 'center' }, ringStyle]}>
+        <Ionicons name="chatbubble" size={glyph} color="#FFF" />
+      </View>
+    );
+  }
+  return (
+    <View style={[{ width: size, height: size, borderRadius: size / 2, backgroundColor: '#0B1220', alignItems: 'center', justifyContent: 'center' }, ringStyle]}>
+      <Ionicons name="apps" size={Math.round(size * 0.45)} color="#FFF" />
+    </View>
+  );
+}
+
+type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules';
 type KnowledgeCategory='products'|'services'|'operations'|'policies'|'faqs';
 type KnowledgeField={label:string;value:string};
 type KnowledgeItem={id:string;name:string;subtitle:string;status:'Verified'|'Need review'|'Draft';icon:string;iconBg:string;iconColor:string;overview:string;fields:KnowledgeField[];features?:string[];image?:string;viewOnlyFields?:KnowledgeField[]};
@@ -627,6 +1130,187 @@ type KnowledgeItem={id:string;name:string;subtitle:string;status:'Verified'|'Nee
 // the handful of items where that set has a much closer match than
 // Ionicons. Everything else still renders through Ionicons exactly as
 // before.
+// ---------------------------------------------------------------------------
+// Supabase data layer. Every table is protected by row-level security
+// (user_id = auth.uid()), so these helpers can only ever read or write the
+// signed-in user's own rows.
+// ---------------------------------------------------------------------------
+// New accounts get the sample workspace (the products/customers/events below)
+// once, so the app isn't empty on first launch. Set to false before public
+// launch if new accounts should start blank.
+// FIX (deploy): off for production so real businesses start with an empty,
+// honest workspace (no fake customers, orders or "connected" WhatsApp).
+const SEED_SAMPLE_DATA = false;
+const KNOWLEDGE_CATEGORIES: KnowledgeCategory[] = ['products', 'services', 'operations', 'policies', 'faqs'];
+const EMPTY_KNOWLEDGE = Object.fromEntries(
+  KNOWLEDGE_CATEGORIES.map(k => [k, { title: KNOWLEDGE_DATA[k].title, icon: KNOWLEDGE_DATA[k].icon, items: [] as KnowledgeItem[] }])
+) as Record<KnowledgeCategory, { title: string; icon: string; items: KnowledgeItem[] }>;
+const CATEGORY_LOOK: Record<KnowledgeCategory, { icon: string; iconBg: string; iconColor: string }> = {
+  products: { icon: 'cube-outline', ...CAT_BLUE },
+  services: { icon: 'construct-outline', ...CAT_ORANGE },
+  operations: { icon: 'settings-outline', ...CAT_NAVY },
+  policies: { icon: 'document-text-outline', ...CAT_BLUE },
+  faqs: { icon: 'help-circle-outline', ...CAT_NAVY },
+};
+type KnowledgeRow = {
+  id: string; category: KnowledgeCategory; name: string; subtitle: string;
+  status: 'Verified' | 'Need review' | 'Draft'; overview: string;
+  fields: KnowledgeField[] | null; features: string[] | null; image_url: string | null;
+  icon: string | null; icon_bg: string | null; icon_color: string | null; updated_at: string;
+};
+const shortDate = (iso: string) => new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+const rowToKnowledgeItem = (r: KnowledgeRow): KnowledgeItem => {
+  const look = CATEGORY_LOOK[r.category];
+  const fields = (Array.isArray(r.fields) ? r.fields : [])
+    .filter(f => f && f.label)
+    .map(f => (f.label === 'Status' ? { ...f, value: r.status } : f));
+  const hasMeta = r.category === 'products' || r.category === 'services';
+  return {
+    id: r.id, name: r.name, subtitle: r.subtitle, status: r.status,
+    icon: r.icon || look.icon, iconBg: r.icon_bg || look.iconBg, iconColor: r.icon_color || look.iconColor,
+    overview: r.overview, fields,
+    features: Array.isArray(r.features) && r.features.length ? r.features : undefined,
+    image: r.image_url || undefined,
+    viewOnlyFields: hasMeta ? [{ label: 'Visibility', value: 'Active' }, { label: 'Last Updated', value: shortDate(r.updated_at) }] : undefined,
+  };
+};
+const groupKnowledge = (rows: KnowledgeRow[]) => {
+  const out = Object.fromEntries(
+    KNOWLEDGE_CATEGORIES.map(k => [k, { title: EMPTY_KNOWLEDGE[k].title, icon: EMPTY_KNOWLEDGE[k].icon, items: [] as KnowledgeItem[] }])
+  ) as typeof EMPTY_KNOWLEDGE;
+  rows.forEach(r => { if (out[r.category]) out[r.category].items.push(rowToKnowledgeItem(r)); });
+  return out;
+};
+// "$20.39M" / "$450.00" / "N 45,000" -> number
+const parseMoney = (v: string) => {
+  const m = String(v).replace(/,/g, '').match(/([\d.]+)\s*([MKmk])?/);
+  if (!m) return 0;
+  const n = parseFloat(m[1]) * (m[2]?.toUpperCase() === 'M' ? 1e6 : m[2]?.toUpperCase() === 'K' ? 1e3 : 1);
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
+};
+const toIsoDate = (v: string): string | undefined => {
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? undefined : d.toISOString().slice(0, 10);
+};
+// Seeds the sample workspace exactly once per account. The conditional
+// UPDATE is the lock: only the client that flips the flag false -> true seeds,
+// so two devices signing in at the same moment can't double-seed.
+async function seedSampleWorkspace(userId: string) {
+  const { data: claimed } = await supabase.from('profiles')
+    .update({ sample_data_seeded: true }).eq('id', userId).eq('sample_data_seeded', false).select('id');
+  if (!claimed || claimed.length === 0) return;
+  try {
+    let seq = 0;
+    const seedBase = Date.now();
+    const items = KNOWLEDGE_CATEGORIES.flatMap(cat => KNOWLEDGE_DATA[cat].items.map(i => ({
+      created_at: new Date(seedBase + seq++).toISOString(),
+      user_id: userId, category: cat, name: i.name, subtitle: i.subtitle, status: i.status, overview: i.overview,
+      fields: i.fields, features: i.features ?? [], image_url: i.image ?? null,
+      icon: i.icon, icon_bg: i.iconBg, icon_color: i.iconColor,
+    })));
+    const r1 = await supabase.from('knowledge_items').insert(items);
+    if (r1.error) throw r1.error;
+    const custRows = CUSTOMERS.map(c => ({
+      user_id: userId, name: c.name, channel: c.channel, handle: c.handle, segment: c.segment, location: c.location,
+      total_orders: c.totalOrders, total_spent: parseMoney(c.totalSpent), last_order_at: toIsoDate(c.lastOrder) ?? null,
+      ...(toIsoDate(c.customerSince) ? { customer_since: toIsoDate(c.customerSince) } : {}),
+      ai_recommendation: c.aiRecommendation, segments: c.segments, tags: c.tags,
+    }));
+    const r2 = await supabase.from('customers').insert(custRows);
+    if (r2.error) throw r2.error;
+    const r3 = await supabase.from('schedule_events').insert(SCHEDULE_EVENTS.map(e => ({
+      user_id: userId, title: e.title, with_whom: e.withWhom, event_date: e.date, start_time: e.time,
+    })));
+    if (r3.error) throw r3.error;
+    const r4 = await supabase.from('channel_connections').insert([{ user_id: userId, channel_key: 'whatsapp', connected: true, handle: '+234 913 345 5678', connected_at: new Date().toISOString() }]);
+    if (r4.error) throw r4.error;
+    const r5 = await supabase.from('orders').insert(SAMPLE_ORDERS.map(o => ({
+      user_id: userId, customer_name: o.name, items: o.items, total: o.total, status: o.status,
+      created_at: new Date(Date.now() - o.ageH * 3600000).toISOString(),
+      ...(o.status === 'shipped' || o.status === 'delivered' ? { shipped_at: new Date(Date.now() - (o.ageH - 4) * 3600000).toISOString() } : {}),
+    })));
+    if (r5.error) throw r5.error;
+  } catch (e) {
+    // Let the next launch retry instead of leaving a half-seeded account.
+    await supabase.from('knowledge_items').delete().eq('user_id', userId);
+    await supabase.from('customers').delete().eq('user_id', userId);
+    await supabase.from('schedule_events').delete().eq('user_id', userId);
+    await supabase.from('channel_connections').delete().eq('user_id', userId);
+    await supabase.from('orders').delete().eq('user_id', userId);
+    await supabase.from('profiles').update({ sample_data_seeded: false }).eq('id', userId);
+    throw e;
+  }
+}
+type OrderRow = { id: string; customer_name: string; items: string; total: number; status: 'pending' | 'processing' | 'shipped' | 'delivered' | 'cancelled'; tracking: string; created_at: string };
+type AgendaEvent = { id: string; title: string; with_whom: string; event_date: string; start_time: string; end_time: string; notes: string; event_type: 'meeting' | 'task' | 'follow_up'; status: 'scheduled' | 'completed' | 'cancelled'; created_by: string };
+type EscalationRow = { id: string; customer_name: string; channel: string; reason: string; urgency: 'low' | 'normal' | 'high'; created_at: string };
+// One line about what Nexora did to reach the owner about an escalation.
+function alertStatusText(a: any): string {
+  if (!a) return '';
+  const t = (iso?: string) => { if (!iso) return ''; const d = new Date(iso); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+  if (a.acknowledged_at) return `You answered ${t(a.acknowledged_at)}${a.response ? ` \u00b7 ${a.response}` : ''}`;
+  if (a.snooze_until && new Date(a.snooze_until).getTime() > Date.now()) return `You asked for a reminder \u00b7 Nexora calls again at ${t(a.snooze_until)}`;
+  const st = String(a.last_status || '');
+  if (a.last_channel === 'call' || a.attempts > 0) {
+    const n = a.attempts > 1 ? ` (call ${a.attempts} of 3)` : '';
+    if (/no-answer|busy|canceled/.test(st)) return `Called you ${t(a.last_alert_at)}${n} \u00b7 no answer${/texted/.test(st) ? ', texted you' : ''}`;
+    if (/^failed/.test(st)) return `Couldn't call you: ${st.replace(/^failed:?/, '') || 'call failed'}`;
+    if (st === 'completed') return `Called you ${t(a.last_alert_at)}${n} \u00b7 hung up without choosing`;
+    return `Calling you${n}\u2026`;
+  }
+  if (st.startsWith('skipped:quiet_hours')) return a.emailed_at ? `Emailed you ${t(a.emailed_at)} \u00b7 quiet hours, no call` : 'Quiet hours, no call';
+  if (a.emailed_at) return `Emailed you ${t(a.emailed_at)}`;
+  return '';
+}
+const NATIVE_SCHEDULE = false; // false = go back to the Schedule-1..4 reference images
+const localIsoDate = (d: Date = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const addDaysIso = (iso: string, n: number) => { const d = new Date(`${iso}T12:00:00`); d.setDate(d.getDate() + n); return localIsoDate(d); };
+const niceDate = (iso: string) => new Date(`${iso}T12:00:00`).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+const toMinutes = (t: string): number | null => {
+  const m = /^(\d{1,2}):(\d{2})\s*(AM|PM)$/i.exec((t || '').trim());
+  if (!m) return null;
+  return ((Number(m[1]) % 12) + (m[3].toUpperCase() === 'PM' ? 12 : 0)) * 60 + Number(m[2]);
+};
+const fmtMinutes = (mins: number) => {
+  let h = Math.floor(mins / 60); const m = mins % 60; const ap = h >= 12 ? 'PM' : 'AM'; h = h % 12 || 12;
+  return `${h}:${String(m).padStart(2, '0')} ${ap}`;
+};
+const TIME_SLOTS = Array.from({ length: 27 }, (_, i) => fmtMinutes(8 * 60 + i * 30)); // 8:00 AM - 9:00 PM
+const eventEnd = (e: { start_time: string; end_time: string }) => toMinutes(e.end_time) ?? ((toMinutes(e.start_time) ?? 0) + 60);
+const clientNow = () => {
+  let tz = 'UTC';
+  try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { /* keep UTC */ }
+  return { date: localIsoDate(), time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }), tz };
+};
+const SAMPLE_ORDERS: { name: string; items: string; total: number; status: OrderRow['status']; ageH: number }[] = [
+  { name: 'Sarah Johnson', items: 'Wireless Headphones x1', total: 59, status: 'pending', ageH: 3 },
+  { name: 'Michael Chen', items: 'Smart Watch x1', total: 129, status: 'pending', ageH: 6 },
+  { name: 'Amara Okafor', items: 'Bluetooth Speaker x2', total: 98, status: 'pending', ageH: 9 },
+  { name: 'David Brown', items: 'Smartphone Case x3', total: 45, status: 'processing', ageH: 14 },
+  { name: 'Fatima Bello', items: 'Wireless Headphones x1, Smart Watch x1', total: 188, status: 'pending', ageH: 20 },
+  { name: 'James Wilson', items: 'Bluetooth Speaker x1', total: 49, status: 'processing', ageH: 26 },
+  { name: 'Chioma Eze', items: 'Smartphone x1', total: 699, status: 'pending', ageH: 30 },
+  { name: 'Tunde Adeyemi', items: 'Smart Watch x2', total: 258, status: 'pending', ageH: 41 },
+  { name: 'Grace Obi', items: 'Wireless Headphones x2', total: 118, status: 'shipped', ageH: 52 },
+  { name: 'Peter Musa', items: 'Bluetooth Speaker x1', total: 49, status: 'delivered', ageH: 70 },
+  { name: 'Linda Park', items: 'Smart Watch x1', total: 129, status: 'shipped', ageH: 80 },
+];
+type ExtractedRaw = { category: KnowledgeCategory; name: string; subtitle: string; overview: string; fields: KnowledgeField[]; features: string[] };
+type ExtractedReview = { id: string; name: string; subtitle: string; type: ReviewItemType; image?: string; raw: ExtractedRaw };
+const reviewTypeFor = (r: ExtractedRaw): ReviewItemType =>
+  /discount|promo|coupon|voucher/i.test(r.name) ? 'Discount rules'
+  : r.category === 'faqs' ? 'FAQs'
+  : r.category === 'policies' || r.category === 'operations' ? 'Policy'
+  : 'Pricing Item';
+const formatBytes = (n: number) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+const timeAgo = (iso: string) => {
+  const mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+  if (mins < 1) return 'Just now';
+  if (mins < 60) return `${mins} min ago`;
+  if (mins < 1440) return `${Math.round(mins / 60)} hr ago`;
+  return `${Math.round(mins / 1440)} d ago`;
+};
+
 function KnowledgeIcon({ name, size, color }: { name: string; size: number; color: string }) {
   const [imgFailed, setImgFailed] = useState(false);
   if (name.startsWith('img:')) {
@@ -711,7 +1395,1039 @@ function DetailOverviewIcon({ item }: { item: KnowledgeItem }) {
   return <KnowledgeIcon name={item.icon} size={64} color={item.iconColor} />;
 }
 
-export default function HomeScreen(){
+// Where the three post-publishing screens lead. Edit these four lines to re-wire the flow.
+const POST_FLOW: { editNext: 'platformAdapt' | 'createPostHome'; adaptNext: 'platformAdapt2' | 'createPostHome'; adapt2Edit: 'editPost' | 'createPostHome'; adapt2Publish: 'createPostHome' } = {
+  editNext: 'platformAdapt',      // Edit Post Description -> Next
+  adaptNext: 'platformAdapt2',    // Platform Adaptation -> Next
+  adapt2Edit: 'createPostHome',   // Platform Adaptation2 -> Edit
+  adapt2Publish: 'createPostHome', // Platform Adaptation2 -> Approve & Publish
+};
+const POST_DEFAULT_TEXT = "UPGRADE YOUR SOUND WITH JEKAMIX LTD.\nExperience powerful sound, long-lasting battery life, and all-day comfort. Enjoy up to 30% OFF!. Don't miss out on this special offer. Send us a DM to order today!";
+const PLATFORM_LIST = ['Facebook', 'Instagram', 'Tiktok', 'WhatsApp', 'X'] as const;
+const PRIORITY_COLOR: Record<'Low' | 'Medium' | 'High', string> = { Low: '#2FB36D', Medium: '#0F2A47', High: '#E5484D' };
+
+// "C"-shaped health meter: thick bars with hairline gaps (replaces the thin tick marks).
+// Gauge colours: green = verified, burnt orange = needs review, red = draft.
+const GAUGE_GREEN = '#1E9E6D', GAUGE_ORANGE = '#CC5500', GAUGE_RED = '#D64545';
+function HealthGauge({ verified, review, empty, pct, label, labelColor = GAUGE_GREEN }: { verified: number; review: number; empty: boolean; pct: string; label: string; labelColor?: string }) {
+  // Longer bars: each segment now reaches 32px from the inner to the outer edge (was 20).
+  const W = 196, HGT = 170, CX = 98, CY = 98, R = 70, STROKE = 32, N = 30, START = 135, SWEEP = 270, GAP = 1.6;
+  const seg = SWEEP / N;
+  const pt = (deg: number) => { const a = (deg * Math.PI) / 180; return `${(CX + R * Math.cos(a)).toFixed(2)} ${(CY + R * Math.sin(a)).toFixed(2)}`; };
+  return (
+    <View style={{ width: W, height: HGT, alignItems: 'center' }}>
+      <Svg width={W} height={HGT} viewBox={`0 0 ${W} ${HGT}`}>
+        {Array.from({ length: N }).map((_, i) => {
+          const t = (i + 0.5) / N;
+          const color = empty ? '#E1E5EA' : t <= verified + 1e-6 ? GAUGE_GREEN : t <= verified + review + 1e-6 ? GAUGE_ORANGE : GAUGE_RED;
+          return <Path key={i} d={`M ${pt(START + i * seg + GAP / 2)} A ${R} ${R} 0 0 1 ${pt(START + (i + 1) * seg - GAP / 2)}`} stroke={color} strokeWidth={STROKE} strokeLinecap="butt" fill="none" />;
+        })}
+      </Svg>
+      <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, top: CY - 26, alignItems: 'center' }}>
+        <Text style={styles.gaugePercent}>{pct}</Text>
+        <Text style={[styles.gaugeLabel, { color: labelColor }]}>{label}</Text>
+      </View>
+    </View>
+  );
+}
+
+// Side menu opened by the hamburger in every top bar. The app state lives in HomeScreenInner, so it
+// hands the drawer what it needs through this small bridge.
+let drawerOpenFn: () => void = () => {};
+let drawerRefresh: () => void = () => {};
+let drawerBridge: { name: string; email: string; away: boolean; go: (k: string) => void; setAway: (v: boolean) => void; signOut: () => void } =
+  { name: '', email: '', away: false, go: () => {}, setAway: () => {}, signOut: () => {} };
+function DrawerHost() {
+  const [open, setOpen] = useState(false);
+  const [, tick] = useState(0);
+  useEffect(() => {
+    drawerOpenFn = () => setOpen(true);
+    drawerRefresh = () => tick(n => n + 1);
+    return () => { drawerOpenFn = () => {}; drawerRefresh = () => {}; };
+  }, []);
+  const items: { k: string; icon: string; label: string }[] = [
+    { k: 'home', icon: 'home-outline', label: 'Home' },
+    { k: 'inbox', icon: 'chatbubbles-outline', label: 'Inbox' },
+    { k: 'brain', icon: 'sparkles-outline', label: 'Train AI' },
+    { k: 'schedule', icon: 'calendar-outline', label: 'Schedule' },
+    { k: 'insights', icon: 'stats-chart-outline', label: 'Business Insights' },
+    { k: 'orders', icon: 'cube-outline', label: 'Orders' },
+    { k: 'attention', icon: 'hand-left-outline', label: 'Needs your decision' },
+    { k: 'ownerAlerts', icon: 'call-outline', label: 'When Nexora needs you' },
+    { k: 'rules', icon: 'git-branch-outline', label: 'What Nexora decides for you' },
+    { k: 'leads', icon: 'people-outline', label: 'Leads' },
+    { k: 'customers', icon: 'person-circle-outline', label: 'Customers' },
+    { k: 'channels', icon: 'link-outline', label: 'Connected channels' },
+    { k: 'trends', icon: 'trending-up-outline', label: 'Trending for you' },
+    { k: 'explore', icon: 'globe-outline', label: 'Find online' },
+    { k: 'network', icon: 'people-outline', label: 'Find partners' },
+    { k: 'community', icon: 'chatbubbles-outline', label: 'Community' },
+    { k: 'shop', icon: 'storefront-outline', label: 'AI shop link' },
+    { k: 'billing', icon: 'card-outline', label: 'Plans & billing' },
+    { k: 'profile', icon: 'person-outline', label: 'Profile' },
+  ];
+  const go = (k: string) => { setOpen(false); setTimeout(() => drawerBridge.go(k), 60); };
+  return (
+    <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)} statusBarTranslucent>
+      <View style={{ flex: 1, flexDirection: 'row' }}>
+        <View style={{ width: 296, backgroundColor: '#FFF', paddingTop: 64, paddingHorizontal: 20, paddingBottom: 28 }}>
+          <Text style={{ fontSize: 22, fontWeight: '700', color: '#0B1220' }}>Nexora AI</Text>
+          <Text style={{ fontSize: 12, color: '#8A97A6', marginTop: 2 }} numberOfLines={1}>{drawerBridge.name || 'AI Business Manager'}{drawerBridge.email ? `  \u00b7  ${drawerBridge.email}` : ''}</Text>
+          <ScrollView style={{ marginTop: 18 }} showsVerticalScrollIndicator={false}>
+            {items.map(it => (
+              <Pressable key={it.k} onPress={() => go(it.k)} accessibilityRole="button" accessibilityLabel={it.label} style={{ flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 14 }}>
+                <Ionicons name={it.icon as any} size={22} color="#0B1220" />
+                <Text style={{ fontSize: 15, fontWeight: '600', color: '#0B1220' }}>{it.label}</Text>
+              </Pressable>
+            ))}
+            <View style={{ height: 1, backgroundColor: '#EEF1F4', marginVertical: 10 }} />
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 8 }}>
+              <Ionicons name={drawerBridge.away ? 'moon' : 'sunny-outline'} size={22} color="#0B1220" />
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 15, fontWeight: '600', color: '#0B1220' }}>Away mode</Text>
+                <Text style={{ fontSize: 11, color: '#8A97A6' }}>Nexora answers customers for you</Text>
+              </View>
+              <Switch value={drawerBridge.away} onValueChange={v => { drawerBridge.setAway(v); }} accessibilityLabel="Away mode" />
+            </View>
+            <Pressable onPress={() => { setOpen(false); setTimeout(() => drawerBridge.signOut(), 60); }} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 14, marginTop: 6 }}>
+              <Ionicons name="log-out-outline" size={22} color="#D64545" />
+              <Text style={{ fontSize: 15, fontWeight: '600', color: '#D64545' }}>Log out</Text>
+            </Pressable>
+          </ScrollView>
+        </View>
+        <Pressable style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)' }} onPress={() => setOpen(false)} accessibilityLabel="Close menu" />
+      </View>
+    </Modal>
+  );
+}
+
+type SchedKind = 'follow_up' | 'meeting' | 'task';
+type SchedForm = {
+  kind: SchedKind; who: string; whoMeta: string; title: string; desc: string; related: string;
+  priority: 'Low' | 'Medium' | 'High'; date: string; time: string; duration: number; reminder: string;
+  participants: { name: string; meta: string }[];
+  touchedWho: boolean; touchedRelated: boolean; touchedReminder: boolean; touchedParticipants: boolean;
+};
+const initialSched = (kind: SchedKind = 'follow_up'): SchedForm => ({
+  kind, who: 'Enola Williams', whoMeta: 'Lead \u2022 Interested in blue headphone', title: '', desc: '', related: '',
+  priority: 'Medium', date: addDaysIso(localIsoDate(), 1), time: '10:00 AM', duration: 30, reminder: '10 minutes before',
+  participants: [{ name: 'Enola Williams', meta: 'Lead' }, { name: 'Enola Williams', meta: 'Lead' }],
+  touchedWho: false, touchedRelated: false, touchedReminder: false, touchedParticipants: false,
+});
+const schedFrameFor = (k: SchedKind): TruthKey => (k === 'meeting' ? 'scheduleMeeting' : k === 'task' ? 'scheduleTask' : 'createSchedule');
+const REMINDER_OPTIONS = ['At time of event', '10 minutes before', '30 minutes before', '1 hour before', '1 day before'];
+type PostForm = { text: string; tags: boolean[]; mediaUri: string | null; platforms: Record<string, boolean>; adaptTab: string };
+const initialPost = (): PostForm => ({
+  text: POST_DEFAULT_TEXT, tags: [true, false, false], mediaUri: null,
+  platforms: { Facebook: false, Instagram: true, Tiktok: true, WhatsApp: true, X: false }, adaptTab: 'Instagram',
+});
+// App-wide toast, callable from anywhere (including module-level helpers).
+let pushToast: (msg: string) => void = () => {};
+function ToastHost() {
+  const [msg, setMsg] = useState('');
+  useEffect(() => {
+    let t: ReturnType<typeof setTimeout> | undefined;
+    pushToast = (m: string) => { setMsg(m); if (t) clearTimeout(t); t = setTimeout(() => setMsg(''), 2600); };
+    return () => { pushToast = () => {}; if (t) clearTimeout(t); };
+  }, []);
+  if (!msg) return null;
+  return (
+    <View pointerEvents="none" style={{ position: 'absolute', left: 24, right: 24, bottom: 110, alignItems: 'center', zIndex: 999 }}>
+      <View style={{ backgroundColor: '#0B1220', borderRadius: 14, paddingHorizontal: 16, paddingVertical: 10 }}>
+        <Text style={{ color: '#FFF', fontSize: 13, fontWeight: '600', textAlign: 'center' }}>{msg}</Text>
+      </View>
+    </View>
+  );
+}
+// ---- Web layout ----
+// Screens drawn from phone designs (onboarding, sign-in, Home…) keep the phone shape; the flexible
+// screens below may use the full width of the browser.
+const WEB_WIDE_SCREENS = ['insights', 'ownerAlerts', 'rules', 'browser', 'explore', 'trends', 'network', 'community', 'communityPost', 'storefront', 'followups', 'terms', 'learned', 'leads', 'leadDetail', 'customersLive', 'customerDetail',
+  'orders', 'agenda', 'agendaPriority', 'agendaCreate', 'knowledgeHealth', 'knowledgeList', 'itemDetail', 'itemEdit', 'addKnowledge', 'missingImages', 'inboxChat', 'connectChannels', 'billing'];
+const WEB_WIDE_TABS = ['brain', 'inbox', 'profile'];
+// From this window width the web Home is a full dashboard instead of the phone design.
+const WEB_DESKTOP_HOME_MIN = 900;
+// From this window width, sign up / log in / password reset are a full web page instead of the phone screens.
+// Web (any screen size, phones included) uses the responsive onboarding and sign-in pages; the fixed
+// 393x852 phone frames got cut off in phone browsers, hiding Continue and the sign-in buttons.
+const WEB_AUTH_PAGE_MIN = 0;
+// Screens the web version reopens after a refresh or when you come back to the tab.
+const WEB_RESTORABLE = ['main', 'insights', 'ownerAlerts', 'rules', 'leads', 'customersLive', 'orders', 'agenda', 'community', 'storefront', 'followups', 'trends', 'explore', 'network', 'billing', 'learned', 'connectChannels', 'knowledgeHealth', 'knowledgeList'];
+const WEB_LAST_VIEW_KEY = 'nexora-last-view';
+const WEB_AUTH_SCREENS = ['launch', 'onboarding', 'signup', 'login', 'forgotPassword', 'verifyEmail'];
+const NEXORA_LOGO_URL = `${SUPABASE_URL}/storage/v1/object/public/assets/icon.png`;
+type WebShell = { wide: boolean; signedIn: boolean; active: string };
+let webShell: WebShell = { wide: false, signedIn: false, active: '' };
+const webShellSubs = new Set<(s: WebShell) => void>();
+function setWebShell(next: WebShell) {
+  if (next.wide === webShell.wide && next.signedIn === webShell.signedIn && next.active === webShell.active) return;
+  webShell = next;
+  webShellSubs.forEach(f => f(next));
+}
+function useWebShell() {
+  const [v, setV] = useState(webShell);
+  useEffect(() => { webShellSubs.add(setV); return () => { webShellSubs.delete(setV); }; }, []);
+  return v;
+}
+// Desktop sidebar (web, signed in): one click to every part of Nexora.
+const WEB_NAV: { label: string; icon: string; key: FeatureKey; pages: string[] }[] = [
+  { label: 'Home', icon: 'home-outline', key: 'home', pages: ['home'] },
+  { label: 'Brain', icon: 'sparkles-outline', key: 'knowledge', pages: ['brain'] },
+  { label: 'Inbox', icon: 'chatbubbles-outline', key: 'inbox', pages: ['inbox', 'inboxChat', 'connectChannels', 'channelSettings'] },
+  { label: 'Insights', icon: 'stats-chart-outline', key: 'analytics', pages: ['insights'] },
+  { label: 'Leads', icon: 'person-add-outline', key: 'leads', pages: ['leads', 'leadDetail', 'followups'] },
+  { label: 'Customers', icon: 'people-outline', key: 'customers', pages: ['customersLive', 'customerDetail'] },
+  { label: 'Orders', icon: 'bag-handle-outline', key: 'orders', pages: ['orders'] },
+  { label: 'Schedule', icon: 'calendar-outline', key: 'agenda', pages: ['agenda', 'agendaCreate'] },
+  { label: 'Needs your decision', icon: 'hand-left-outline', key: 'attention', pages: ['agendaPriority', 'activeCall', 'callSummary'] },
+  { label: 'What Nexora decides', icon: 'git-branch-outline', key: 'rules', pages: ['rules'] },
+  { label: 'When Nexora calls you', icon: 'call-outline', key: 'alerts', pages: ['ownerAlerts'] },
+  { label: 'Train AI', icon: 'school-outline', key: 'operations', pages: ['knowledgeHealth', 'knowledgeList', 'itemDetail', 'itemEdit', 'addKnowledge', 'learned'] },
+  { label: 'Trending', icon: 'trending-up-outline', key: 'trends', pages: ['trends'] },
+  { label: 'Find online', icon: 'globe-outline', key: 'explore', pages: ['explore', 'browser'] },
+  { label: 'Find partners', icon: 'people-circle-outline', key: 'partners', pages: ['network'] },
+  { label: 'Community', icon: 'chatbubbles-outline', key: 'community', pages: ['community', 'communityPost'] },
+  { label: 'AI shop link', icon: 'storefront-outline', key: 'shop', pages: ['storefront'] },
+  { label: 'Plans & billing', icon: 'card-outline', key: 'billing', pages: ['billing'] },
+  { label: 'Profile', icon: 'person-circle-outline', key: 'account', pages: ['profile'] },
+];
+const WEB_SIDEBAR_W = 248;
+function WebSidebar({ active }: { active: string }) {
+  return (
+    <View style={{ width: WEB_SIDEBAR_W, backgroundColor: '#0B1220', borderRightWidth: 1, borderRightColor: 'rgba(255,255,255,0.06)', paddingTop: 24, paddingHorizontal: 14 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 10, marginBottom: 26 }}>
+        <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}>
+          <Ionicons name="sparkles" size={18} color="#FFFFFF" />
+        </View>
+        <View>
+          <Text style={{ color: '#FFFFFF', fontSize: 17, fontWeight: '800' }}>Nexora AI</Text>
+          <Text style={{ color: '#7F93AD', fontSize: 11 }}>AI Business Manager</Text>
+        </View>
+      </View>
+      <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 24 }}>
+        {WEB_NAV.map(item => {
+          const on = item.pages.includes(active);
+          return (
+            <Pressable key={item.key} onPress={() => requestFeature(item.key)} accessibilityRole="link" accessibilityState={{ selected: on }}
+              style={(st: any) => ({ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10, marginBottom: 2,
+                backgroundColor: on ? 'rgba(127,178,255,0.16)' : st.hovered ? 'rgba(255,255,255,0.05)' : 'transparent', cursor: 'pointer' } as any)}>
+              <Ionicons name={item.icon as any} size={18} color={on ? '#9CC3FF' : '#8FA3BC'} />
+              <Text style={{ color: on ? '#FFFFFF' : '#C9D6E6', fontSize: 14, fontWeight: on ? '700' : '500' }}>{item.label}</Text>
+              {on && <View style={{ marginLeft: 'auto', width: 6, height: 6, borderRadius: 3, backgroundColor: '#7FB2FF' }} />}
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+}
+// "What do you want NEXORA to help with?" (last onboarding screen): the eight tiles, drawn over the design.
+const INTEREST_TILES: { label: string; key: FeatureKey; x: number; y: number }[] = [
+  // Exact positions from Figma "Onboarding Screen 4" (623:1702): grid at x22 y242, tiles 160x80, columns 190 apart, rows 95 apart.
+  { label: 'Sales', key: 'sales', x: 22, y: 242 }, { label: 'Commerce', key: 'orders', x: 212, y: 242 },
+  { label: 'Marketing', key: 'trends', x: 22, y: 337 }, { label: 'Operations', key: 'operations', x: 212, y: 337 },
+  { label: 'Scheduling', key: 'agenda', x: 22, y: 432 }, { label: 'Analytics', key: 'analytics', x: 212, y: 432 },
+  { label: 'Automation', key: 'automation', x: 22, y: 527 }, { label: 'Customers', key: 'customers', x: 212, y: 527 },
+];
+const INTEREST_TILE_W = 160, INTEREST_TILE_H = 80;
+// Feature shortcuts on the web side panels. A click before signing in is remembered (also across a page
+// reload during email confirmation) and is the first thing Nexora opens once the user is signed in.
+type FeatureKey = 'knowledge' | 'inbox' | 'trends' | 'partners' | 'learned' | 'account' | 'sales' | 'orders' | 'operations' | 'agenda' | 'analytics' | 'automation' | 'customers' | 'home' | 'leads' | 'explore' | 'billing' | 'community' | 'shop' | 'attention' | 'rules' | 'alerts';
+const FEATURE_LABELS: Record<FeatureKey, string> = { knowledge: 'Ask Nexora', inbox: 'your Inbox', trends: 'Trending for you', partners: 'Find partners', learned: 'What Nexora learned', account: 'your Profile', sales: 'your sales report', orders: 'your orders', operations: 'Train AI', agenda: 'your schedule', analytics: 'Business Insights', automation: 'automatic replies', customers: 'your customers', home: 'Home', leads: 'your leads', explore: 'Find online', billing: 'Plans & billing', community: 'the Community', shop: 'your AI shop link', attention: 'Needs your decision', rules: 'What Nexora decides for you', alerts: 'When Nexora needs you' };
+const PENDING_FEATURE_KEY = 'nexora-pending-feature';
+let featureHandler: ((k: FeatureKey) => void) | null = null;
+let pendingFeatureMem: FeatureKey | null = null;
+function savePendingFeature(k: FeatureKey | null) {
+  pendingFeatureMem = k;
+  try { const ls = (globalThis as any).localStorage; if (ls) { if (k) ls.setItem(PENDING_FEATURE_KEY, k); else ls.removeItem(PENDING_FEATURE_KEY); } } catch { /* storage blocked */ }
+}
+function readPendingFeature(): FeatureKey | null {
+  if (pendingFeatureMem) return pendingFeatureMem;
+  try { const v = (globalThis as any).localStorage?.getItem(PENDING_FEATURE_KEY); if (v && v in FEATURE_LABELS) return v as FeatureKey; } catch { /* storage blocked */ }
+  return null;
+}
+function requestFeature(k: FeatureKey) {
+  if (featureHandler) featureHandler(k); else savePendingFeature(k);
+}
+function WebSidePanel({ side }: { side: 'left' | 'right' }) {
+  const features: [string, string, string, FeatureKey][] = side === 'left'
+    ? [['sparkles-outline', 'Answers from your own knowledge', 'Products, prices and policies, with sources', 'knowledge'],
+       ['chatbubbles-outline', 'Replies while you are away', 'WhatsApp, Instagram and Facebook in one inbox', 'inbox'],
+       ['trending-up-outline', 'Watches the market for you', 'Trends, competitors and suppliers, found online', 'trends']]
+    : [['people-outline', 'Find partners', 'Businesses that fit what you offer and need', 'partners'],
+       ['bulb-outline', 'Learns as you work', 'Picks up facts from your chats, you confirm them', 'learned'],
+       ['chatbubbles-outline', 'A community of business owners', 'Ask questions, share wins; Nexora answers too', 'community']];
+  return (
+    <View style={{ flex: 1, maxWidth: 380, paddingHorizontal: 36, justifyContent: 'center' }}>
+      {side === 'left' && (
+        <>
+          <Text style={{ color: '#FFFFFF', fontSize: 34, fontWeight: '800', letterSpacing: -0.5 }}>Nexora AI</Text>
+          <Text style={{ color: '#9FB0C6', fontSize: 16, marginTop: 8, marginBottom: 28, lineHeight: 23 }}>Your AI business assistant: it knows your business, works while you rest, and watches the market for you.</Text>
+        </>
+      )}
+      {side === 'right' && <Text style={{ color: '#7FB2FF', fontSize: 13, fontWeight: '700', letterSpacing: 1, marginBottom: 18 }}>ALSO IN NEXORA</Text>}
+      {features.map(([icon, title, sub, key]) => (
+        <Pressable key={title} onPress={() => requestFeature(key)} accessibilityRole="button" accessibilityLabel={`Open ${title}`}
+          style={(st: any) => ({ flexDirection: 'row', gap: 14, marginBottom: 12, padding: 10, marginHorizontal: -10, borderRadius: 14, backgroundColor: st.pressed ? 'rgba(127,178,255,0.18)' : st.hovered ? 'rgba(127,178,255,0.10)' : 'transparent', cursor: 'pointer' } as any)}>
+          <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: 'rgba(127,178,255,0.12)', alignItems: 'center', justifyContent: 'center' }}>
+            <Ionicons name={icon as any} size={20} color="#7FB2FF" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '700' }}>{title}</Text>
+            <Text style={{ color: '#9FB0C6', fontSize: 13, marginTop: 3, lineHeight: 19 }}>{sub}</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={16} color="#5E7491" style={{ alignSelf: 'center' }} />
+        </Pressable>
+      ))}
+      {side === 'right' && <Text style={{ color: '#5E7491', fontSize: 12, marginTop: 6 }}>Click any feature to open it. Not signed in yet? Nexora opens it right after you sign in.</Text>}
+    </View>
+  );
+}
+// Nexora logo (the app icon from the Supabase 'assets' bucket), with the sparkle mark as a fallback.
+function NexoraLogo({ size = 32 }: { size?: number }) {
+  // The 'assets/icon.png' in Supabase is still Expo's default app icon, so the Nexora sparkle mark is drawn instead.
+  const failed = true;
+  if (failed) {
+    return (
+      <View style={{ width: size, height: size, borderRadius: size * 0.3, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center', marginLeft: 10 }}>
+        <Ionicons name="sparkles" size={size * 0.55} color="#FFFFFF" />
+      </View>
+    );
+  }
+  return <Image source={{ uri: NEXORA_LOGO_URL }} style={{ width: size, height: size, borderRadius: size * 0.3, marginLeft: 10 }} resizeMode="cover" accessibilityLabel="Nexora AI" />;
+}
+
+// ---- NEXORA AI Terms of Use (ATOD Tech), from NEXORA_AI_terms_of_use.pdf, last updated October 08, 2026 ----
+type LegalBlock = { t: 'p' | 'li' | 'h'; x: string };
+const NEXORA_TERMS: { updated: string; sections: { n: string; title: string; blocks: LegalBlock[] }[] } = {"updated": "October 08, 2026", "sections": [{"n": "1", "title": "Agreement to These Terms", "blocks": [{"t": "p", "x": "These Terms of Use (the “Terms”) are a legally binding agreement between you (personally or on behalf of an organisation) and ATOD Tech (“NEXORA”, “we”, “us” or “our”), a company operating in Lagos, Nigeria. They govern your access to and use of the NEXORA AI mobile application, web portal, administrative portal, application programming interfaces, and related products and services (together, the “Services”)."}, {"t": "p", "x": "By creating an account, connecting an account, or using the Services, you confirm that you have read, understood and agree to these Terms and to our Privacy Notice. If you do not agree, you must not use the Services."}]}, {"n": "2", "title": "Eligibility and Authority", "blocks": [{"t": "li", "x": "You must be at least 18 years old and have the legal capacity to enter into a binding contract."}, {"t": "li", "x": "If you use the Services for an organisation, you confirm that you have authority to bind that organisation, and “you” includes the organisation."}, {"t": "li", "x": "You must provide accurate and current information and keep it updated."}, {"t": "li", "x": "You must not use the Services if you are barred from doing so by law."}]}, {"n": "3", "title": "The Services", "blocks": [{"t": "p", "x": "NEXORA AI is an AI business assistant and marketplace platform. Depending on your plan and country, the Services may include:"}, {"t": "li", "x": "an AI assistant that answers customer questions, qualifies leads, drafts replies, creates tasks and reminders, and prepares reports;"}, {"t": "li", "x": "a unified inbox for supported messages, comments, emails and voice notes;"}, {"t": "li", "x": "an AI calling assistant that answers, screens and routes business calls;"}, {"t": "li", "x": "a social media command center that prepares and publishes campaign content to connected accounts;"}, {"t": "li", "x": "calendar, task and meeting integration with Apple, Google and Microsoft services;"}, {"t": "li", "x": "a marketplace for retail goods, wholesale goods, used items, commercial space rentals and time-limited opportunities;"}, {"t": "li", "x": "business intelligence reports and recommendations; and"}, {"t": "li", "x": "the Business Brain, which stores your approved business knowledge and policies."}, {"t": "p", "x": "Features may be added, changed, limited or removed, and some features may be available only in certain countries or after approval. We do not offer live streaming, live auctions, live events or live hiring in the Services."}]}, {"n": "4", "title": "Your Account", "blocks": [{"t": "li", "x": "You are responsible for all activity under your account and for keeping your login details and devices secure."}, {"t": "li", "x": "You must enable multi-factor authentication where we require it."}, {"t": "li", "x": "You must tell us immediately if you suspect unauthorised access."}, {"t": "li", "x": "Organisation administrators control roles, permissions and the AI authority settings for their users. Sensitive actions may require extra authentication or approval."}]}, {"n": "5", "title": "Artificial Intelligence Features", "blocks": [{"t": "li", "x": "AI can make mistakes. AI outputs may be incomplete, inaccurate or unsuitable. You are responsible for reviewing outputs and for decisions and actions you take or authorise based on them."}, {"t": "li", "x": "You control AI authority. You choose Draft, Approval or Autonomous mode for each task category and set limits such as discounts, refunds and escalation. Actions the AI takes within your settings are treated as your actions."}, {"t": "li", "x": "Not professional advice. AI outputs are not legal, financial, tax, medical or other professional advice."}, {"t": "li", "x": "Human takeover. You must provide a way for your customers to reach a human where the law requires or where they ask."}, {"t": "li", "x": "Disclosure. You must make sure your customers are told when they are communicating with an AI, where the law or good practice requires."}, {"t": "li", "x": "Estimates and forecasts are estimates and are not guarantees of results."}, {"t": "li", "x": "Business Brain. You are responsible for the accuracy, legality and approval status of information you place in the Business Brain."}]}, {"n": "6", "title": "Connected Third-Party Services", "blocks": [{"t": "p", "x": "The Services work with third-party platforms such as WhatsApp, Instagram, Facebook, TikTok, Google, Microsoft and Apple, and with payment, telephony and delivery providers."}, {"t": "li", "x": "You must have the right to connect each account and must comply with that platform’s terms and policies."}, {"t": "li", "x": "NEXORA uses official interfaces only and does not guarantee that every action (such as editing a published post) is available on every platform."}, {"t": "li", "x": "Third-party platforms may change or restrict access at any time. We are not responsible for their availability, content, pricing, policy decisions or actions, including suspension of your accounts."}, {"t": "li", "x": "You may revoke a connection at any time, after which NEXORA will no longer have access."}]}, {"n": "7", "title": "Acceptable Use", "blocks": [{"t": "p", "x": "You must not use the Services to:"}, {"t": "li", "x": "break any law of the Federal Republic of Nigeria or any other applicable law, including laws on data protection, consumer protection, cybercrime, advertising, intellectual property, tax and money laundering;"}, {"t": "li", "x": "send spam, unsolicited bulk messages, or marketing without the consent the law requires;"}, {"t": "li", "x": "harass, defraud, deceive, impersonate or harm any person;"}, {"t": "li", "x": "upload or publish unlawful, defamatory, hateful, obscene or infringing content;"}, {"t": "li", "x": "sell or promote prohibited or restricted goods or services (see section 10);"}, {"t": "li", "x": "use another person’s account, or ask us or anyone for passwords to third-party accounts;"}, {"t": "li", "x": "scrape private messages or private account data, or bypass platform restrictions;"}, {"t": "li", "x": "interfere with, probe, overload or attack the Services, or attempt to access data you are not authorised to access;"}, {"t": "li", "x": "copy, reverse engineer, decompile or resell the Services, except as law permits;"}, {"t": "li", "x": "build a competing product using the Services or our confidential information; or"}, {"t": "li", "x": "use the Services to create or spread malicious software."}, {"t": "p", "x": "We may investigate suspected violations and may suspend, remove content or report matters to the authorities."}]}, {"n": "8", "title": "Calls, Messages and Customer Communications", "blocks": [{"t": "p", "x": "You are responsible for the lawful use of NEXORA to communicate with your customers. This includes giving the notices, obtaining the consents and honouring the opt-outs required for calls, call recording, transcription, SMS, email, WhatsApp and other messages under Nigerian law and the rules of the relevant platform or telecommunications provider. You must not use the Services for unlawful call interception or surveillance."}]}, {"n": "9", "title": "Social Media Publishing", "blocks": [{"t": "p", "x": "You must own or have licensed all text, images, music, video, logos and other material you publish through NEXORA. Publishing is subject to your preview and approval settings. If a platform rejects, removes or limits a post, NEXORA will show the status and may suggest a compliant alternative, but we are not responsible for the platform’s decision."}]}, {"n": "10", "title": "Marketplace Terms", "blocks": [{"t": "h", "x": "10.1 Our role"}, {"t": "p", "x": "NEXORA provides a technology platform where sellers, wholesale sellers, listers and buyers can find each other. NEXORA is not the seller, buyer, landlord, agent or broker, and is not a party to any sale, rental or other contract between users. We do not own, inspect or guarantee any item, space or service, and we do not guarantee the quality, safety, legality, authenticity or availability of listings, or the accuracy of listing information or the ability of users to complete a transaction."}, {"t": "h", "x": "10.2 What can be listed"}, {"t": "p", "x": "Listings may cover retail goods, wholesale goods, used items, commercial spaces (such as shops, stalls, kiosks, warehouses, offices, studios and event spaces) and time-limited opportunities such as surplus stock or open appointment slots."}, {"t": "h", "x": "10.3 Seller and lister duties"}, {"t": "p", "x": "Sellers and listers must:"}, {"t": "li", "x": "have the legal right to sell or let the item or space, and declare ownership or authority to list;"}, {"t": "li", "x": "describe items accurately, including condition, known defects and serial numbers where relevant, and use genuine photographs;"}, {"t": "li", "x": "price honestly, honour accepted orders and stated terms, and set clear delivery, return and refund terms in line with Nigerian consumer protection law;"}, {"t": "li", "x": "comply with all licensing, tax, product safety, import and registration requirements that apply to them; and"}, {"t": "li", "x": "complete any verification we require, including for wholesale and commercial rental listings."}, {"t": "h", "x": "10.4 Buyer and applicant duties"}, {"t": "p", "x": "Buyers and applicants must provide accurate information, pay on time, and complete verification where required (for example for wholesale access). Wholesale prices are confidential and must not be shared or published without the seller’s consent."}, {"t": "h", "x": "10.5 Prohibited and restricted items"}, {"t": "p", "x": "You must not list or promote items or services that are illegal, counterfeit, stolen, hazardous, or restricted in Nigeria, including illegal drugs, weapons and ammunition, counterfeit or pirated goods, human remains or trafficked persons, unlicensed regulated medicines, unlawfully obtained personal data, and any item that infringes another person’s rights. We may maintain a longer list and may remove listings at our discretion."}, {"t": "h", "x": "10.6 Rentals"}, {"t": "p", "x": "A commercial space listing is an advertisement only. Viewings, applications, tenancy or licence agreements, deposits and acceptance are decided between the lister and the applicant. We do not provide property brokerage, valuation or legal services, and final acceptance remains a human decision by the lister."}, {"t": "h", "x": "10.7 Offers, orders and payment"}, {"t": "p", "x": "Orders and offers become binding between users when accepted under the listing terms. Payments are processed by licensed payment service providers. NEXORA does not act as a bank or licensed payment institution, and the payment provider’s terms apply to the payment."}, {"t": "h", "x": "10.8 Disputes between users"}, {"t": "p", "x": "Users should first try to resolve disputes between themselves. NEXORA may offer a reporting and mediation process, but it does not decide legal rights, and a decision of ours does not prevent users from using their legal remedies. We may remove listings, suspend accounts or withhold payments where permitted by law and our payment partners, to address fraud or serious breaches."}]}, {"n": "11", "title": "Fees, Taxes and Payments", "blocks": [{"t": "li", "x": "Fees. You agree to pay the subscription, usage, commission and other fees shown for your plan or transaction, in the currency stated. Fees may change on notice."}, {"t": "li", "x": "Taxes. Fees are stated exclusive of taxes unless we say otherwise. You are responsible for all applicable taxes, including value added tax (VAT) where it applies. You are responsible for your own tax filings and registrations."}, {"t": "li", "x": "Third-party costs. Third-party platform, telephony, messaging, AI usage and payment processing charges may be passed on or billed separately."}, {"t": "li", "x": "Billing and refunds. Subscriptions renew automatically unless cancelled before the renewal date. Except where the law requires otherwise or we state otherwise, fees paid are non-refundable."}, {"t": "li", "x": "Unpaid fees. We may suspend the Services if fees are overdue, after reasonable notice."}, {"t": "li", "x": "Payouts. Where we facilitate seller payouts, they are made through licensed providers after identity verification, net of applicable fees, refunds and chargebacks."}]}, {"n": "12", "title": "Your Content and Our Intellectual Property", "blocks": [{"t": "li", "x": "Your content. You keep ownership of the content and data you submit (“Your Content”). You grant us a limited, worldwide, non-exclusive licence to host, process, display and transmit Your Content only to provide, secure and support the Services and as described in our Privacy Notice."}, {"t": "li", "x": "Your responsibility. You confirm that Your Content is lawful, that you have the rights and consents needed to submit it, and that it does not infringe anyone’s rights."}, {"t": "li", "x": "Our property. NEXORA, its logo, software, design, models, documentation and all related intellectual property belong to us or our licensors. We grant you a limited, non-exclusive, non-transferable, revocable licence to use the Services for your own business purposes in line with these Terms. No other rights are granted."}, {"t": "li", "x": "Feedback. If you give us ideas or suggestions about the Services, we may use them without payment or obligation to you."}, {"t": "li", "x": "Copyright complaints. If you believe content on the Services infringes your rights, tell us through the in-app Help section, and we will review it and may remove the content."}]}, {"n": "13", "title": "Confidentiality", "blocks": [{"t": "p", "x": "Each party must keep the other’s non-public business, technical and financial information confidential, use it only for the purposes of these Terms, and not disclose it except to advisers and personnel who need to know and are bound by confidentiality, or as required by law."}]}, {"n": "14", "title": "Data Protection", "blocks": [{"t": "p", "x": "Both parties will comply with the Nigeria Data Protection Act 2023 and related regulations. Where you use NEXORA to process personal data about your customers or staff, you are the data controller and we are your data processor, and we will process that data on your documented instructions as set out in our Privacy Notice and any data processing agreement between us. You are responsible for having a lawful basis and giving required notices to the people whose data you place in the Services."}]}, {"n": "15", "title": "Suspension and Termination", "blocks": [{"t": "li", "x": "You may stop using the Services and close your account at any time through the app settings, subject to any minimum term or unpaid fees."}, {"t": "li", "x": "We may suspend or terminate your access immediately, with notice where practicable, if you breach these Terms, create risk or legal exposure, fail to pay, or if required by law or by a platform or payment partner."}, {"t": "li", "x": "On termination, your licence ends. You may export your data for a limited period we will notify, after which it is deleted or anonymised under our Privacy Notice. Sections that by their nature should survive (including payment obligations, intellectual property, confidentiality, disclaimers, liability limits, indemnity and governing law) will survive."}]}, {"n": "16", "title": "Availability and Changes", "blocks": [{"t": "p", "x": "We aim to keep the Services available but do not guarantee uninterrupted or error-free operation. Maintenance, outages, third-party failures and events beyond our control may affect access. We may update, suspend or discontinue features, and we will give reasonable notice of material changes where practicable."}]}, {"n": "17", "title": "Disclaimers", "blocks": [{"t": "p", "x": "TO THE FULLEST EXTENT PERMITTED BY LAW, THE SERVICES ARE PROVIDED “AS IS” AND “AS AVAILABLE”. WE DISCLAIM ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. WE DO NOT WARRANT THAT AI OUTPUTS, REPORTS, FORECASTS OR LEAD SCORES WILL BE ACCURATE OR RESULT IN ANY SALES, REVENUE OR OTHER OUTCOME. WE ARE NOT RESPONSIBLE FOR THE ACTS OR OMISSIONS OF USERS, SELLERS, BUYERS, LISTERS OR THIRD-PARTY PLATFORMS AND PROVIDERS."}]}, {"n": "18", "title": "Limitation of Liability", "blocks": [{"t": "p", "x": "TO THE FULLEST EXTENT PERMITTED BY LAW, NEXORA AND ITS DIRECTORS, EMPLOYEES AND AFFILIATES WILL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL OR PUNITIVE DAMAGES, OR FOR LOSS OF PROFITS, REVENUE, BUSINESS, GOODWILL OR DATA, ARISING FROM OR RELATED TO THE SERVICES. OUR TOTAL LIABILITY FOR ALL CLAIMS RELATED TO THE SERVICES WILL NOT EXCEED THE FEES YOU PAID TO US IN THE SIX (6) MONTHS BEFORE THE EVENT GIVING RISE TO THE CLAIM. NOTHING IN THESE TERMS EXCLUDES OR LIMITS LIABILITY THAT CANNOT BE EXCLUDED OR LIMITED UNDER THE STATE LAW, INCLUDING LIABILITY FOR FRAUD, DEATH OR PERSONAL INJURY CAUSED BY NEGLIGENCE, OR RIGHTS UNDER THE FEDERAL COMPETITION AND CONSUMER PROTECTION ACT 2018."}]}, {"n": "19", "title": "Indemnity", "blocks": [{"t": "p", "x": "You agree to defend, indemnify and hold harmless NEXORA, its affiliates, directors, officers and employees against any claim, loss, liability, damage or cost (including reasonable legal fees) arising from: (a) Your Content; (b) your use of the Services in breach of these Terms or the law; (c) your dealings with customers, buyers, sellers, listers or applicants; or (d) your infringement of any third party’s rights."}]}, {"n": "20", "title": "Force Majeure", "blocks": [{"t": "p", "x": "Neither party is liable for delay or failure to perform caused by events beyond its reasonable control, including natural disasters, power or internet failure, strikes, riots, war, terrorism, government action, or failure of third-party platforms and utilities. This does not excuse payment obligations."}]}, {"n": "21", "title": "Governing Law and Dispute Resolution", "blocks": [{"t": "li", "x": "Governing law. These Terms are governed by the laws of the Federal Republic of Nigeria."}, {"t": "li", "x": "Negotiation. The parties will first try to resolve any dispute through good-faith negotiation for at least thirty (30) days after written notice of the dispute."}, {"t": "li", "x": "Arbitration. If the dispute is not resolved, it will be finally resolved by arbitration under the Arbitration and Mediation Act 2023 of Nigeria. There will be one (1) arbitrator, the seat of arbitration will be Lagos, Nigeria, and the language will be English."}, {"t": "li", "x": "Individual claims. To the extent the law allows, disputes will be decided on an individual basis and not as a class or representative action."}, {"t": "li", "x": "Exceptions and courts. Either party may seek urgent injunctive relief, or enforce or protect intellectual property rights, in the courts of Lagos State, Nigeria, which have exclusive jurisdiction over any matter not subject to arbitration. Nothing here removes your statutory rights as a consumer."}]}, {"n": "22", "title": "General", "blocks": [{"t": "li", "x": "Entire agreement. These Terms, the Privacy Notice and any plan, order or data processing terms we agree with you are the entire agreement on their subject and replace earlier understandings."}, {"t": "li", "x": "Changes to Terms. We may update these Terms. We will give notice of material changes in the app or by email. Continued use after the effective date means you accept the changes."}, {"t": "li", "x": "Assignment. You may not assign these Terms without our written consent. We may assign them in connection with a merger, acquisition or sale of assets."}, {"t": "li", "x": "Severability and waiver. If a provision is unenforceable, the rest stays in force. Failure to enforce a right is not a waiver."}, {"t": "li", "x": "Electronic communications. You agree that notices and agreements may be given and signed electronically, and that electronic records are valid evidence."}, {"t": "li", "x": "No partnership. No partnership, joint venture, agency or employment relationship is created between you and NEXORA."}, {"t": "li", "x": "Language. These Terms are in English, and the English version prevails."}]}, {"n": "23", "title": "Contact Us", "blocks": [{"t": "p", "x": "For questions about these Terms, contact us through the Help section in the NEXORA app, or write to:"}, {"t": "p", "x": "ATOD Tech Lagos, Nigeria"}]}]};
+const PUBLIC_PAGE: string | null = (() => {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') return null;
+  try { const v = new URLSearchParams(window.location.search).get('page'); return v === 'terms' ? v : null; } catch { return null; }
+})();
+// Bullets that open with a short label ("Fees. …", "AI can make mistakes. …") show the label in bold.
+function legalText(x: string, color: string) {
+  const m = x.match(/^([^.]{2,45}\.)\s(.*)$/);
+  if (!m || /[,;]/.test(m[1])) return <Text style={{ fontSize: 15, lineHeight: 24, color }}>{x}</Text>;
+  return <Text style={{ fontSize: 15, lineHeight: 24, color }}><Text style={{ fontWeight: '700', color: '#0B1220' }}>{m[1]} </Text>{m[2]}</Text>;
+}
+function LegalTermsPage({ onBack }: { onBack?: () => void }) {
+  const { width } = useWindowDimensions();
+  const scrollRef = useRef<ScrollView>(null);
+  const offsets = useRef<Record<string, number>>({});
+  const wide = width >= 1000;
+  useEffect(() => { if (IS_WEB) { try { document.title = 'Terms of Use · Nexora AI'; } catch { /* ignore */ } } }, []);
+  const toc = (
+    <View style={{ gap: 2 }}>
+      <Text style={{ fontSize: 12, fontWeight: '800', color: '#8A97A6', letterSpacing: 0.6, marginBottom: 8 }}>CONTENTS</Text>
+      {NEXORA_TERMS.sections.map(sec => (
+        <Pressable key={sec.n} onPress={() => scrollRef.current?.scrollTo({ y: Math.max(0, (offsets.current[sec.n] ?? 0) - 12), animated: true })} style={{ paddingVertical: 5 }}>
+          <Text style={{ fontSize: 13, color: '#475569' }}>{sec.n}. {sec.title}</Text>
+        </Pressable>
+      ))}
+    </View>
+  );
+  return (
+    <View style={{ flex: 1, backgroundColor: '#F4F7FB' }}>
+      <View style={{ backgroundColor: '#0B1220', paddingHorizontal: 20, paddingTop: 18, paddingBottom: 18 }}>
+        <View style={{ width: '100%', maxWidth: 1080, alignSelf: 'center', flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+          {onBack && <Pressable onPress={onBack} hitSlop={10} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#FFFFFF" /></Pressable>}
+          <View style={{ width: 36, height: 36, borderRadius: 11, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="sparkles" size={18} color="#FFFFFF" /></View>
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '800' }}>Terms of Use</Text>
+            <Text style={{ color: '#9FB0C6', fontSize: 12 }}>Nexora AI · ATOD Tech · Last updated {NEXORA_TERMS.updated}</Text>
+          </View>
+        </View>
+      </View>
+      <ScrollView ref={scrollRef} contentContainerStyle={{ padding: 20, paddingBottom: 60 }}>
+        <View style={{ width: '100%', maxWidth: 1080, alignSelf: 'center', flexDirection: wide ? 'row' : 'column', gap: 28, alignItems: 'flex-start' }}>
+          {wide && <View style={{ width: 260, paddingTop: 8 }}>{toc}</View>}
+          <View style={{ flex: 1, minWidth: 0, backgroundColor: '#FFFFFF', borderRadius: 18, padding: wide ? 36 : 20, borderWidth: 1, borderColor: '#E6ECF3' }}>
+            <View style={{ padding: 14, borderRadius: 12, backgroundColor: '#F2F8FD', marginBottom: 8 }}>
+              <Text style={{ fontSize: 14, color: '#1E3A5F', lineHeight: 21 }}>These Terms are a binding agreement between you and ATOD Tech for your use of Nexora AI. By creating an account or using the Services you agree to them and to the Privacy Notice.</Text>
+            </View>
+            {NEXORA_TERMS.sections.map(sec => (
+              <View key={sec.n} onLayout={e => { offsets.current[sec.n] = e.nativeEvent.layout.y; }} style={{ marginTop: 22 }}>
+                <Text style={{ fontSize: 19, fontWeight: '800', color: '#0B1220' }}>{sec.n}. {sec.title}</Text>
+                {sec.blocks.map((b, i) => b.t === 'h' ? (
+                  <Text key={i} style={{ fontSize: 15, fontWeight: '700', color: '#0B1220', marginTop: 14 }}>{b.x}</Text>
+                ) : b.t === 'li' ? (
+                  <View key={i} style={{ flexDirection: 'row', gap: 10, marginTop: 8, paddingLeft: 4 }}>
+                    <Text style={{ fontSize: 15, lineHeight: 24, color: '#1E56A0' }}>{'\u2022'}</Text>
+                    <View style={{ flex: 1 }}>{legalText(b.x, '#334155')}</View>
+                  </View>
+                ) : (
+                  <View key={i} style={{ marginTop: 10 }}>{legalText(b.x, '#334155')}</View>
+                ))}
+              </View>
+            ))}
+            <Text style={{ fontSize: 12, color: '#8A97A6', marginTop: 28 }}>Questions about these Terms: use Contact support in the Nexora app, or write to ATOD Tech, Lagos, Nigeria.</Text>
+          </View>
+        </View>
+      </ScrollView>
+    </View>
+  );
+}
+
+// ---- Public AI shop page (web): <site>/?shop=<link> ----
+// Anyone can open it without signing in. Customers browse the business's verified products and chat with its Nexora.
+const PUBLIC_SHOP_SLUG: string | null = (() => {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') return null;
+  try { const s = new URLSearchParams(window.location.search).get('shop'); return s && /^[a-z0-9-]{3,40}$/i.test(s) ? s.toLowerCase() : null; } catch { return null; }
+})();
+const SHOP_BASE_URL = SITE_URL;
+async function shopCall(body: Record<string, unknown>): Promise<any> {
+  const res = await fetch(`${SUPABASE_FUNCTIONS_URL}/nexora-shop`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+    body: JSON.stringify(body),
+  });
+  const out = await res.json().catch(() => ({}));
+  if (!res.ok || out?.success === false) { const e: any = new Error(out?.message || `Request failed (${res.status})`); e.code = out?.code; throw e; }
+  return out;
+}
+type ShopCard = { id: string; name: string; subtitle: string; overview: string; price: string; image: string; features: string[] };
+type ShopData = { shop: { slug: string; name: string; industry: string; country: string; headline: string; about: string; whatsapp: string }; products: ShopCard[]; services: ShopCard[]; faqs: { q: string; a: string }[]; policies: { title: string; text: string }[] };
+function PublicShop({ slug }: { slug: string }) {
+  const { width } = useWindowDimensions();
+  const [data, setData] = useState<ShopData | null>(null);
+  const [error, setError] = useState('');
+  const [msgs, setMsgs] = useState<{ role: 'user' | 'assistant'; content: string }[]>([]);
+  const [draft, setDraft] = useState('');
+  const [sending, setSending] = useState(false);
+  const [askContact, setAskContact] = useState(false);
+  const [lead, setLead] = useState({ name: '', contact: '', message: '' });
+  const [leadBusy, setLeadBusy] = useState(false);
+  const [leadDone, setLeadDone] = useState('');
+  const [leadError, setLeadError] = useState('');
+  const [openFaq, setOpenFaq] = useState<number | null>(null);
+  const scrollRef = useRef<ScrollView>(null);
+  const chatY = useRef(0);
+  useEffect(() => {
+    shopCall({ action: 'get', slug }).then(d => { setData(d); try { document.title = `${d.shop.name} · Chat with us`; } catch { /* ignore */ } })
+      .catch((e: any) => setError(e?.code === 'not_found' ? "This shop link isn't active." : (e?.message || "Couldn't open this shop.")));
+  }, [slug]);
+  const send = async (text?: string) => {
+    const t = (text ?? draft).trim();
+    if (!t || sending) return;
+    const next = [...msgs, { role: 'user' as const, content: t }];
+    setMsgs(next); setDraft(''); setSending(true);
+    setTimeout(() => scrollRef.current?.scrollTo({ y: chatY.current, animated: true }), 50);
+    try {
+      const r = await shopCall({ action: 'chat', slug, messages: next });
+      setMsgs(m => [...m, { role: 'assistant', content: r.reply }]);
+      if (r.wants_contact) setAskContact(true);
+    } catch (e: any) {
+      setMsgs(m => [...m, { role: 'assistant', content: e?.message || 'Sorry, something went wrong. Please leave your details and we will reply.' }]);
+      setAskContact(true);
+    } finally { setSending(false); }
+  };
+  const ask = (q: string) => { send(q).catch(() => {}); };
+  const submitLead = async () => {
+    setLeadBusy(true); setLeadError('');
+    try {
+      const summary = lead.message || msgs.filter(m => m.role === 'user').map(m => m.content).slice(-3).join(' / ');
+      const r = await shopCall({ action: 'lead', slug, name: lead.name, contact: lead.contact, message: summary });
+      setLeadDone(r.message || 'Thanks! We will contact you soon.');
+    } catch (e: any) { setLeadError(e?.message || "Couldn't send your details."); }
+    finally { setLeadBusy(false); }
+  };
+  const wide = width >= 760;
+  const card = { backgroundColor: '#FFFFFF', borderRadius: 18, padding: 16, borderWidth: 1, borderColor: '#E6ECF3' } as const;
+  if (error) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, backgroundColor: '#F4F7FB' }}>
+        <Ionicons name="storefront-outline" size={36} color="#1E56A0" />
+        <Text style={{ fontSize: 18, fontWeight: '800', color: '#0B1220', marginTop: 10 }}>{error}</Text>
+        <Pressable onPress={() => Linking.openURL(SHOP_BASE_URL)} style={{ marginTop: 16 }}><Text style={{ color: '#1E56A0', fontWeight: '700' }}>Go to Nexora AI</Text></Pressable>
+      </View>
+    );
+  }
+  if (!data) return <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F4F7FB' }}><ActivityIndicator color="#1E56A0" /></View>;
+  const s = data.shop;
+  const starters = [
+    data.products[0] ? `How much is the ${data.products[0].name}?` : 'What do you sell?',
+    data.services[0] ? `Tell me about ${data.services[0].name}` : 'Do you deliver?',
+    'How can I order?',
+  ];
+  const itemCard = (it: ShopCard) => (
+    <View key={it.id} style={[card, { width: wide ? '48.5%' : '100%', padding: 0, overflow: 'hidden' }]}>
+      {!!it.image && <Image source={{ uri: it.image }} style={{ width: '100%', height: 150, backgroundColor: '#EEF2F7' }} resizeMode="cover" />}
+      <View style={{ padding: 14 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8 }}>
+          <Text style={{ flex: 1, fontSize: 15, fontWeight: '800', color: '#0B1220' }}>{it.name}</Text>
+          {!!it.price && <Text style={{ fontSize: 15, fontWeight: '800', color: '#1E56A0' }}>{it.price}</Text>}
+        </View>
+        {!!it.subtitle && <Text style={{ fontSize: 12, color: '#64748B', marginTop: 2 }}>{it.subtitle}</Text>}
+        {!!it.overview && <Text style={{ fontSize: 13, color: '#334155', marginTop: 6, lineHeight: 19 }} numberOfLines={3}>{it.overview}</Text>}
+        {it.features.length > 0 && <Text style={{ fontSize: 12, color: '#475569', marginTop: 6 }} numberOfLines={2}>{it.features.join(' · ')}</Text>}
+        <Pressable onPress={() => ask(`I'm interested in the ${it.name}. Is it available?`)} style={{ marginTop: 10, alignSelf: 'flex-start', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 14, backgroundColor: '#EAF1FB' }}>
+          <Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>Ask about this</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+  return (
+    <View style={{ flex: 1, backgroundColor: '#F4F7FB' }}>
+      <ScrollView ref={scrollRef} contentContainerStyle={{ paddingBottom: 40 }} keyboardShouldPersistTaps="handled">
+        <View style={{ backgroundColor: '#0B1220', paddingTop: 36, paddingBottom: 56, paddingHorizontal: 16 }}>
+          <View style={{ width: '100%', maxWidth: 820, alignSelf: 'center', flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+            <View style={{ width: 58, height: 58, borderRadius: 18, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}>
+              <Text style={{ color: '#FFFFFF', fontSize: 26, fontWeight: '800' }}>{s.name.charAt(0).toUpperCase()}</Text>
+            </View>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={{ color: '#FFFFFF', fontSize: 22, fontWeight: '800' }}>{s.name}</Text>
+              {!!(s.industry || s.country) && <Text style={{ color: '#9FB0C6', fontSize: 13, marginTop: 2 }}>{[s.industry, s.country].filter(Boolean).join(' · ')}</Text>}
+            </View>
+          </View>
+          <View style={{ width: '100%', maxWidth: 820, alignSelf: 'center' }}>
+            {!!s.headline && <Text style={{ color: '#E2E8F0', fontSize: 17, fontWeight: '700', marginTop: 16 }}>{s.headline}</Text>}
+            {!!s.about && <Text style={{ color: '#B6C3D4', fontSize: 14, marginTop: 6, lineHeight: 21 }}>{s.about}</Text>}
+          </View>
+        </View>
+
+        <View style={{ width: '100%', maxWidth: 820, alignSelf: 'center', paddingHorizontal: 16, marginTop: -36, gap: 16 }}>
+          <View style={card} onLayout={e => { chatY.current = Math.max(0, e.nativeEvent.layout.y - 10); }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: '#22C55E' }} />
+              <Text style={{ fontSize: 16, fontWeight: '800', color: '#0B1220' }}>Chat with us</Text>
+              <Text style={{ fontSize: 12, color: '#64748B' }}>· replies instantly, any time</Text>
+            </View>
+            <Text style={{ fontSize: 12, color: '#64748B', marginTop: 4 }}>You're chatting with {s.name}'s AI assistant. Ask for a person at any time and the team will contact you.</Text>
+            {msgs.length === 0 && (
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+                {starters.map(q => (
+                  <Pressable key={q} onPress={() => ask(q)} style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16, backgroundColor: '#F1F5F9' }}>
+                    <Text style={{ fontSize: 13, color: '#1E293B' }}>{q}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+            {msgs.map((m, i) => (
+              <View key={i} style={{ marginTop: 10, alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '85%', paddingHorizontal: 12, paddingVertical: 9, borderRadius: 16, backgroundColor: m.role === 'user' ? '#1E56A0' : '#F1F5F9' }}>
+                <Text style={{ fontSize: 14, lineHeight: 20, color: m.role === 'user' ? '#FFFFFF' : '#0B1220' }}>{m.content}</Text>
+              </View>
+            ))}
+            {sending && <View style={{ marginTop: 10, flexDirection: 'row', gap: 6, alignItems: 'center' }}><ActivityIndicator size="small" color="#1E56A0" /><Text style={{ fontSize: 12, color: '#64748B' }}>Typing…</Text></View>}
+            {(askContact || msgs.length >= 4) && !leadDone && (
+              <View style={{ marginTop: 14, padding: 12, borderRadius: 14, backgroundColor: '#F2F8FD', borderWidth: 1, borderColor: '#C9DDF5' }}>
+                <Text style={{ fontSize: 14, fontWeight: '700', color: '#0B1220' }}>Want {s.name} to contact you?</Text>
+                <TextInput value={lead.name} onChangeText={v => setLead(l => ({ ...l, name: v }))} placeholder="Your name" placeholderTextColor="#94A3B8" maxLength={80} style={{ marginTop: 8, borderWidth: 1, borderColor: '#D5DEE8', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, fontSize: 14, backgroundColor: '#FFF', color: '#0B1220' }} />
+                <TextInput value={lead.contact} onChangeText={v => setLead(l => ({ ...l, contact: v }))} placeholder="Phone, WhatsApp or email" placeholderTextColor="#94A3B8" maxLength={80} autoCapitalize="none" style={{ marginTop: 8, borderWidth: 1, borderColor: '#D5DEE8', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, fontSize: 14, backgroundColor: '#FFF', color: '#0B1220' }} />
+                {!!leadError && <Text style={{ color: '#C2410C', fontSize: 13, marginTop: 6 }}>{leadError}</Text>}
+                <Pressable disabled={leadBusy} onPress={submitLead} style={{ marginTop: 10, height: 42, borderRadius: 12, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}>
+                  {leadBusy ? <ActivityIndicator color="#FFF" /> : <Text style={{ color: '#FFF', fontWeight: '700' }}>Send my details</Text>}
+                </Pressable>
+                <Text style={{ fontSize: 11, color: '#64748B', marginTop: 6 }}>Only {s.name} sees your details.</Text>
+              </View>
+            )}
+            {!!leadDone && <View style={{ marginTop: 12, padding: 12, borderRadius: 14, backgroundColor: '#E9F8EE' }}><Text style={{ color: '#15803D', fontWeight: '700' }}>{leadDone}</Text></View>}
+            <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 8, marginTop: 14 }}>
+              <TextInput value={draft} onChangeText={setDraft} onSubmitEditing={() => send()} placeholder="Type your question…" placeholderTextColor="#94A3B8" maxLength={600} returnKeyType="send"
+                style={{ flex: 1, minWidth: 0, borderRadius: 20, backgroundColor: '#F1F5F9', paddingHorizontal: 14, paddingVertical: 10, fontSize: 14, color: '#0B1220' }} />
+              <Pressable disabled={!draft.trim() || sending} onPress={() => send()} accessibilityLabel="Send" style={{ width: 42, height: 42, flexShrink: 0, borderRadius: 21, alignItems: 'center', justifyContent: 'center', backgroundColor: draft.trim() ? '#1E56A0' : '#CBD5E1' }}>
+                <Ionicons name="send" size={18} color="#FFFFFF" />
+              </Pressable>
+            </View>
+            {!!s.whatsapp && (
+              <Pressable onPress={() => Linking.openURL(`https://wa.me/${s.whatsapp.replace(/^\+/, '')}`)} style={{ marginTop: 10, flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start' }}>
+                <Ionicons name="logo-whatsapp" size={16} color="#16A34A" />
+                <Text style={{ color: '#16A34A', fontWeight: '700', fontSize: 13 }}>Prefer WhatsApp? Message us</Text>
+              </Pressable>
+            )}
+          </View>
+
+          {data.products.length > 0 && (
+            <View>
+              <Text style={{ fontSize: 18, fontWeight: '800', color: '#0B1220', marginBottom: 10 }}>Products</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>{data.products.map(itemCard)}</View>
+            </View>
+          )}
+          {data.services.length > 0 && (
+            <View>
+              <Text style={{ fontSize: 18, fontWeight: '800', color: '#0B1220', marginBottom: 10 }}>Services</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>{data.services.map(itemCard)}</View>
+            </View>
+          )}
+          {data.faqs.length > 0 && (
+            <View style={card}>
+              <Text style={{ fontSize: 18, fontWeight: '800', color: '#0B1220', marginBottom: 4 }}>Questions customers ask</Text>
+              {data.faqs.map((f, i) => (
+                <Pressable key={i} onPress={() => setOpenFaq(openFaq === i ? null : i)} style={{ paddingVertical: 12, borderTopWidth: i ? 1 : 0, borderTopColor: '#EEF2F7' }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <Text style={{ flex: 1, fontSize: 14, fontWeight: '700', color: '#0B1220' }}>{f.q}</Text>
+                    <Ionicons name={openFaq === i ? 'remove' : 'add'} size={18} color="#64748B" />
+                  </View>
+                  {openFaq === i && <Text style={{ fontSize: 14, color: '#334155', marginTop: 6, lineHeight: 20 }}>{f.a}</Text>}
+                </Pressable>
+              ))}
+            </View>
+          )}
+          {data.policies.length > 0 && (
+            <View style={card}>
+              <Text style={{ fontSize: 18, fontWeight: '800', color: '#0B1220', marginBottom: 4 }}>Good to know</Text>
+              {data.policies.map((p, i) => (
+                <View key={i} style={{ paddingVertical: 10, borderTopWidth: i ? 1 : 0, borderTopColor: '#EEF2F7' }}>
+                  <Text style={{ fontSize: 14, fontWeight: '700', color: '#0B1220' }}>{p.title}</Text>
+                  {!!p.text && <Text style={{ fontSize: 13, color: '#475569', marginTop: 3, lineHeight: 19 }}>{p.text}</Text>}
+                </View>
+              ))}
+            </View>
+          )}
+          <Pressable onPress={() => Linking.openURL(SHOP_BASE_URL)} style={{ alignItems: 'center', paddingVertical: 10 }}>
+            <Text style={{ fontSize: 12, color: '#64748B' }}>Powered by <Text style={{ fontWeight: '800', color: '#1E56A0' }}>Nexora AI</Text> · Get an AI assistant for your business</Text>
+          </Pressable>
+        </View>
+      </ScrollView>
+    </View>
+  );
+}
+
+// Each signed-in account gets a fresh copy of the app's memory. Signing out (or a different account signing in)
+// rebuilds the screens from scratch, so nothing from the previous account (insights, briefing, chats, leads…)
+// can show for the next one.
+let nextStartScreen: Screen | null = null;
+let lastSignedInUser: string | null = null;
+function useAccountEpoch() {
+  const [epoch, setEpoch] = useState(0);
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => { lastSignedInUser = data.session?.user?.id ?? null; }).catch(() => {});
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      const id = session?.user?.id ?? null;
+      if (event === 'SIGNED_OUT') {
+        if (lastSignedInUser) { lastSignedInUser = null; nextStartScreen = 'login'; setEpoch(e => e + 1); }
+      } else if (id && lastSignedInUser && id !== lastSignedInUser) {
+        lastSignedInUser = id; nextStartScreen = 'main'; setEpoch(e => e + 1);
+      } else if (id) lastSignedInUser = id;
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+  return epoch;
+}
+export default function HomeScreen() {
+  const { width: viewW, height: viewH } = useWindowDimensions();
+  const shell = useWebShell();
+  const epoch = useAccountEpoch();
+  if (PUBLIC_SHOP_SLUG) return <PublicShop slug={PUBLIC_SHOP_SLUG} />;
+  if (PUBLIC_PAGE === 'terms') return <LegalTermsPage onBack={IS_WEB && typeof window !== 'undefined' && window.history.length > 1 ? () => window.history.back() : undefined} />;
+  const app = (<><HomeScreenInner key={`account-${epoch}`} /><ToastHost /><DrawerHost /></>);
+  if (!IS_WEB) return app;
+  // Web layout. Signed in on a desktop-sized window: a sidebar plus full-width working screens (Home and other
+  // phone-design screens stay a phone-shaped card). Before signing in: the phone card between two feature panels.
+  // The tree below keeps the same shape in every mode, so switching layouts never restarts the app.
+  const desktop = shell.signedIn && viewW >= 1000;
+  const wide = shell.wide && (desktop || viewW >= 700);
+  const sidesPossible = !desktop && viewW >= 900;
+  const margin = desktop || sidesPossible ? 24 : 0;
+  const areaW = desktop ? viewW - WEB_SIDEBAR_W : viewW;
+  const phoneWidth = Math.min(480, areaW, Math.floor((viewH - margin) * FIGMA_WIDTH / FIGMA_HEIGHT));
+  const phoneHeight = Math.min(viewH - margin, Math.ceil(phoneWidth * FIGMA_HEIGHT / FIGMA_WIDTH));
+  const showSides = !wide && sidesPossible && viewW >= phoneWidth + 2 * 280;
+  const authPage = wide && !shell.signedIn;   // the sign-in web page fills the whole window
+  // Phone browsers (and narrow windows): the app fills the whole screen edge to edge, like the installed app.
+  const phoneBrowser = !desktop && viewW < 700;
+  const cardStyle: any = authPage
+    ? { flex: 1, alignSelf: 'stretch', width: '100%', backgroundColor: '#F4F7FB', overflow: 'hidden' }
+    : phoneBrowser
+    ? { flex: 1, alignSelf: 'stretch', width: '100%', height: viewH, backgroundColor: '#FFFFFF', overflow: 'hidden' }
+    : wide
+    ? { flex: 1, alignSelf: 'stretch', width: '100%', maxWidth: desktop ? 1080 : 1100, marginHorizontal: 'auto', backgroundColor: '#FFFFFF', overflow: 'hidden' }
+    : { width: phoneWidth, height: phoneHeight, borderRadius: margin ? 18 : 0, backgroundColor: '#FFFFFF', overflow: 'hidden' };
+  return (
+    <View style={{ flex: 1, backgroundColor: '#0B1220', flexDirection: 'row' }}>
+      <Svg style={{ position: 'absolute', top: 0, left: 0 }} width={viewW} height={viewH} pointerEvents="none">
+        <Defs>
+          <RadialGradient id="nxGlowA" cx="18%" cy="20%" r="55%"><Stop offset="0" stopColor="#1E56A0" stopOpacity="0.45" /><Stop offset="1" stopColor="#0B1220" stopOpacity="0" /></RadialGradient>
+          <RadialGradient id="nxGlowB" cx="85%" cy="85%" r="50%"><Stop offset="0" stopColor="#1E9EC5" stopOpacity="0.25" /><Stop offset="1" stopColor="#0B1220" stopOpacity="0" /></RadialGradient>
+        </Defs>
+        <Rect x="0" y="0" width={viewW} height={viewH} fill="url(#nxGlowA)" />
+        <Rect x="0" y="0" width={viewW} height={viewH} fill="url(#nxGlowB)" />
+      </Svg>
+      {desktop && <WebSidebar active={shell.active} />}
+      {showSides && <WebSidePanel side="left" />}
+      <View style={{ flex: 1, alignItems: phoneBrowser ? 'stretch' : 'center', justifyContent: 'center', backgroundColor: wide || phoneBrowser ? '#EEF2F7' : 'transparent' }}>
+        <View style={cardStyle}>{app}</View>
+      </View>
+      {showSides && <WebSidePanel side="right" />}
+    </View>
+  );
+}
+// ---- Business Insights dashboard: charts drawn with react-native-svg (phones and web) ----
+// Colours: Nexora blue first, then a fixed order checked for colour-blind separation. Text never uses series colours.
+const IN_C = ['#1E56A0', '#E8973A', '#2A9D8F', '#9B5DE5', '#C9A227', '#8A97A6'];
+const IN_INK = '#0B1220', IN_MUTED = '#5C6B7A', IN_FAINT = '#8A97A6', IN_GRID = '#E6ECF3';
+const IN_STATUS_COLOR: Record<string, string> = { pending: '#E8973A', processing: '#C9A227', shipped: '#1E56A0', delivered: '#2A9D8F', cancelled: '#8A97A6' };
+const IN_GOOD = '#15803D', IN_WARN = '#B45309', IN_BAD = '#B42318';
+const IN_FONT = Platform.OS === 'web' ? 'system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif' : undefined;
+function inCompact(v: number): string {
+  const a = Math.abs(v);
+  if (a >= 1e9) return `${(v / 1e9).toFixed(a >= 1e10 ? 0 : 1)}B`;
+  if (a >= 1e6) return `${(v / 1e6).toFixed(a >= 1e7 ? 0 : 1)}M`;
+  if (a >= 1e4) return `${Math.round(v / 1e3)}k`;
+  if (a >= 1e3) return `${(v / 1e3).toFixed(1)}k`;
+  return `${Math.round(v)}`;
+}
+const IN_SYMBOL: Record<string, string> = { NGN: '₦', USD: '$', GBP: '£', EUR: '€', GHS: 'GH₵', KES: 'KSh ', ZAR: 'R', INR: '₹', AED: 'AED ', CAD: 'CA$', EGP: 'E£', RWF: 'RF ', UGX: 'USh ', TZS: 'TSh ', XAF: 'FCFA ', XOF: 'CFA ' };
+function inMoney(v: number | null | undefined, cur: string, compact = false): string {
+  if (v === null || v === undefined || !isFinite(v)) return '—';
+  const sym = IN_SYMBOL[cur] ?? '';
+  return `${v < 0 ? '-' : ''}${sym}${compact ? inCompact(Math.abs(v)) : Math.round(Math.abs(v)).toLocaleString()}`;
+}
+function inShortDate(iso: string): string {
+  const d = new Date(`${iso}T12:00:00Z`);
+  return `${d.getUTCDate()} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getUTCMonth()]}`;
+}
+function inNiceMax(v: number): number {
+  if (v <= 0) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  const n = v / p;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * p;
+}
+
+function InCard({ title, subtitle, right, children, style }: { title: string; subtitle?: string; right?: React.ReactNode; children: React.ReactNode; style?: any }) {
+  return (
+    <View style={[{ backgroundColor: '#FFFFFF', borderRadius: 18, padding: 18, borderWidth: 1, borderColor: IN_GRID }, style]}>
+      <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginBottom: 12 }}>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={{ fontSize: 15, fontWeight: '800', color: IN_INK }}>{title}</Text>
+          {!!subtitle && <Text style={{ fontSize: 12, color: IN_MUTED, marginTop: 2, lineHeight: 17 }}>{subtitle}</Text>}
+        </View>
+        {right}
+      </View>
+      {children}
+    </View>
+  );
+}
+
+function InSparkline({ values, width = 96, height = 30, color = IN_C[0] }: { values: number[]; width?: number; height?: number; color?: string }) {
+  if (!values?.length) return null;
+  const max = Math.max(1, ...values), step = width / Math.max(1, values.length - 1);
+  const pts = values.map((v, i) => [i * step, height - 3 - (v / max) * (height - 6)]);
+  const d = pts.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ');
+  const last = pts[pts.length - 1];
+  return (
+    <Svg width={width} height={height}>
+      <Path d={`${d} L${width},${height} L0,${height} Z`} fill={color} opacity={0.1} />
+      <Path d={d} stroke={color} strokeWidth={2} fill="none" strokeLinejoin="round" strokeLinecap="round" />
+      <Circle cx={last[0]} cy={last[1]} r={3} fill={color} stroke="#FFFFFF" strokeWidth={1.5} />
+    </Svg>
+  );
+}
+
+function InChange({ value, suffix = 'vs previous 30 days' }: { value: number | null | undefined; suffix?: string }) {
+  if (value === null || value === undefined) return <Text style={{ fontSize: 11.5, color: IN_FAINT }}>No earlier data to compare</Text>;
+  const up = value >= 0;
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+      <Ionicons name={up ? 'arrow-up' : 'arrow-down'} size={12} color={up ? IN_GOOD : IN_BAD} />
+      <Text style={{ fontSize: 11.5, fontWeight: '700', color: up ? IN_GOOD : IN_BAD }}>{Math.abs(value)}%</Text>
+      <Text style={{ fontSize: 11.5, color: IN_FAINT }}>{suffix}</Text>
+    </View>
+  );
+}
+
+// Revenue per day: this 30 days (blue area) against the 30 days before (grey dashes). Tap a day for its numbers.
+function InLineCompare({ daily, width, cur }: { daily: { day: string; revenue: number; prev: number; orders: number }[]; width: number; cur: string }) {
+  const [sel, setSel] = useState<number | null>(null);
+  const h = 210, padL = 46, padR = 10, padT = 10, padB = 26;
+  const w = Math.max(240, width), iw = w - padL - padR, ih = h - padT - padB;
+  const max = inNiceMax(Math.max(1, ...daily.map(d => Math.max(d.revenue, d.prev))));
+  const x = (i: number) => padL + (i / Math.max(1, daily.length - 1)) * iw;
+  const y = (v: number) => padT + ih - (v / max) * ih;
+  const line = (k: 'revenue' | 'prev') => daily.map((d, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(d[k]).toFixed(1)}`).join(' ');
+  const s = sel !== null ? daily[sel] : null;
+  return (
+    <View>
+      <View style={{ flexDirection: 'row', gap: 16, marginBottom: 8, flexWrap: 'wrap' }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}><View style={{ width: 14, height: 3, borderRadius: 2, backgroundColor: IN_C[0] }} /><Text style={{ fontSize: 12, color: IN_MUTED }}>Last 30 days</Text></View>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}><View style={{ width: 14, height: 0, borderTopWidth: 2, borderStyle: 'dashed', borderColor: IN_FAINT }} /><Text style={{ fontSize: 12, color: IN_MUTED }}>The 30 days before</Text></View>
+      </View>
+      <View>
+        <Svg width={w} height={h}>
+          <Defs>
+            <LinearGradient id="inArea" x1="0" y1="0" x2="0" y2="1">
+              <Stop offset="0" stopColor={IN_C[0]} stopOpacity={0.22} />
+              <Stop offset="1" stopColor={IN_C[0]} stopOpacity={0} />
+            </LinearGradient>
+          </Defs>
+          {[0, 0.5, 1].map(f => (
+            <G key={f}>
+              <Line x1={padL} x2={w - padR} y1={y(max * f)} y2={y(max * f)} stroke={IN_GRID} strokeWidth={1} />
+              <SvgText x={padL - 6} y={y(max * f) + 4} fontSize={10} fontFamily={IN_FONT} fill={IN_FAINT} textAnchor="end">{inMoney(max * f, cur, true)}</SvgText>
+            </G>
+          ))}
+          {[0, 10, 20, 29].map(i => daily[i] && <SvgText key={i} x={x(i)} y={h - 8} fontSize={10} fontFamily={IN_FONT} fill={IN_FAINT} textAnchor={i === 0 ? 'start' : i === 29 ? 'end' : 'middle'}>{inShortDate(daily[i].day)}</SvgText>)}
+          <Path d={line('prev')} stroke={IN_FAINT} strokeWidth={1.5} strokeDasharray="4 4" fill="none" />
+          <Path d={`${line('revenue')} L${x(daily.length - 1)},${y(0)} L${x(0)},${y(0)} Z`} fill="url(#inArea)" />
+          <Path d={line('revenue')} stroke={IN_C[0]} strokeWidth={2} fill="none" strokeLinejoin="round" />
+          {sel !== null && s && (
+            <G>
+              <Line x1={x(sel)} x2={x(sel)} y1={padT} y2={padT + ih} stroke={IN_INK} strokeOpacity={0.25} strokeWidth={1} />
+              <Circle cx={x(sel)} cy={y(s.revenue)} r={5} fill={IN_C[0]} stroke="#FFFFFF" strokeWidth={2} />
+            </G>
+          )}
+        </Svg>
+        {/* Tap / hover targets, one per day, wider than the line itself */}
+        <View style={{ position: 'absolute', left: padL - iw / 58, top: 0, width: iw + iw / 29, height: h - padB, flexDirection: 'row' }}>
+          {daily.map((_, i) => (
+            <Pressable key={i} onPress={() => setSel(sel === i ? null : i)} onHoverIn={() => setSel(i)} accessibilityLabel={`${daily[i].day}: ${inMoney(daily[i].revenue, cur)}`} style={{ flex: 1 }} />
+          ))}
+        </View>
+        {s && sel !== null && (
+          <View pointerEvents="none" style={{ position: 'absolute', top: 4, left: Math.min(Math.max(0, x(sel) - 80), w - 170), width: 160, backgroundColor: IN_INK, borderRadius: 10, padding: 10 }}>
+            <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 12 }}>{inShortDate(s.day)}</Text>
+            <Text style={{ color: '#D7E2F0', fontSize: 12, marginTop: 4 }}>Revenue: <Text style={{ color: '#FFFFFF', fontWeight: '700' }}>{inMoney(s.revenue, cur)}</Text></Text>
+            <Text style={{ color: '#D7E2F0', fontSize: 12 }}>Orders: <Text style={{ color: '#FFFFFF', fontWeight: '700' }}>{s.orders}</Text></Text>
+            <Text style={{ color: '#9FB0C6', fontSize: 11, marginTop: 2 }}>Same day before: {inMoney(s.prev, cur)}</Text>
+          </View>
+        )}
+      </View>
+    </View>
+  );
+}
+
+// Weekly revenue for 12 weeks plus Nexora's 4-week forecast (lighter, dashed). Tap a bar for its value.
+function InBarsForecast({ weekly, forecast, width, cur }: { weekly: { start: string; revenue: number }[]; forecast: number[]; width: number; cur: string }) {
+  const [sel, setSel] = useState<number | null>(null);
+  const h = 200, padL = 46, padB = 26, padT = 18;
+  const vals = [...weekly.map(w => w.revenue), ...forecast];
+  const w = Math.max(240, width), iw = w - padL - 6, ih = h - padT - padB;
+  const max = inNiceMax(Math.max(1, ...vals));
+  const slot = iw / vals.length, bw = Math.max(6, Math.min(26, slot - 4));
+  const y = (v: number) => padT + ih - (v / max) * ih;
+  const bar = (i: number, v: number) => {
+    const bx = padL + i * slot + (slot - bw) / 2, by = y(v), bh = Math.max(0, padT + ih - by), r = Math.min(4, bw / 2, bh);
+    return `M${bx},${padT + ih} L${bx},${by + r} Q${bx},${by} ${bx + r},${by} L${bx + bw - r},${by} Q${bx + bw},${by} ${bx + bw},${by + r} L${bx + bw},${padT + ih} Z`;
+  };
+  return (
+    <View>
+      <View style={{ flexDirection: 'row', gap: 16, marginBottom: 8, flexWrap: 'wrap' }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}><View style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: IN_C[0] }} /><Text style={{ fontSize: 12, color: IN_MUTED }}>Actual</Text></View>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}><View style={{ width: 10, height: 10, borderRadius: 3, borderWidth: 1.5, borderStyle: 'dashed', borderColor: IN_C[0], backgroundColor: 'rgba(30,86,160,0.15)' }} /><Text style={{ fontSize: 12, color: IN_MUTED }}>Forecast</Text></View>
+      </View>
+      <View>
+        <Svg width={w} height={h}>
+          {[0, 0.5, 1].map(f => (
+            <G key={f}>
+              <Line x1={padL} x2={w} y1={y(max * f)} y2={y(max * f)} stroke={IN_GRID} strokeWidth={1} />
+              <SvgText x={padL - 6} y={y(max * f) + 4} fontSize={10} fontFamily={IN_FONT} fill={IN_FAINT} textAnchor="end">{inMoney(max * f, cur, true)}</SvgText>
+            </G>
+          ))}
+          {vals.map((v, i) => {
+            const fc = i >= weekly.length;
+            return <Path key={i} d={bar(i, v)} fill={IN_C[0]} fillOpacity={fc ? 0.15 : sel === null || sel === i ? 1 : 0.45} stroke={fc ? IN_C[0] : 'none'} strokeWidth={fc ? 1.5 : 0} strokeDasharray={fc ? '3 3' : undefined} />;
+          })}
+          <Line x1={padL + weekly.length * slot} x2={padL + weekly.length * slot} y1={padT - 8} y2={padT + ih} stroke={IN_FAINT} strokeDasharray="2 3" />
+          <SvgText x={padL + weekly.length * slot + 4} y={padT - 6} fontSize={10} fontFamily={IN_FONT} fill={IN_FAINT}>Next 4 weeks</SvgText>
+          {weekly[0] && <SvgText x={padL} y={h - 8} fontSize={10} fontFamily={IN_FONT} fill={IN_FAINT}>{inShortDate(weekly[0].start)}</SvgText>}
+          <SvgText x={padL + weekly.length * slot - 2} y={h - 8} fontSize={10} fontFamily={IN_FONT} fill={IN_FAINT} textAnchor="end">This week</SvgText>
+        </Svg>
+        <View style={{ position: 'absolute', left: padL, top: 0, width: iw, height: h - padB, flexDirection: 'row' }}>
+          {vals.map((v, i) => <Pressable key={i} onPress={() => setSel(sel === i ? null : i)} onHoverIn={() => setSel(i)} onHoverOut={() => setSel(null)} style={{ flex: 1 }} accessibilityLabel={`${i >= weekly.length ? 'Forecast' : 'Week'} ${inMoney(v, cur)}`} />)}
+        </View>
+        {sel !== null && (
+          <View pointerEvents="none" style={{ position: 'absolute', top: 0, left: Math.min(Math.max(0, padL + sel * slot - 70), w - 150), width: 140, backgroundColor: IN_INK, borderRadius: 10, padding: 9 }}>
+            <Text style={{ color: '#9FB0C6', fontSize: 11 }}>{sel >= weekly.length ? `Forecast · week +${sel - weekly.length + 1}` : `Week of ${inShortDate(weekly[sel].start)}`}</Text>
+            <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 14, marginTop: 2 }}>{inMoney(vals[sel], cur)}</Text>
+          </View>
+        )}
+      </View>
+    </View>
+  );
+}
+
+// Donut with a legend that names every slice with its count and share (identity is never colour alone).
+function InDonut({ items, size = 150, center, colorFor }: { items: { label: string; value: number }[]; size?: number; center?: string; colorFor?: (label: string, i: number) => string }) {
+  const total = items.reduce((a, b) => a + b.value, 0);
+  const r = size / 2 - 12, cx = size / 2, cy = size / 2, sw = 18;
+  let a0 = -Math.PI / 2;
+  const arcs = total > 0 ? items.map((it, i) => {
+    const frac = it.value / total, a1 = a0 + frac * Math.PI * 2;
+    const gap = items.length > 1 ? 0.025 : 0;
+    const s = a0 + gap, e = Math.max(s, a1 - gap);
+    const large = e - s > Math.PI ? 1 : 0;
+    const d = frac >= 0.999 ? '' : `M${cx + r * Math.cos(s)},${cy + r * Math.sin(s)} A${r},${r} 0 ${large} 1 ${cx + r * Math.cos(e)},${cy + r * Math.sin(e)}`;
+    a0 = a1;
+    return { d, color: colorFor ? colorFor(it.label, i) : IN_C[Math.min(i, IN_C.length - 1)], full: frac >= 0.999 };
+  }) : [];
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+      <View>
+        <Svg width={size} height={size}>
+          <Circle cx={cx} cy={cy} r={r} stroke={IN_GRID} strokeWidth={sw} fill="none" />
+          {arcs.map((a, i) => a.full ? <Circle key={i} cx={cx} cy={cy} r={r} stroke={a.color} strokeWidth={sw} fill="none" /> : <Path key={i} d={a.d} stroke={a.color} strokeWidth={sw} fill="none" />)}
+        </Svg>
+        <View pointerEvents="none" style={{ position: 'absolute', left: 0, top: 0, width: size, height: size, alignItems: 'center', justifyContent: 'center' }}>
+          <Text style={{ fontSize: 20, fontWeight: '800', color: IN_INK }}>{total}</Text>
+          {!!center && <Text style={{ fontSize: 11, color: IN_MUTED }}>{center}</Text>}
+        </View>
+      </View>
+      <View style={{ flex: 1, minWidth: 130, gap: 8 }}>
+        {items.length === 0 && <Text style={{ fontSize: 12, color: IN_FAINT }}>Nothing here yet.</Text>}
+        {items.map((it, i) => (
+          <View key={it.label} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <View style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: colorFor ? colorFor(it.label, i) : IN_C[Math.min(i, IN_C.length - 1)] }} />
+            <Text style={{ flex: 1, fontSize: 12.5, color: IN_INK, textTransform: 'capitalize' }} numberOfLines={1}>{it.label}</Text>
+            <Text style={{ fontSize: 12.5, fontWeight: '700', color: IN_INK }}>{it.value}</Text>
+            <Text style={{ fontSize: 11.5, color: IN_FAINT, width: 38, textAlign: 'right' }}>{total ? Math.round((it.value / total) * 100) : 0}%</Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+// Ranked bars with the item's own picture (products) or an icon.
+function InRankBars({ items, fmt, icon = 'cube-outline' }: { items: { label: string; value: number; sub?: string; image?: string }[]; fmt: (v: number) => string; icon?: string }) {
+  const max = Math.max(1, ...items.map(i => i.value));
+  return (
+    <View style={{ gap: 12 }}>
+      {items.length === 0 && <Text style={{ fontSize: 12.5, color: IN_FAINT }}>No sales recorded yet. Add orders (or let Nexora log them from chats) and your best sellers appear here.</Text>}
+      {items.map((it, i) => (
+        <View key={`${it.label}-${i}`} style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+          {it.image !== undefined && (
+            it.image
+              ? <Image source={{ uri: it.image }} style={{ width: 44, height: 44, borderRadius: 10, backgroundColor: '#F1F5F9' }} resizeMode="cover" accessibilityLabel={it.label} />
+              : <View style={{ width: 44, height: 44, borderRadius: 10, backgroundColor: '#EEF3F9', alignItems: 'center', justifyContent: 'center' }}><Ionicons name={icon as any} size={20} color={IN_C[0]} /></View>
+          )}
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8 }}>
+              <Text style={{ flex: 1, fontSize: 13, fontWeight: '700', color: IN_INK }} numberOfLines={1}>{it.label}</Text>
+              <Text style={{ fontSize: 13, fontWeight: '800', color: IN_INK }}>{fmt(it.value)}</Text>
+            </View>
+            <View style={{ height: 8, borderRadius: 4, backgroundColor: '#EEF3F9', marginTop: 6, overflow: 'hidden' }}>
+              <View style={{ width: `${Math.max(3, (it.value / max) * 100)}%`, height: 8, borderRadius: 4, backgroundColor: i === 0 ? IN_C[0] : '#6F95C8' }} />
+            </View>
+            {!!it.sub && <Text style={{ fontSize: 11.5, color: IN_FAINT, marginTop: 4 }}>{it.sub}</Text>}
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+// When customers buy: weekday x time of day, darker = more orders. Tap a cell for its count.
+function InHeatmap({ grid }: { grid: number[][] }) {
+  const [sel, setSel] = useState<[number, number] | null>(null);
+  const max = Math.max(1, ...grid.flat());
+  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], blocks = ['12a', '4a', '8a', '12p', '4p', '8p'];
+  let best: [number, number, number] = [0, 0, -1];
+  grid.forEach((row, d) => row.forEach((v, b) => { if (v > best[2]) best = [d, b, v]; }));
+  return (
+    <View>
+      <View style={{ flexDirection: 'row', marginLeft: 38, marginBottom: 4 }}>
+        {blocks.map(b => <Text key={b} style={{ flex: 1, fontSize: 10, color: IN_FAINT, textAlign: 'center' }}>{b}</Text>)}
+      </View>
+      {grid.map((row, d) => (
+        <View key={d} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+          <Text style={{ width: 38, fontSize: 11, color: IN_MUTED }}>{days[d]}</Text>
+          {row.map((v, b) => {
+            const on = sel && sel[0] === d && sel[1] === b;
+            return (
+              <Pressable key={b} onPress={() => setSel(on ? null : [d, b])} onHoverIn={() => setSel([d, b])} accessibilityLabel={`${days[d]} ${blocks[b]}: ${v} orders`}
+                style={{ flex: 1, height: 24, marginHorizontal: 2, borderRadius: 5, backgroundColor: v === 0 ? '#F1F5F9' : IN_C[0], opacity: v === 0 ? 1 : 0.18 + 0.82 * (v / max), borderWidth: on ? 2 : 0, borderColor: IN_INK }} />
+            );
+          })}
+        </View>
+      ))}
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+        <Ionicons name="time-outline" size={14} color={IN_MUTED} />
+        <Text style={{ fontSize: 12, color: IN_MUTED, flex: 1 }}>
+          {sel ? `${days[sel[0]]}, ${blocks[sel[1]]}–${blocks[(sel[1] + 1) % 6]}: ${grid[sel[0]][sel[1]]} order${grid[sel[0]][sel[1]] === 1 ? '' : 's'} in 90 days`
+            : best[2] > 0 ? `Busiest: ${days[best[0]]} ${blocks[best[1]]}–${blocks[(best[1] + 1) % 6]}. Post offers and be online just before then.` : 'Not enough orders yet to show a pattern.'}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+// Contacts -> customers -> repeat buyers, with the share that moves on at each step.
+function InFunnel({ steps }: { steps: { label: string; value: number }[] }) {
+  const top = Math.max(1, steps[0]?.value ?? 1);
+  return (
+    <View style={{ gap: 7 }}>
+      {steps.map((s, i) => {
+        const prev = i > 0 ? steps[i - 1].value : 0;
+        return (
+          <View key={s.label} style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <Text style={{ width: 74, fontSize: 12, color: IN_MUTED }}>{s.label}</Text>
+            <View style={{ flex: 1, alignItems: 'center' }}>
+              <View style={{ width: `${Math.max(8, (s.value / top) * 100)}%`, height: 26, borderRadius: 6, backgroundColor: IN_C[0], opacity: 1 - i * 0.14, justifyContent: 'center', alignItems: 'center' }}>
+                <Text style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '800' }}>{s.value}</Text>
+              </View>
+            </View>
+            <Text style={{ width: 44, fontSize: 11.5, color: IN_FAINT, textAlign: 'right' }}>{i > 0 && prev > 0 ? `${Math.round((s.value / prev) * 100)}%` : ''}</Text>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+// Business health: a half-circle gauge out of 100, with a word and an icon (never colour alone).
+function InGauge({ score, parts }: { score: number; parts: { label: string; value: number }[] }) {
+  const size = 190, r = 74, cx = size / 2, cy = 92, sw = 14;
+  const s = Math.max(0, Math.min(100, score));
+  const a = Math.PI - Math.PI * (s / 100);
+  const ex = cx + r * Math.cos(a), ey = cy - r * Math.sin(a);
+  const [color, word, icon] = s >= 70 ? [IN_GOOD, 'Healthy', 'checkmark-circle'] : s >= 45 ? [IN_WARN, 'Needs attention', 'alert-circle'] : [IN_BAD, 'At risk', 'warning'];
+  return (
+    <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 16 }}>
+      <View style={{ width: size, alignItems: 'center' }}>
+        <Svg width={size} height={110}>
+          <Path d={`M${cx - r},${cy} A${r},${r} 0 0 1 ${cx + r},${cy}`} stroke={IN_GRID} strokeWidth={sw} fill="none" strokeLinecap="round" />
+          {s > 0 && <Path d={`M${cx - r},${cy} A${r},${r} 0 0 1 ${ex.toFixed(2)},${ey.toFixed(2)}`} stroke={color} strokeWidth={sw} fill="none" strokeLinecap="round" />}
+        </Svg>
+        <View style={{ position: 'absolute', top: 44, alignItems: 'center' }}>
+          <Text style={{ fontSize: 32, fontWeight: '900', color: IN_INK }}>{s}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <Ionicons name={icon as any} size={13} color={color} />
+            <Text style={{ fontSize: 12, fontWeight: '700', color }}>{word}</Text>
+          </View>
+        </View>
+      </View>
+      <View style={{ flex: 1, minWidth: 170, gap: 8 }}>
+        {parts.map(p => (
+          <View key={p.label}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+              <Text style={{ fontSize: 12, color: IN_MUTED }}>{p.label}</Text>
+              <Text style={{ fontSize: 12, fontWeight: '700', color: IN_INK }}>{p.value}/20</Text>
+            </View>
+            <View style={{ height: 6, borderRadius: 3, backgroundColor: '#EEF3F9', marginTop: 4, overflow: 'hidden' }}>
+              <View style={{ width: `${(p.value / 20) * 100}%`, height: 6, borderRadius: 3, backgroundColor: IN_C[0] }} />
+            </View>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+// Who brings the money: top 20% / next 30% / the rest, as one stacked bar with labels.
+function InStack({ items, cur }: { items: { label: string; value: number }[]; cur: string }) {
+  const total = items.reduce((a, b) => a + b.value, 0);
+  if (!total) return <Text style={{ fontSize: 12.5, color: IN_FAINT }}>Shows once customers have spent money with you.</Text>;
+  return (
+    <View>
+      <View style={{ flexDirection: 'row', height: 22, borderRadius: 6, overflow: 'hidden', gap: 2 }}>
+        {items.map((it, i) => it.value > 0 && <View key={it.label} style={{ flex: it.value, backgroundColor: IN_C[i] }} />)}
+      </View>
+      <View style={{ marginTop: 10, gap: 6 }}>
+        {items.map((it, i) => (
+          <View key={it.label} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <View style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: IN_C[i] }} />
+            <Text style={{ flex: 1, fontSize: 12.5, color: IN_INK }}>{it.label} of customers</Text>
+            <Text style={{ fontSize: 12.5, fontWeight: '700', color: IN_INK }}>{inMoney(it.value, cur, true)}</Text>
+            <Text style={{ fontSize: 11.5, color: IN_FAINT, width: 38, textAlign: 'right' }}>{Math.round((it.value / total) * 100)}%</Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+const USE_STATIC_GAUGE_IMAGE = false; // true = use the baked healthy.png (always "80%"); false = live gauge from your data
+function HomeScreenInner(){
+  const insets = useSafeAreaInsets();
   const{width:hookWidth,height:hookHeight}=useWindowDimensions();
   const[measured,setMeasured]=useState<{width:number;height:number}|null>(null);
   const width=measured?.width??hookWidth;
@@ -722,7 +2438,8 @@ export default function HomeScreen(){
       setMeasured({width:w,height:h});
     }
   };
-  const[screen,setScreen]=useState<Screen>('launch');
+  const[screen,setScreen]=useState<Screen>(()=>{const s0=nextStartScreen??'launch';nextStartScreen=null;return s0;});
+  const[interestPicks,setInterestPicks]=useState<FeatureKey[]>([]);
   const[onboardingIndex,setOnboardingIndex]=useState(0),[signupIndex,setSignupIndex]=useState(0),[loginIndex,setLoginIndex]=useState(0);
   const[fullName,setFullName]=useState(''),[email,setEmail]=useState(''),[password,setPassword]=useState(''),[confirmPassword,setConfirmPassword]=useState('');
   const[termsAccepted,setTermsAccepted]=useState(false),[showPassword,setShowPassword]=useState(false),[showConfirmPassword,setShowConfirmPassword]=useState(false);
@@ -741,7 +2458,9 @@ export default function HomeScreen(){
   const[resetOtpDigits,setResetOtpDigits]=useState(['','','','']);
   const[resetOtpTimer,setResetOtpTimer]=useState(60);
   type MainTab = 'home' | 'brain' | 'inbox' | 'profile';
-  type ChatMessage = { id: string; role: 'user' | 'ai'; text: string; imageUri?: string };
+  // RAG sources: the knowledge passages an answer was built from.
+  type RagSource = { n: number; title: string; type: 'item' | 'document' | 'web'; category: string; item_id: string | null; document_id: string | null; snippet: string; similarity?: number; url?: string | null };
+  type ChatMessage = { id: string; role: 'user' | 'ai'; text: string; imageUri?: string; sources?: RagSource[] };
 
   const [mainTab, setMainTab] = useState<MainTab>('home');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -758,17 +2477,242 @@ export default function HomeScreen(){
   const [socialMediaIndex, setSocialMediaIndex] = useState(0);
   const [inboxDraft, setInboxDraft] = useState('');
   const [homeCommandExpanded, setHomeCommandExpanded] = useState(false);
+  // Natural pixel size of each Home PNG, measured when it loads, so Home-1b /
+  // 1c / 1d are drawn at their true aspect ratio whatever size they export at.
+  // A Home state frame that failed to load (not uploaded yet) falls back to Home-1.
+  const [homeSegFailed, setHomeSegFailed] = useState<Partial<Record<HomeSegmentKey, boolean>>>({});
+  const [homeCardW, setHomeCardW] = useState(0);   // width of the Figma insight card on the desktop Home
+  // When the owner last switched Away mode off: Home keeps showing the
+  // "While you were away" card for a while afterwards.
+  const [awayEndedAt, setAwayEndedAt] = useState<number | null>(null);
   const [connectedChannels, setConnectedChannels] = useState<Record<string, boolean>>(
-    Object.fromEntries(CONNECT_CHANNELS.map(c => [c.key, c.connected]))
+    Object.fromEntries(CONNECT_CHANNELS.map(c => [c.key, false]))
   );
   const [channelConnectStep, setChannelConnectStep] = useState<null | 'permission' | 'connecting' | 'done'>(null);
   const [channelConnectKey, setChannelConnectKey] = useState<string | null>(null);
+  // NEW: bottom-sheet menu (Channel settings / AI Permissions / View
+  // Connection / Disconnect channel) opened via the "..." button on a
+  // connected channel row — see "inbox-connect channel options" truth.
+  const [channelMenuKey, setChannelMenuKey] = useState<string | null>(null);
+  // NEW: which channel's settings/permissions screen is currently open —
+  // set when a bottom-sheet option is tapped, read by both channelSettings
+  // and aiPermissions so the same two screens work for every channel
+  // instead of duplicating them per platform.
+  const [settingsChannelKey, setSettingsChannelKey] = useState<string | null>(null);
+  const [aiBehaviorToggles, setAiBehaviorToggles] = useState<Record<string, boolean>>({ autoReply: true, askApproval: true, escalate: true });
+  const [aiPermissionToggles, setAiPermissionToggles] = useState<Record<string, boolean>>({ answerQuestions: true, followUp: true, handleRefunds: true, supportTickets: true });
+  // NEW: live call-duration timer for the "Nexora calls owner" screen —
+  // ticks up from 0 while screen==='activeCall', reset on entry.
+  const [callSeconds, setCallSeconds] = useState(0);
+  const [callMuted, setCallMuted] = useState(false);
+  const [callSpeakerOn, setCallSpeakerOn] = useState(false);
+  useEffect(() => {
+    if (screen !== 'activeCall') { setCallSeconds(0); return; }
+    const id = setInterval(() => setCallSeconds(s => s + 1), 1000);
+    return () => clearInterval(id);
+  }, [screen]);
   const [demoFailCount, setDemoFailCount] = useState(0);
-  const [conversations, setConversations] = useState<Conversation[]>(CONVERSATIONS);
-  const [activeConversationId, setActiveConversationId] = useState('sarah');
+  // Truth-screen flows (Connect Apps / Lead / Schedule) -- see TRUTH_FILES.
+  const [truthKey, setTruthKey] = useState<TruthKey>('inbox1');
+  const [truthImgFailed, setTruthImgFailed] = useState(false);
+  const [truthToast, setTruthToast] = useState('');
+  const [truthFields, setTruthFields] = useState<Record<string, string>>({});
+  const truthBackRef = useRef<((key: TruthKey) => () => void) | null>(null);
+  const customersBackRef = useRef<(() => void) | null>(null);
+  const demoInviteBackRef = useRef<(() => void) | null>(null);
+  const callReturnRef = useRef<(() => void) | null>(null);
+  // Create Post flow: where the add-form and the "creating your post" screens go back to.
+  const addBackRef = useRef<TruthKey>('productPostSuggested');
+  // Where the Add Product / Add Service forms were opened from: the Train AI
+  // "+" menu saves to the knowledge base and returns there; Create Post goes
+  // on to write a post about the new item.
+  const addOriginRef = useRef<'train' | 'post'>('post');
+  const [tellOpen, setTellOpen] = useState(false);
+  const [tellText, setTellText] = useState('');
+  // Train AI "+" -> Add a product / Add a service: a real form (the design picture
+  // screens for these were titled "Add Customer" and had a button covering Continue).
+  type AddItemForm = { kind: 'product' | 'service'; name: string; model: string; specs: string; price: string; type: string; description: string; image: string };
+  const [addItemForm, setAddItemForm] = useState<AddItemForm | null>(null);
+  const [addItemSaving, setAddItemSaving] = useState(false);
+  const aiBackRef = useRef<TruthKey>('createPostHome');
+  // Which kind of post the Create Post flow is making (decides the Edit Post frame after generation).
+  const postKindRef = useRef<'product' | 'service' | 'promotion' | 'announcement'>('product');
+  const isoPlus = (days: number) => { const d = new Date(Date.now() + days * 86400000); return d.toISOString().slice(0, 10); };
+  const prettyDate = (iso: string) => new Date(`${iso}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const [promo, setPromo] = useState<{ item: string; itemSub: string; type: string; start: string; end: string; touched: boolean }>(() => ({ item: 'Power installations', itemSub: 'Electrical services', type: 'Fixed discount', start: isoPlus(0), end: isoPlus(7), touched: false }));
+  const [annType, setAnnType] = useState('New Launch');
+  const [postSched, setPostSched] = useState<{ date: string; hour: number; minute: number; pm: boolean }>(() => ({ date: isoPlus(7), hour: 10, minute: 30, pm: false }));
+  const [truthList, setTruthList] = useState<null | { title: string; items: { label: string; sub?: string; onPick: () => void }[] }>(null);
+  const broadcastReturnRef = useRef<Screen>('main');
+  // "Send once, appears in every connected channel" broadcast.
+  const [broadcastText, setBroadcastText] = useState('');
+  const [broadcastTargets, setBroadcastTargets] = useState<Record<string, boolean>>({});
+  const [broadcastStatus, setBroadcastStatus] = useState<Record<string, 'sending' | 'sent' | 'failed'>>({});
+  const [broadcastSending, setBroadcastSending] = useState(false);
+  const openTruth = (key: TruthKey) => { setTruthImgFailed(false); setTruthKey(key); setScreen('truth'); };
+  const showTruthToast = (msg: string) => { setTruthToast(msg); setTimeout(() => setTruthToast(''), 2200); };
+  // Inbox-2 is the "connecting" step: it moves on to Inbox-3 by itself.
+  useEffect(() => {
+    if (screen !== 'truth' || truthKey !== 'inbox2') return;
+    const id = setTimeout(() => openTruth('inbox3'), 1800);
+    return () => clearTimeout(id);
+  }, [screen, truthKey]);
+  const [conversations, setConversations] = useState<Conversation[]>(SHOW_DEMO_INBOX ? CONVERSATIONS : []);
+  const [inboxLoading, setInboxLoading] = useState(false);
+  const [inboxError, setInboxError] = useState('');
+  const [inboxSearch, setInboxSearch] = useState('');
+  // Report / block (inbox contacts and AI answers).
+  const [reportTarget, setReportTarget] = useState<null | { kind: 'contact'; convId: string } | { kind: 'ai'; text: string }>(null);
+  const [reportReason, setReportReason] = useState<typeof REPORT_REASONS[number]['key']>('spam');
+  const [reportDetails, setReportDetails] = useState('');
+  const [reportAlsoBlock, setReportAlsoBlock] = useState(false);
+  const [reportSending, setReportSending] = useState(false);
+  // Live Leads & Customers (customers table). A row whose segment is
+  // Lead / Contacted / Qualified is a lead; New / VIP / Active is a customer.
+  type ContactRow = { id: string; name: string; channel: string; handle: string; segment: string; location: string | null; total_orders: number | null; total_spent: number | null; last_order_at: string | null; customer_since: string | null; ai_recommendation: string | null; segments: string[] | null; tags: string[] | null; last_interaction_at: string | null; created_at: string };
+  const [contacts, setContacts] = useState<ContactRow[]>([]);
+  const [contactsLoading, setContactsLoading] = useState(false);
+  const [contactFilter, setContactFilter] = useState('All');
+  const [contactSearch, setContactSearch] = useState('');
+  const [activeContactId, setActiveContactId] = useState('');
+  const [contactTab, setContactTab] = useState<'Overview' | 'Orders' | 'History'>('Overview');
+  const [contactForm, setContactForm] = useState<null | { kind: 'lead' | 'customer'; name: string; phone: string; email: string; location: string; note: string }>(null);
+  const [contactSaving, setContactSaving] = useState(false);
+  const customersReturnRef = useRef<() => void>(() => {});
+  // Home insight card: 'auto' follows Away mode; the chip on the card flips between the two.
+  const [homeView, setHomeView] = useState<'auto' | 'now' | 'away'>('auto');
+  const [awayStartedAt, setAwayStartedAt] = useState<number | null>(null);
+  const [awayStats, setAwayStats] = useState<null | { actions: number; opportunities: number }>(null);
+  // Company workspace + subscription (businesses / plans tables).
+  type Workspace = { business_id: string; name: string; industry: string; country: string; plan: string; subscription_status: 'trialing' | 'active' | 'past_due' | 'canceled'; trial_ends_at: string | null; role: 'owner' | 'staff'; owner_name: string; staff_seats: number | null; monthly_ai_messages: number | null; ai_messages_used: number | null };
+  // staff_seats = users besides the owner; monthly_ai_messages = AI tasks a month; null limits = custom (Organization).
+  type Plan = {
+    key: string; name: string; price_usd: number; price_ngn: number | null; price_usd_year: number | null; price_ngn_year: number | null;
+    staff_seats: number | null; max_users: number | null; monthly_ai_messages: number | null; blurb: string; features: string[]; contact_sales: boolean;
+  };
+  const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [workspaceChecked, setWorkspaceChecked] = useState(false);
+  const [plans, setPlans] = useState<Plan[]>([]);
+  const [billingInterval, setBillingInterval] = useState<'month' | 'year'>('month');
+  type PayConfig = { ready: boolean; currency: string; test_mode: boolean; reason: string; prices: Record<string, number | null>; prices_year?: Record<string, number | null> };
+  const [payConfig, setPayConfig] = useState<PayConfig | null>(null);
+  const [paidUntil, setPaidUntil] = useState<string | null>(null);
+  const pendingPaymentRef = useRef<string>('');
+  const [billingBusy, setBillingBusy] = useState<string | null>(null);
+  const [bizForm, setBizForm] = useState({ name: '', industry: '', country: '' });
+  const [billingShowPlans, setBillingShowPlans] = useState(false);   // during the free trial the plans stay folded away
+  const [joinCode, setJoinCode] = useState('');
+  const [staffInviteCode, setStaffInviteCode] = useState('');
+  const billingReturnRef = useRef<() => void>(() => {});
+  // Real channel connection (channel-connect function).
+  const [waForm, setWaForm] = useState<null | { phoneNumberId: string; token: string }>(null);
+  const [channelBusy, setChannelBusy] = useState<string | null>(null);
+  // Set while the owner is away in the browser (Facebook login / Paystack);
+  // when the app comes back to the foreground we re-read the real state.
+  const awaitingReturnRef = useRef<null | 'oauth' | 'checkout'>(null);
+  // ---- Supabase-backed state ----
+  const [userId, setUserId] = useState<string | null>(null);
+  const [userEmail, setUserEmail] = useState('');
+  const [knowledgeData, setKnowledgeData] = useState(EMPTY_KNOWLEDGE);
+  const [knowledgeDocs, setKnowledgeDocs] = useState<{ id: string; name: string; status: string; time: string; path: string | null }[]>([]);
+  const [docStats, setDocStats] = useState({ count: 0, bytes: 0 });
+  const [extractedItems, setExtractedItems] = useState<ExtractedReview[]>([]);
+  const [uploadedFileName, setUploadedFileName] = useState('');
+  const [extractError, setExtractError] = useState('');
+  const [savingKnowledge, setSavingKnowledge] = useState(false);
+  const [listSearch, setListSearch] = useState('');
+  const [showAddMenu, setShowAddMenu] = useState(false);
+  const [dataLoaded, setDataLoaded] = useState(false);
+  const [channelRows, setChannelRows] = useState<Record<string, { ai_behavior?: Record<string, boolean>; ai_permissions?: Record<string, boolean>; connected?: boolean; handle?: string; connected_at?: string | null }>>({});
+  const pendingEventRef = useRef<{ title: string; with_whom: string; event_date: string; start_time: string } | null>(null);
+  const [activeConversationId, setActiveConversationId] = useState('');
   const [inboxListFilter, setInboxListFilter] = useState<'All' | 'Unread' | 'Need attention'>('All');
+  // NEW: Customers CRM state
+  const [customerListFilter, setCustomerListFilter] = useState<'All' | 'New' | 'VIP' | 'Active'>('All');
+  const [activeCustomerId, setActiveCustomerId] = useState<string | null>(null);
+  const [customerProfileTab, setCustomerProfileTab] = useState<'Overview' | 'Order'>('Overview');
+  const [historyFilter, setHistoryFilter] = useState<'All' | 'Messages' | 'Calls' | 'Orders'>('All');
   const [inboxPlatformFilter, setInboxPlatformFilter] = useState<'All' | 'Whatsapp' | 'Facebook' | 'Instagram' | 'Email'>('All');
-  const [inboxModal, setInboxModal] = useState<null | 'takeover' | 'sending' | 'failed' | 'offline' | 'share'>(null);
+  const [inboxModal, setInboxModal] = useState<null | 'takeover' | 'sending' | 'failed' | 'offline' | 'menu'>(null);
+  // What to retry from the "Message failed" sheet, and the platform's reason.
+  const inboxRetryRef = useRef<null | (() => void)>(null);
+  const [inboxSendError, setInboxSendError] = useState('');
+  // "NEXORA is creating your post..." moves on to Edit Post by itself.
+  // "NEXORA is creating your post..." steps through its progress frames, then opens the right Edit Post frame.
+  // "Publishing your content..." runs while the share sheet opens (see approvePost).
+  useEffect(() => {
+    if (screen !== 'truth') return;
+    const nextOf: Partial<Record<TruthKey, TruthKey>> = { aiContent: 'aiGen1', aiGen1: 'aiGen2', aiGen2: 'aiGen3' };
+    if (truthKey === 'aiGen3') {
+      const id = setTimeout(() => openTruth(postKindRef.current === 'service' ? 'servicePostEdit' : postKindRef.current === 'promotion' ? 'promoPost' : 'editPost'), 900);
+      return () => clearTimeout(id);
+    }
+    const nx = nextOf[truthKey];
+    if (!nx) return;
+    const id = setTimeout(() => openTruth(nx), 850);
+    return () => clearTimeout(id);
+  }, [screen, truthKey]);
+  // Android hardware back follows the same path as the on-screen back arrow.
+  // In-app browser state (declared here because the Android back handler below uses it)
+  const webRef = useRef<any>(null);
+  const [browserUrl, setBrowserUrl] = useState('');
+  const [browserNav, setBrowserNav] = useState({ title: '', url: '', canGoBack: false, canGoForward: false, loading: true, progress: 0 });
+  const browserReturnRef = useRef<{ screen: Screen; tab: MainTab }>({ screen: 'main', tab: 'home' });
+  // Web: let the page layout know whether this screen can use the full browser width.
+  useEffect(() => {
+    if (!IS_WEB) return;
+    const signedIn = !!userId && !WEB_AUTH_SCREENS.includes(screen);
+    setWebShell({
+      signedIn,
+      active: screen === 'main' ? mainTab : screen,
+      wide: WEB_WIDE_SCREENS.includes(screen) || (screen === 'main' && (WEB_WIDE_TABS.includes(mainTab) || (mainTab === 'home' && hookWidth >= WEB_DESKTOP_HOME_MIN)))
+        || (['launch', 'onboarding', 'signup', 'login', 'forgotPassword'].includes(screen) && hookWidth >= WEB_AUTH_PAGE_MIN),
+    });
+  }, [screen, mainTab, userId, hookWidth]);
+  // Reader view: the page is fetched by Nexora's server and shown with Nexora's own styling.
+  // Always used on the web version; on phones it's one tap away from the live page.
+  type ReaderPage = { url: string; title: string; site: string; description: string; image: string; blocks: { type: string; text?: string; src?: string }[]; links: { text: string; url: string }[]; file?: boolean };
+  const [readerMode, setReaderMode] = useState(IS_WEB);
+  const [readerPage, setReaderPage] = useState<ReaderPage | null>(null);
+  const [readerLoading, setReaderLoading] = useState(false);
+  const [readerError, setReaderError] = useState('');
+  const [readerHistory, setReaderHistory] = useState<{ list: string[]; idx: number }>({ list: [], idx: -1 });
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (screen === 'truth' && truthBackRef.current) { truthBackRef.current(truthKey)(); return true; }
+      if (screen === 'broadcast') { setScreen(broadcastReturnRef.current); return true; }
+      if (screen === 'agendaCreate') { setAgendaConflict(null); setScreen('agenda'); return true; }
+      if (screen === 'agendaPriority') { if (NATIVE_SCHEDULE) setScreen('agenda'); else { setMainTab('home'); setScreen('main'); } return true; }
+      if (screen === 'agenda' || screen === 'orders' || screen === 'missingImages') { setMainTab('home'); setScreen('main'); return true; }
+      if (showAddMenu) { setShowAddMenu(false); return true; }
+      if (screen === 'browser') {
+        if (readerMode || !WebView) { if (readerHistory.idx > 0) readerStep(-1); else closeBrowser(); }
+        else if (browserNav.canGoBack && webRef.current) webRef.current.goBack(); else closeBrowser();
+        return true;
+      }
+      if (screen === 'terms') { setMainTab(termsReturnRef.current.tab); setScreen(termsReturnRef.current.screen); return true; }
+      if (screen === 'communityPost') { setScreen('community'); return true; }
+      if (screen === 'explore' || screen === 'trends' || screen === 'network' || screen === 'community' || screen === 'storefront') { setMainTab('brain'); setScreen('main'); return true; }
+      if (screen === 'learned') { setScreen('knowledgeHealth'); return true; }
+      if (screen === 'billing') { billingReturnRef.current(); return true; }
+      if (contactForm) { setContactForm(null); return true; }
+      if (screen === 'followups') { openLeads(); return true; }
+      if (screen === 'insights') { goTab('home'); return true; }
+      if (screen === 'ownerAlerts') { alertReturnRef.current(); return true; }
+      if (screen === 'rules') { rulesReturnRef.current(); return true; }
+      if (screen === 'leads') { setMainTab('home'); setScreen('main'); return true; }
+      if (screen === 'customersLive') { customersReturnRef.current(); return true; }
+      if (screen === 'leadDetail') { setScreen('leads'); return true; }
+      if (screen === 'customerDetail') { setScreen('customersLive'); return true; }
+      if (screen === 'connectChannels') { setMainTab('inbox'); setScreen('main'); return true; }
+      if (screen === 'channelSettings') { setScreen('connectChannels'); return true; }
+      if (screen === 'aiPermissions') { setScreen('channelSettings'); return true; }
+      if (screen === 'inboxChat') { if (inboxModal) setInboxModal(null); else { setMainTab('inbox'); setScreen('main'); } return true; }
+      if (screen === 'main' && homeCommandExpanded && mainTab === 'home') { setHomeCommandExpanded(false); return true; }
+      return false;
+    });
+    return () => sub.remove();
+  }, [screen, truthKey, inboxModal, homeCommandExpanded, mainTab, contactForm, showAddMenu, browserNav.canGoBack, readerMode, readerHistory]);
   const [humanHandling, setHumanHandling] = useState<Record<string, boolean>>({});
   // True pixel dimensions of the file actually sitting in Supabase, read off
   // the image itself once it loads. The PNG exports don't share one fixed
@@ -830,6 +2774,31 @@ export default function HomeScreen(){
   const [calendarCursor, setCalendarCursor] = useState(() => { const d = new Date(); d.setDate(1); return d; });
   const todayIso = new Date().toISOString().slice(0, 10);
   const [selectedScheduleDate, setSelectedScheduleDate] = useState(todayIso);
+  const [scheduleEvents, setScheduleEvents] = useState(SCHEDULE_EVENTS);
+  const [activeScheduleEventIndex, setActiveScheduleEventIndex] = useState<number | null>(null);
+  const [scheduleDraft, setScheduleDraft] = useState({ title: '', withWhom: '', date: todayIso, time: '10:00 AM', endTime: '11:00 AM', notes: '' });
+  // ---- Orders / agenda / escalations / away mode ----
+  const [orders, setOrders] = useState<OrderRow[]>([]);
+  const [ordersFilter, setOrdersFilter] = useState<'Unshipped' | 'Shipped' | 'All'>('Unshipped');
+  const [agendaEvents, setAgendaEvents] = useState<AgendaEvent[]>([]);
+  const [escalations, setEscalations] = useState<EscalationRow[]>([]);
+  const [escAlerts, setEscAlerts] = useState<Record<string, any>>({});
+  const [agendaDate, setAgendaDate] = useState(localIsoDate());
+  const [agendaForm, setAgendaForm] = useState({ id: null as string | null, type: 'meeting' as AgendaEvent['event_type'], title: '', withWhom: '', date: localIsoDate(), time: '10:00 AM', duration: 60, notes: '' });
+  const [agendaConflict, setAgendaConflict] = useState<null | { titles: string[]; suggested: string[] }>(null);
+  const [savingAgenda, setSavingAgenda] = useState(false);
+  const [busyItemId, setBusyItemId] = useState<string | null>(null);
+  const [awayMode, setAwayMode] = useState(false);
+  const [businessName, setBusinessName] = useState('');
+  const [sched, setSched] = useState<SchedForm>(initialSched());
+  const [picker, setPicker] = useState<null | 'date' | 'time' | 'who' | 'related' | 'participant' | 'reminder'>(null);
+  const [customerOptions, setCustomerOptions] = useState<{ name: string; meta: string }[]>([]);
+  const [conflictInfo, setConflictInfo] = useState<null | { existing: string; options: string[] }>(null);
+  const [conflictChoice, setConflictChoice] = useState(0);
+  const [post, setPost] = useState<PostForm>(initialPost());
+  const autoHandledRef = useRef<Set<string>>(new Set());
+  const autopilotBusyRef = useRef(false);
+  const [demoInviteMessage, setDemoInviteMessage] = useState('Hi, I would love to walk you through a personalized product demo based on what you have been looking at.');
   const [brainImageFailed, setBrainImageFailed] = useState(false);
   const [gaugeImageFailed, setGaugeImageFailed] = useState(false);
   const [processingOrbFailed, setProcessingOrbFailed] = useState(false);
@@ -881,18 +2850,21 @@ export default function HomeScreen(){
 
   useEffect(()=>{
     let mounted=true;
-    supabase.auth.getSession().then(({data:{session}})=>{if(mounted&&session)setScreen('main')});
-    const{data:{subscription}}=supabase.auth.onAuthStateChange((_event,session)=>{if(mounted&&session)setScreen('main')});
+    // Only leave the sign-in screens when a session appears. Token refreshes (which happen when you come back to
+    // the browser tab or the app) used to send everyone back to Home from wherever they were.
+    const toMainIfSigningIn=()=>setScreen(cur=>cur!=='verifyEmail'&&WEB_AUTH_SCREENS.includes(cur)?'main':cur);
+    supabase.auth.getSession().then(({data:{session}})=>{if(mounted&&session)toMainIfSigningIn()});
+    const{data:{subscription}}=supabase.auth.onAuthStateChange((event,session)=>{if(mounted&&session&&event!=='TOKEN_REFRESHED'&&event!=='USER_UPDATED')toMainIfSigningIn()});
     return()=>{mounted=false;subscription.unsubscribe()};
   },[]);
 
   useEffect(()=>{
     if(screen!=='launch')return;
     const timer=setTimeout(()=>{
-      Animated.timing(launchOpacity,{toValue:0,duration:300,useNativeDriver:true}).start(()=>{
+      Animated.timing(launchOpacity,{toValue:0,duration:300,useNativeDriver:!IS_WEB}).start(()=>{
         setScreen('onboarding');
         launchOpacity.setValue(0);
-        Animated.timing(launchOpacity,{toValue:1,duration:300,useNativeDriver:true}).start();
+        Animated.timing(launchOpacity,{toValue:1,duration:300,useNativeDriver:!IS_WEB}).start();
       });
     },3500);
     return()=>clearTimeout(timer);
@@ -919,6 +2891,17 @@ export default function HomeScreen(){
     setScreen('signup');
     setTimeout(()=>{navigatingRef.current=false},150);
   };
+
+  // Web: ← / → move between onboarding steps, Esc skips to sign up.
+  useEffect(()=>{
+    if(!IS_WEB||screen!=='onboarding'||typeof window==='undefined')return;
+    const onKey=(e:KeyboardEvent)=>{
+      const tag=(e.target as any)?.tagName;if(tag==='INPUT'||tag==='TEXTAREA')return;
+      if(e.key==='ArrowRight')next();else if(e.key==='ArrowLeft')previous();else if(e.key==='Escape')skip();
+    };
+    window.addEventListener('keydown',onKey);
+    return()=>window.removeEventListener('keydown',onKey);
+  },[screen]);
 
   const backToOnboarding=()=>{
     if(navigatingRef.current)return;
@@ -1014,7 +2997,7 @@ export default function HomeScreen(){
 
     try{
       const{data,error}=await withTimeout(
-        supabase.auth.signUp({email:cleanEmail,password,options:{data:{full_name:cleanName}}}),
+        supabase.auth.signUp({email:cleanEmail,password,options:{data:{full_name:cleanName},emailRedirectTo:IS_WEB?(globalThis as any).location?.origin:undefined}}),
         'Request timed out. Check your internet connection.'
       );
       if(error)throw error;
@@ -1060,17 +3043,7 @@ export default function HomeScreen(){
   setLoading(true);
   const cleanEmail=loginEmail.trim().toLowerCase();
   try{
-  if (__DEV__) {
-    console.log('[NEXORA LOGIN] URL:',process.env.EXPO_PUBLIC_SUPABASE_URL);
-    console.log('[NEXORA LOGIN] Email:',cleanEmail);
-    console.log('[NEXORA LOGIN] Password length:',loginPassword.length);
-  }
   const{data,error}=await withTimeout(supabase.auth.signInWithPassword({email:cleanEmail,password:loginPassword}),'Request timed out. Check your internet connection.');
-  if (__DEV__) {
-    console.log('[NEXORA LOGIN] Session:',!!data?.session);
-    console.log('[NEXORA LOGIN] User:',data?.user?.email||'none');
-    console.log('[NEXORA LOGIN] Error:',error?.message||'none');
-  }
   if(error)throw error;
   setLoginIndex(4);
   setTimeout(()=>{
@@ -1079,9 +3052,17 @@ export default function HomeScreen(){
   navigatingRef.current=false;
   },1800);
   }catch(error:any){
-  console.log('[NEXORA LOGIN ERROR]',error?.message,error);
+  if(__DEV__)console.log('[NEXORA LOGIN ERROR]',error?.message);
   setLoginError(true);
-  setAuthError(error?.message||'Invalid email or password');
+  if(/email not confirmed/i.test(String(error?.message))){
+    // Send the confirmation email again so the user isn't stuck.
+    supabase.auth.resend({type:'signup',email:cleanEmail,options:{emailRedirectTo:IS_WEB?(globalThis as any).location?.origin:undefined}}).catch(()=>{});
+    setAuthError(`Please confirm your email first. We've sent a new confirmation link to ${cleanEmail}. Check your inbox and spam folder, then log in.`);
+  }else if(/invalid login credentials/i.test(String(error?.message))){
+    setAuthError('Wrong email or password. If you are new, tap Sign up to create an account.');
+  }else{
+    setAuthError(error?.message||'Invalid email or password');
+  }
   setLoading(false);
   navigatingRef.current=false;
   }
@@ -1101,6 +3082,25 @@ export default function HomeScreen(){
   // header-like lines, a trailing "what next" prompt) and renders them with
   // real typography instead of one flat paragraph. Any reply that doesn't
   // match those patterns still renders fine as plain lines.
+  // Inline markdown for AI answers: [title](https://...) links that open in
+  // the browser (Groq web-search sources) and **bold** text.
+  const renderInline = (line: string) => {
+    const parts: React.ReactNode[] = [];
+    const re = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|\*\*([^*]+)\*\*/g;
+    let last = 0; let m: RegExpExecArray | null; let n = 0;
+    while ((m = re.exec(line))) {
+      if (m.index > last) parts.push(line.slice(last, m.index));
+      if (m[1]) {
+        const url = m[2]; const label = m[1];
+        parts.push(<Text key={`l${n++}`} style={{ color: '#7FB2FF', textDecorationLine: 'underline' }} onPress={() => openInApp(url, label)} accessibilityRole="link">{m[1]}</Text>);
+      } else {
+        parts.push(<Text key={`b${n++}`} style={{ fontWeight: '700' }}>{m[3]}</Text>);
+      }
+      last = m.index + m[0].length;
+    }
+    if (last < line.length) parts.push(line.slice(last));
+    return parts.length ? parts : line;
+  };
   const renderFormattedAiText = (text: string) => {
     const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
     const nextIdx = lines.findIndex(l => /what would you like to do next\??$/i.test(l.replace(/\*\*/g, '')));
@@ -1114,12 +3114,13 @@ export default function HomeScreen(){
           const boldHeader = line.match(/^\*\*(.+?)\*\*:?$/);
           const shortHeader = !numbered && !boldHeader && /:$/.test(line) && line.length < 40;
           if (numbered) {
-            return <Text key={i} style={[styles.bubbleText, styles.aiListItem]}><Text style={styles.aiListNumber}>{numbered[1]}. </Text>{numbered[2]}</Text>;
+            return <Text key={i} style={[styles.bubbleText, styles.aiListItem]}><Text style={styles.aiListNumber}>{numbered[1]}. </Text>{renderInline(numbered[2])}</Text>;
           }
           if (boldHeader || shortHeader) {
             return <Text key={i} style={styles.aiSectionHeader}>{(boldHeader ? boldHeader[1] : line)}</Text>;
           }
-          return <Text key={i} style={styles.bubbleText}>{line}</Text>;
+          const bullet = line.match(/^[-\u2022*]\s+(.*)/);
+          return <Text key={i} style={styles.bubbleText}>{bullet ? '\u2022 ' : ''}{renderInline(bullet ? bullet[1] : line)}</Text>;
         })}
         {followUpHeader && (
           <>
@@ -1141,33 +3142,78 @@ export default function HomeScreen(){
     if (!text && !imageUrl) return;
     const userMsg: ChatMessage = { id: Date.now().toString(), role: 'user', text };
     setChatMessages(prev => [...prev, userMsg]);
+    saveChatMessage('user', text, imageUrl);
     setChatInput('');
     setShowAttachMenu(false);
     setAiThinking(true);
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      const response = await withTimeout(
-        fetch(`${SUPABASE_FUNCTIONS_URL}/ai-chat`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'apikey': SUPABASE_ANON_KEY,
-            'Authorization': `Bearer ${session?.access_token ?? SUPABASE_ANON_KEY}`,
-          },
-          body: JSON.stringify({ message: text || 'Describe this image.', imageUrl }),
-        }),
-        'The AI took too long to respond. Please try again.'
-      );
-      const result = await response.json();
-      if (!response.ok || !result.success) {
-        throw new Error(result.message || 'The AI could not process that request.');
+      const headers = {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${session?.access_token ?? SUPABASE_ANON_KEY}`,
+      };
+      let aiText = '';
+      let aiSources: RagSource[] = [];
+      // Text goes to the Groq-powered agent: it remembers the conversation, reads the
+      // owner's knowledge base, and can act (book events, ship orders, save customers).
+      if (!imageUrl) {
+        try {
+          const history = chatMessages.filter(m => m.text && !m.imageUri).slice(-10)
+            .map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }));
+          const res = await withLongTimeout(fetch(`${SUPABASE_FUNCTIONS_URL}/nexora-agent`, {
+            method: 'POST', headers,
+            body: JSON.stringify({ mode: 'assistant', message: text, history, client_now: clientNow() }),
+          }), 'The assistant took too long to respond.', 45000);
+          const r = await res.json().catch(() => ({}));
+          if (res.ok && r.success && r.reply) {
+            aiText = r.reply;
+            aiSources = Array.isArray(r.sources) ? (r.sources as RagSource[]) : [];
+            const acts = (r.actions ?? []) as { ok: boolean; summary: string }[];
+            if (acts.length) {
+              aiText += '\n\n' + acts.map(a => `${a.ok ? '\u2713' : '\u2717'} ${a.summary}`).join('\n');
+              refreshAgenda().catch(() => {}); refreshOrders().catch(() => {}); refreshEscalations().catch(() => {});
+            }
+            // Real sources from Groq's live web search, shown as tappable links.
+            const links = (r.links ?? []) as { title: string; url: string }[];
+            const unseen = links.filter(l => /^https?:\/\//.test(l.url) && !aiText.includes(l.url));
+            if (unseen.length) aiText += '\n\nSources:\n' + unseen.map(l => `- [${String(l.title || l.url).replace(/[\[\]]/g, '')}](${l.url})`).join('\n');
+          } else if (r?.code === 'subscription' || r?.code === 'quota') {
+            // FIX: these used to be swallowed and silently retried through
+            // ai-chat, which skipped the plan's message limit entirely.
+            aiText = `${r.message || 'Your Nexora plan needs attention.'}\n\nOpen Profile, then Plans & billing to ${workspace?.role === 'owner' ? 'upgrade or renew' : 'see your plan'}.`;
+          } else if (__DEV__) {
+            console.log('[NEXORA AGENT]', res.status, r?.code, r?.message);
+          }
+        } catch (agentErr: any) {
+          if (__DEV__) console.log('[NEXORA AGENT ERROR]', agentErr?.message);
+        }
       }
-      setChatMessages(prev => [...prev, {
-        id: (Date.now() + 1).toString(),
-        role: 'ai',
-        text: result.reply || "I didn't get a usable reply — please try again.",
-      }]);
+      if (!aiText) {
+        // Images (vision) and agent outages go through the original ai-chat function.
+        const response = await withLongTimeout(fetch(`${SUPABASE_FUNCTIONS_URL}/ai-chat`, {
+          method: 'POST', headers,
+          body: JSON.stringify({
+            message: (() => {
+              const base = text || 'Describe this image.';
+              const ctx = buildBusinessContext();
+              return ctx && base.length < 4000
+                ? `Business knowledge from the owner (use it when relevant; do not invent facts beyond it):\n${ctx}\n\nOwner's message: ${base}`
+                : base;
+            })(),
+            imageUrl,
+          }),
+        }), 'The AI took too long to respond. Please try again.', 30000);
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+          throw new Error(result.message || 'The AI could not process that request.');
+        }
+        aiText = result.reply || '';
+      }
+      const finalText = aiText || "I didn't get a usable reply — please try again.";
+      setChatMessages(prev => [...prev, { id: (Date.now() + 1).toString(), role: 'ai', text: finalText, sources: aiText ? aiSources : undefined }]);
+      if (aiText) saveChatMessage('ai', finalText);
     } catch (error: any) {
       if (__DEV__) console.log('[NEXORA CHAT ERROR]', error?.message, error);
       setChatMessages(prev => [...prev, {
@@ -1187,9 +3233,10 @@ export default function HomeScreen(){
   }, [chatMessages, aiThinking]);
   const uploadImageAsync = async (uri: string): Promise<{ url: string | null; error?: string }> => {
     try {
-      const fileName = `chat/${Date.now()}.jpg`;
       const { data: { session } } = await supabase.auth.getSession();
-      const accessToken = session?.access_token ?? SUPABASE_ANON_KEY;
+      if (!session) throw new Error('Please sign in again to upload images.');
+      const fileName = `${session.user.id}/${Date.now()}.jpg`;
+      const accessToken = session.access_token;
 
       // FIX: FileSystem.uploadAsync streams the file straight from disk to
       // the network on the native side — the JS thread never holds the raw
@@ -1198,19 +3245,9 @@ export default function HomeScreen(){
       // ArrayBuffer, entirely on the JS thread — exactly the kind of
       // synchronous, memory-heavy work whose crash risk depends on GC
       // timing and device load, which is why it wasn't 100% reproducible.
-      const uploadResult = await FileSystem.uploadAsync(
-        `${SUPABASE_URL}/storage/v1/object/chat-uploads/${fileName}`,
-        uri,
-        {
-          httpMethod: 'POST',
-          uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
-          headers: {
-            'Content-Type': 'image/jpeg',
-            'Authorization': `Bearer ${accessToken}`,
-            'apikey': SUPABASE_ANON_KEY,
-          },
-        }
-      );
+      const uploadResult = await uploadBinary(`${SUPABASE_URL}/storage/v1/object/chat-uploads/${fileName}`, uri, {
+        'Content-Type': 'image/jpeg', Authorization: `Bearer ${accessToken}`, apikey: SUPABASE_ANON_KEY,
+      });
 
       if (uploadResult.status < 200 || uploadResult.status >= 300) {
         throw new Error(`Upload failed (HTTP ${uploadResult.status}): ${uploadResult.body?.slice(0, 200)}`);
@@ -1231,12 +3268,10 @@ export default function HomeScreen(){
   const pickDocument = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
-        type: [
-          'application/pdf',
-          'text/csv',
-          'text/plain',
-          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        ],
+        // Many Android file managers label CSV files as application/vnd.ms-excel or
+        // application/octet-stream, which greyed them out. Allow any file here and
+        // check the extension (PDF, CSV, TXT) in startKnowledgeUpload instead.
+        type: Platform.OS === 'android' ? '*/*' : ['application/pdf', 'text/csv', 'text/comma-separated-values', 'text/plain', 'public.comma-separated-values-text'],
         copyToCacheDirectory: true,
         multiple: false,
       });
@@ -1250,21 +3285,12 @@ export default function HomeScreen(){
   const handleAttachOption = async (option: string) => {
     setShowAttachMenu(false);
     if (option === 'Train Your AI') { setScreen('knowledgeHealth'); return; }
-    if (option === 'Connect Apps') { openSocialMediaScreen('Brain Chat Share'); return; }
+    if (option === 'Connect Apps') { openConnectChannels(); return; }
 
     if (option === 'Add Files') {
       const file = await pickDocument();
       if (!file) return;
-      setChatMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', text: `📎 ${file.name}` }]);
-      setAiThinking(true);
-      setTimeout(() => {
-        setChatMessages(prev => [...prev, {
-          id: (Date.now() + 1).toString(),
-          role: 'ai',
-          text: `Got "${file.name}" — file analysis isn't wired up to the AI yet, but the file is captured and ready for when that's connected.`,
-        }]);
-        setAiThinking(false);
-      }, 900);
+      await startKnowledgeUpload(file);
       return;
     }
 
@@ -1345,7 +3371,7 @@ export default function HomeScreen(){
         // cachePolicy="memory-disk", so deleting the source file here
         // doesn't affect what's shown on screen. Best-effort: failing to
         // delete a temp file isn't worth surfacing to the user.
-        FileSystem.deleteAsync(localUri, { idempotent: true }).catch(() => {});
+        if (!IS_WEB) FileSystem.deleteAsync(localUri, { idempotent: true }).catch(() => {});
         return;
       }
 
@@ -1368,6 +3394,7 @@ export default function HomeScreen(){
   const openKnowledgeList = (cat: KnowledgeCategory) => {
     setActiveCategory(cat);
     setListStatusFilter('All');
+    setListSearch('');
     setScreen('knowledgeList');
   };
 
@@ -1387,7 +3414,7 @@ export default function HomeScreen(){
   // edited even though itemDetail displays them. This builds the full
   // field set the truth screens actually show, in the same order.
   const openItemEdit = () => {
-    const item = KNOWLEDGE_DATA[activeCategory].items.find(i => i.id === activeItemId);
+    const item = knowledgeData[activeCategory].items.find(i => i.id === activeItemId);
     if (!item) { setEditDraft([]); setScreen('itemEdit'); return; }
     const nameLabel = KNOWLEDGE_NAME_LABEL[activeCategory];
     const hasCategory = item.fields.some(f => f.label === 'Category');
@@ -1416,6 +3443,2616 @@ export default function HomeScreen(){
     setScreen('itemEdit');
   };
 
+  // ======================= Supabase backend =============================
+  const flash = (msg: string) => pushToast(msg);
+  const withLongTimeout = <T,>(promise: Promise<T>, message: string, ms = 90000): Promise<T> =>
+    Promise.race([promise, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(message)), ms))]);
+
+  const refreshKnowledge = async () => {
+    const { data, error } = await supabase.from('knowledge_items').select('*').order('created_at', { ascending: true });
+    if (error) throw error;
+    setKnowledgeData(groupKnowledge((data ?? []) as KnowledgeRow[]));
+  };
+  const refreshDocs = async () => {
+    const { data, error } = await supabase.from('knowledge_documents')
+      .select('id,name,status,size_bytes,storage_path,created_at').order('created_at', { ascending: false });
+    if (error) throw error;
+    const rows = data ?? [];
+    setDocStats({ count: rows.length, bytes: rows.reduce((n, r) => n + Number(r.size_bytes || 0), 0) });
+    setKnowledgeDocs(rows.slice(0, 5).map(r => ({ id: r.id, name: r.name, status: r.status, time: timeAgo(r.created_at), path: r.storage_path })));
+  };
+  const loadChannels = async () => {
+    const { data, error } = await supabase.from('channel_connections').select('*');
+    if (error) throw error;
+    const conn: Record<string, boolean> = Object.fromEntries(CONNECT_CHANNELS.map(c => [c.key, false]));
+    const rows: Record<string, any> = {};
+    (data ?? []).forEach(r => { conn[r.channel_key] = !!r.connected; rows[r.channel_key] = r; });
+    setConnectedChannels(conn);
+    setChannelRows(rows);
+  };
+  const loadChatHistory = async () => {
+    const { data, error } = await supabase.from('chat_messages')
+      .select('id,role,text,image_url,created_at').order('created_at', { ascending: false }).limit(50);
+    if (error) throw error;
+    const history: ChatMessage[] = (data ?? []).reverse().map(m => ({ id: m.id, role: m.role as 'user' | 'ai', text: m.text, imageUri: m.image_url ?? undefined }));
+    setChatMessages(prev => (prev.length ? prev : history));
+  };
+  const loadingWorkspaceRef = useRef(false);
+  const loadWorkspace = async () => {
+    if (loadingWorkspaceRef.current) return;
+    loadingWorkspaceRef.current = true;
+    const { data: { session } } = await supabase.auth.getSession();
+    const user = session?.user;
+    if (!user) { loadingWorkspaceRef.current = false; return; }
+    setUserId(user.id);
+    setUserEmail(user.email ?? '');
+    try {
+      const { data: profile } = await supabase.from('profiles').select('full_name,sample_data_seeded,is_away,business_name').eq('id', user.id).maybeSingle();
+      const name = profile?.full_name || (user.user_metadata?.full_name as string | undefined) || '';
+      if (name) setFullName(name);
+      setAwayMode(!!profile?.is_away);
+      setBusinessName(profile?.business_name ?? '');
+      if (SEED_SAMPLE_DATA && profile && !profile.sample_data_seeded) await seedSampleWorkspace(user.id);
+      await Promise.all([refreshKnowledge(), refreshDocs(), loadChannels(), loadChatHistory(), refreshOrders(), refreshAgenda(), refreshEscalations(), loadWorkspaceInfo(), loadConversations().catch(() => {}), loadContacts().catch(() => {})]);
+      syncRag(true).catch(() => {});
+    } catch (e: any) {
+      if (__DEV__) console.log('[NEXORA LOAD ERROR]', e?.message);
+      flash("Couldn't sync your data. Check your connection and reopen the app.");
+    } finally {
+      loadingWorkspaceRef.current = false;
+      setDataLoaded(true);
+    }
+  };
+  useEffect(() => {
+    if (screen === 'main' && !dataLoaded) loadWorkspace();
+    if (screen === 'login' || screen === 'launch') {
+      // signed out: wipe everything so the next account never sees stale data
+      if (dataLoaded) {
+        setDataLoaded(false); setUserId(null); setUserEmail('');
+        setKnowledgeData(EMPTY_KNOWLEDGE); setKnowledgeDocs([]); setDocStats({ count: 0, bytes: 0 });
+        setChatMessages([]); setChannelRows({}); setExtractedItems([]);
+        setOrders([]); setAgendaEvents([]); setEscalations([]); setAwayMode(false); autoHandledRef.current.clear();
+        setConversations(SHOW_DEMO_INBOX ? CONVERSATIONS : []); setWorkspace(null); setWorkspaceChecked(false); setContacts([]); setAwayStats(null); setHomeView('auto');
+        setConnectedChannels(Object.fromEntries(CONNECT_CHANNELS.map(c => [c.key, false])));
+      }
+    }
+  }, [screen, dataLoaded]);
+  useEffect(() => {
+    if (!settingsChannelKey) return;
+    const row = channelRows[settingsChannelKey];
+    setAiBehaviorToggles({ autoReply: true, askApproval: true, escalate: true, ...(row?.ai_behavior ?? {}) });
+    setAiPermissionToggles({ answerQuestions: true, followUp: true, handleRefunds: true, supportTickets: true, ...(row?.ai_permissions ?? {}) });
+  }, [settingsChannelKey, channelRows]);
+
+  const persistChannel = async (key: string, patch: Record<string, unknown>) => {
+    if (!userId) return;
+    setChannelRows(prev => ({ ...prev, [key]: { ...prev[key], ...patch } as any }));
+    const { error } = await supabase.from('channel_connections')
+      .upsert({ user_id: userId, channel_key: key, ...patch }, { onConflict: 'user_id,channel_key' });
+    if (error) { if (__DEV__) console.log('[channel save]', error.message); flash("Couldn't save that change. Check your connection."); }
+  };
+  // ---- Edge-function helper: signed-in call, readable error messages ----
+  const callFn = async (name: string, body: Record<string, unknown>, ms = 30000): Promise<any> => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) throw new Error('Please sign in again.');
+    const res = await withLongTimeout(fetch(`${SUPABASE_FUNCTIONS_URL}/${name}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify(body),
+    }), 'The server took too long to respond. Please try again.', ms);
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok || out?.success === false) {
+      const err: any = new Error(out?.message || `Request failed (${res.status}).`);
+      err.code = out?.code; err.status = res.status;
+      throw err;
+    }
+    return out;
+  };
+
+  // ---- Company workspace + plans ----
+  const loadWorkspaceInfo = async () => {
+    const [wsR, plR] = await Promise.all([
+      supabase.rpc('my_workspace'),
+      supabase.from('plans').select('*').order('sort'),
+    ]);
+    if (wsR.error && __DEV__) console.log('[workspace]', wsR.error.message);
+    const row = Array.isArray(wsR.data) ? wsR.data[0] : wsR.data;
+    setWorkspace((row as any) ?? null);
+    setWorkspaceChecked(true);
+    const num = (v: any) => (v === null || v === undefined ? null : Number(v));
+    if (!plR.error) setPlans(((plR.data ?? []) as any[]).map(p => ({
+      ...p, price_usd: Number(p.price_usd), price_ngn: num(p.price_ngn), price_usd_year: num(p.price_usd_year), price_ngn_year: num(p.price_ngn_year),
+      max_users: num(p.max_users), features: Array.isArray(p.features) ? p.features : [], contact_sales: !!p.contact_sales,
+    })));
+  };
+  const openBilling = (back?: () => void) => {
+    billingReturnRef.current = back ?? (() => goTab('profile'));
+    setStaffInviteCode('');
+    loadWorkspaceInfo().catch(() => {});
+    loadPayConfig().catch(() => {});
+    setScreen('billing');
+  };
+  const rpcError = (e: any, fallback: string) => String(e?.message || fallback).replace(/^.*?exception:\s*/i, '');
+  const createBusiness = async (): Promise<boolean> => {
+    const name = bizForm.name.trim();
+    if (!name) { flash('Enter your company name'); return false; }
+    setBillingBusy('create');
+    try {
+      const { error } = await supabase.rpc('create_business', { p_name: name, p_industry: bizForm.industry.trim(), p_country: bizForm.country.trim() });
+      if (error) throw error;
+      if (userId) supabase.from('profiles').update({ business_name: name }).eq('id', userId).then(() => {});
+      setBusinessName(name);
+      await loadWorkspaceInfo();
+      flash('Company created. Your 14-day free trial has started. Nothing to pay until it ends.');
+      return true;
+    } catch (e: any) { flash(rpcError(e, "Couldn't create the company.")); return false; }
+    finally { setBillingBusy(null); }
+  };
+  const joinBusiness = async () => {
+    const code = joinCode.trim().toUpperCase();
+    if (!code) { flash('Enter the invite code from your company'); return; }
+    setBillingBusy('join');
+    try {
+      const { data, error } = await supabase.rpc('join_business', { p_code: code });
+      if (error) throw error;
+      setJoinCode('');
+      await loadWorkspaceInfo();
+      flash(typeof data === 'string' && data ? `You joined ${data}` : 'You joined the company');
+    } catch (e: any) { flash(rpcError(e, "That code didn't work.")); }
+    finally { setBillingBusy(null); }
+  };
+  const loadPayConfig = async () => {
+    try { setPayConfig(await callFn('paystack-checkout', { action: 'config' })); } catch { /* shown as not ready */ }
+    if (userId) {
+      const { data } = await supabase.from('businesses').select('current_period_end').eq('owner_id', userId).maybeSingle();
+      setPaidUntil((data as any)?.current_period_end ?? null);
+    }
+  };
+  const PENDING_PAY_KEY = 'nexora-pending-payment';
+  const fmtMoney = (amount: number, currency: string) => {
+    try { return new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: 0 }).format(amount); }
+    catch { return `${currency} ${Math.round(amount).toLocaleString()}`; }
+  };
+  const contactSales = (plan: Plan) => {
+    const subject = `Nexora ${plan.name} plan enquiry${workspace?.name ? ` · ${workspace.name}` : ''}`;
+    const body = `Hi Nexora team,\n\nWe'd like a quote for the ${plan.name} plan.\n\nCompany: ${workspace?.name || ''}\nCountry: ${workspace?.country || ''}\nNumber of users:\nTools we want to connect:\n`;
+    Linking.openURL(`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`).catch(() => flash(`Email us at ${SUPPORT_EMAIL}`));
+  };
+  const startCheckout = async (plan: Plan) => {
+    if (plan.contact_sales) { contactSales(plan); return; }
+    if (payConfig && !payConfig.ready) { flash('Payments are not switched on yet'); return; }
+    setBillingBusy(plan.key);
+    try {
+      const returnUrl = IS_WEB && typeof window !== 'undefined' ? `${window.location.origin}/?payment=paystack` : 'nexora://billing';
+      const out = await callFn('paystack-checkout', { action: 'start', plan: plan.key, interval: billingInterval, return_url: returnUrl });
+      if (!out?.url) throw new Error("We couldn't start the checkout.");
+      pendingPaymentRef.current = out.reference;
+      if (IS_WEB && typeof window !== 'undefined') {
+        // Same tab: Paystack sends the buyer straight back here, and the app confirms the payment.
+        try { window.localStorage.setItem(PENDING_PAY_KEY, out.reference); } catch { /* private mode */ }
+        window.location.assign(out.url);
+        return;
+      }
+      awaitingReturnRef.current = 'checkout';
+      await Linking.openURL(out.url);
+    } catch (e: any) { flash(e?.message || "We couldn't start the checkout."); }
+    finally { setBillingBusy(null); }
+  };
+  // Asks the server to confirm a payment with Paystack. Retries a few times while Paystack finishes.
+  const verifyPayment = async (reference: string, tries = 3): Promise<void> => {
+    if (!reference) return;
+    try {
+      const r = await callFn('paystack-checkout', { action: 'verify', reference }, 30000);
+      if (r.status === 'active') {
+        pendingPaymentRef.current = '';
+        if (IS_WEB) { try { window.localStorage.removeItem(PENDING_PAY_KEY); } catch { /* ignore */ } }
+        await loadWorkspaceInfo(); await loadPayConfig();
+        const until = r.current_period_end ? new Date(r.current_period_end).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+        flash(`Payment confirmed. ${r.plan_name || plans.find(p => p.key === r.plan)?.name || 'Your'} plan is active${until ? ` until ${until}` : ''}.`);
+        return;
+      }
+      if (r.status === 'pending' && tries > 1) { await new Promise(res => setTimeout(res, 4000)); return verifyPayment(reference, tries - 1); }
+      if (r.status === 'failed') flash('The payment did not go through. You have not been charged for this plan.');
+      else if (r.status === 'pending') flash('Payment not completed yet. If you paid, it will show here within a few minutes.');
+      if (IS_WEB && r.status !== 'pending') { try { window.localStorage.removeItem(PENDING_PAY_KEY); } catch { /* ignore */ } }
+    } catch (e: any) { flash(e?.message || "Couldn't confirm the payment yet. Open Plans & billing to check again."); }
+  };
+  // Web: Paystack sends the buyer back to /?payment=paystack&reference=… in the same tab.
+  useEffect(() => {
+    if (!IS_WEB || !userId || typeof window === 'undefined') return;
+    let fromUrl = '';
+    try { const qs = new URLSearchParams(window.location.search); fromUrl = qs.get('reference') || qs.get('trxref') || ''; } catch { /* ignore */ }
+    let stored = '';
+    try { stored = window.localStorage.getItem(PENDING_PAY_KEY) || ''; } catch { /* ignore */ }
+    const ref = fromUrl || stored;
+    if (!ref) return;
+    if (fromUrl) { try { window.history.replaceState(null, '', window.location.pathname); } catch { /* ignore */ } }
+    const t = setTimeout(() => {
+      if (fromUrl) { flash('Confirming your payment…'); openBilling(() => goTab('home')); }
+      verifyPayment(ref).catch(() => {});
+    }, 900);
+    return () => clearTimeout(t);
+  }, [userId]);
+  const tryPlanDuringTrial = async (plan: Plan) => {
+    setBillingBusy(`trial-${plan.key}`);
+    try {
+      const { error } = await supabase.rpc('set_trial_plan', { p_plan: plan.key });
+      if (error) throw error;
+      await loadWorkspaceInfo();
+      flash(`You're trying ${plan.name} for the rest of your trial`);
+    } catch (e: any) { flash(rpcError(e, "Couldn't change the trial plan.")); }
+    finally { setBillingBusy(null); }
+  };
+  const inviteStaff = async () => {
+    setBillingBusy('invite');
+    try {
+      const { data, error } = await supabase.rpc('create_staff_invite');
+      if (error) throw error;
+      const code = String(data ?? '');
+      setStaffInviteCode(code);
+      if (code) Share.share({ message: `Join ${workspace?.name || 'our company'} on Nexora AI. Install the app, sign up, then open Plans & billing and enter this invite code: ${code}` }).catch(() => {});
+    } catch (e: any) { flash(rpcError(e, "Couldn't create an invite.")); }
+    finally { setBillingBusy(null); }
+  };
+
+  // ---- Real channels (WhatsApp Cloud API / Facebook Page / Instagram) ----
+  const requireOwnerBusiness = (why: string) => {
+    if (workspace?.role === 'owner') return true;
+    Alert.alert(
+      workspace ? 'Owner only' : 'Set up your company first',
+      workspace ? `Only ${workspace.owner_name || 'the business owner'} can ${why}.` : `Create your company in Plans & billing before you ${why}.`,
+      workspace ? [{ text: 'OK' }] : [{ text: 'Not now', style: 'cancel' }, { text: 'Set up company', onPress: () => openBilling(() => setScreen('connectChannels')) }],
+    );
+    return false;
+  };
+  const connectMetaChannel = async (key: string) => {
+    if (!requireOwnerBusiness('connect channels')) return;
+    setChannelBusy(key);
+    try {
+      const out = await callFn('channel-connect', { action: 'oauth_start' });
+      awaitingReturnRef.current = 'oauth';
+      await Linking.openURL(out.url);
+    } catch (e: any) { flash(e?.message || "Couldn't start the connection."); }
+    finally { setChannelBusy(null); }
+  };
+  const submitWhatsApp = async () => {
+    if (!waForm) return;
+    if (!requireOwnerBusiness('connect channels')) return;
+    setChannelBusy('whatsapp');
+    try {
+      const out = await callFn('channel-connect', { action: 'whatsapp', phone_number_id: waForm.phoneNumberId.trim(), access_token: waForm.token.trim() });
+      setWaForm(null);
+      await loadChannels();
+      flash(`WhatsApp connected${out?.handle ? ` (${out.handle})` : ''}`);
+    } catch (e: any) { flash(e?.message || "WhatsApp didn't accept those details."); }
+    finally { setChannelBusy(null); }
+  };
+  const disconnectChannel = (key: string) => {
+    const ch = CONNECT_CHANNELS.find(c => c.key === key);
+    Alert.alert(`Disconnect ${ch?.name ?? key}?`, 'Nexora will stop receiving and answering messages from this account.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Disconnect', style: 'destructive', onPress: async () => {
+        setChannelBusy(key);
+        try { await callFn('channel-connect', { action: 'disconnect', channel: key }); await loadChannels(); flash(`${ch?.name ?? key} disconnected`); }
+        catch (e: any) { flash(e?.message || "Couldn't disconnect."); }
+        finally { setChannelBusy(null); }
+      } },
+    ]);
+  };
+
+  // ---- Live inbox (conversations / conversation_messages) ----
+  const rowToConversation = (r: any, prev?: Conversation): Conversation => {
+    const status: ConversationStatus = (['AI can handle', 'Needs Information', 'AI Low confidence', 'Human attention'] as ConversationStatus[]).includes(r.status) ? r.status : 'AI can handle';
+    return {
+      id: r.id, live: true, channel: r.channel, externalId: r.external_id, handle: r.handle || '',
+      name: r.name || r.handle || 'Customer', platform: CHANNEL_TO_PLATFORM[r.channel] ?? 'Whatsapp',
+      status, unread: r.unread ?? 0, lastMessage: r.last_message || '', lastTime: relTime(r.last_message_at), lastAt: r.last_message_at,
+      blocked: !!r.blocked,
+      messages: prev?.messages ?? [], messagesLoaded: prev?.messagesLoaded ?? false,
+      aiSuggestion: r.ai_suggestion ? { confidence: 85, text: r.ai_suggestion, reasons: ['Drafted by Nexora from your knowledge base', 'Waiting for your approval before it is sent'] } : undefined,
+    };
+  };
+  const loadConversations = async () => {
+    if (SHOW_DEMO_INBOX) return;
+    const { data, error } = await supabase.from('conversations')
+      .select('id,channel,external_id,name,handle,status,unread,last_message,last_message_at,ai_suggestion,blocked')
+      .order('last_message_at', { ascending: false }).limit(200);
+    if (error) { setInboxError("Couldn't load your conversations. Pull to refresh."); throw error; }
+    setInboxError('');
+    setConversations(prev => (data ?? []).map(r => rowToConversation(r, prev.find(p => p.id === r.id))));
+  };
+  const loadConversationMessages = async (convId: string) => {
+    const { data, error } = await supabase.from('conversation_messages')
+      .select('id,direction,sender,text,created_at').eq('conversation_id', convId)
+      .order('created_at', { ascending: true }).limit(300);
+    if (error) throw error;
+    const msgs: ConversationMessage[] = (data ?? []).map(m => ({ id: m.id, from: m.direction === 'in' ? 'customer' : 'business', text: m.text, time: `${relTime(m.created_at)}${m.sender === 'ai' ? '  ·  Nexora AI' : ''}` }));
+    setConversations(prev => prev.map(c => (c.id === convId ? { ...c, messages: msgs, messagesLoaded: true } : c)));
+  };
+  const openConversation = (c: Conversation) => {
+    setActiveConversationId(c.id);
+    setConversations(prev => prev.map(x => (x.id === c.id ? { ...x, unread: 0 } : x)));
+    if (c.live) {
+      loadConversationMessages(c.id).catch(() => flash("Couldn't load this conversation."));
+      if (c.unread > 0) supabase.from('conversations').update({ unread: 0 }).eq('id', c.id).then(() => {});
+    }
+    setScreen('inboxChat');
+  };
+  // Inbox polling while it's on screen (new DMs arrive through the webhook).
+  useEffect(() => {
+    if (!dataLoaded || SHOW_DEMO_INBOX) return;
+    const onInbox = screen === 'main' && mainTab === 'inbox';
+    const onChat = screen === 'inboxChat';
+    if (!onInbox && !onChat) return;
+    loadConversations().catch(() => {});
+    if (onChat && activeConversationId) loadConversationMessages(activeConversationId).catch(() => {});
+    const id = setInterval(() => {
+      loadConversations().catch(() => {});
+      if (onChat && activeConversationId) loadConversationMessages(activeConversationId).catch(() => {});
+    }, 12000);
+    return () => clearInterval(id);
+  }, [screen, mainTab, dataLoaded, activeConversationId]);
+  // "While you were away" numbers for the Home card.
+  useEffect(() => {
+    if (!dataLoaded || screen !== 'main' || mainTab !== 'home') return;
+    const recentAway = awayMode || (awayEndedAt !== null && Date.now() - awayEndedAt < 12 * 3600_000);
+    if (!(homeView === 'away' || (homeView === 'auto' && recentAway))) return;
+    loadAwayStats().catch(() => {});
+    const id = setInterval(() => loadAwayStats().catch(() => {}), 60000);
+    return () => clearInterval(id);
+  }, [screen, mainTab, dataLoaded, homeView, awayMode, awayEndedAt]);
+  // The "+" menu never stays open when you leave Train AI and come back.
+  useEffect(() => { if (screen !== 'knowledgeHealth') setShowAddMenu(false); }, [screen]);
+  // Train AI: refresh the knowledge-search (RAG) index status when the screen opens.
+  useEffect(() => {
+    if (screen === 'knowledgeHealth' && dataLoaded) {
+      loadRagStatus().catch(() => {});
+      loadLearnStatus().catch(() => {});
+      runLearning(false).catch(() => {}); // learns from new chats; the server skips it if it ran in the last few minutes
+    }
+  }, [screen, dataLoaded]);
+  // Keep the Home state card current (orders drive which Home frame shows).
+  useEffect(() => {
+    if (!dataLoaded || screen !== 'main' || mainTab !== 'home') return;
+    refreshOrders().catch(() => {});
+    const id = setInterval(() => refreshOrders().catch(() => {}), 60000);
+    return () => clearInterval(id);
+  }, [screen, mainTab, dataLoaded]);
+  // Coming back from Facebook login or Paystack: re-read the real state.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', st => {
+      if (st !== 'active' || !awaitingReturnRef.current) return;
+      const what = awaitingReturnRef.current;
+      awaitingReturnRef.current = null;
+      if (what === 'oauth') {
+        loadChannels().then(() => flash('Channel status updated')).catch(() => {});
+      } else {
+        // Back from Paystack: confirm the payment straight away (the webhook is only a backup).
+        if (pendingPaymentRef.current) verifyPayment(pendingPaymentRef.current).catch(() => {});
+        else loadWorkspaceInfo().catch(() => {});
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
+  // ---- Report / block ----
+  const openReport = (target: { kind: 'contact'; convId: string } | { kind: 'ai'; text: string }) => {
+    setReportReason(target.kind === 'ai' ? 'inappropriate' : 'spam');
+    setReportDetails('');
+    setReportAlsoBlock(false);
+    setInboxModal(null);
+    setReportTarget(target);
+  };
+  const setConversationBlocked = async (conv: Conversation, blocked: boolean) => {
+    setConversations(prev => prev.map(c => (c.id === conv.id ? { ...c, blocked } : c)));
+    if (!conv.live || !conv.channel || !conv.externalId) return;
+    if (blocked) {
+      const { error } = await supabase.from('blocked_contacts').upsert({ user_id: userId, channel: conv.channel, external_id: conv.externalId, name: conv.name }, { onConflict: 'user_id,channel,external_id' });
+      if (error) throw error;
+    } else {
+      const { error } = await supabase.from('blocked_contacts').delete().eq('channel', conv.channel).eq('external_id', conv.externalId);
+      if (error) throw error;
+    }
+    await supabase.from('conversations').update({ blocked }).eq('id', conv.id);
+  };
+  const toggleBlock = (conv: Conversation) => {
+    const blocking = !conv.blocked;
+    setInboxModal(null);
+    Alert.alert(
+      blocking ? `Block ${conv.name}?` : `Unblock ${conv.name}?`,
+      blocking ? "Their new messages won't reach your inbox and Nexora won't reply to them. You can unblock them any time." : 'Their messages will reach your inbox again.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: blocking ? 'Block' : 'Unblock', style: blocking ? 'destructive' : 'default', onPress: () => {
+          setConversationBlocked(conv, blocking).then(() => flash(blocking ? `${conv.name} is blocked` : `${conv.name} is unblocked`))
+            .catch(() => { setConversations(prev => prev.map(c => (c.id === conv.id ? { ...c, blocked: !blocking } : c))); flash("Couldn't update. Check your connection."); });
+        } },
+      ],
+    );
+  };
+  const submitReport = async () => {
+    if (!reportTarget || !userId || reportSending) return;
+    setReportSending(true);
+    try {
+      if (reportTarget.kind === 'contact') {
+        const conv = conversations.find(c => c.id === reportTarget.convId);
+        if (!conv) throw new Error('Conversation not found');
+        const lastCustomer = [...conv.messages].reverse().find(m => m.from === 'customer')?.text || conv.lastMessage || '';
+        const { error } = await supabase.from('user_reports').insert({
+          reporter_id: userId, source: 'inbox', conversation_id: conv.live ? conv.id : null,
+          reported_name: conv.name.slice(0, 200), reported_handle: (conv.handle || conv.externalId || '').slice(0, 200),
+          channel: conv.channel || conv.platform.toLowerCase(), reason: reportReason,
+          details: reportDetails.trim().slice(0, 1000), excerpt: lastCustomer.slice(0, 1000),
+        });
+        if (error) throw error;
+        if (reportAlsoBlock && !conv.blocked) await setConversationBlocked(conv, true);
+        flash(reportAlsoBlock ? 'Reported and blocked. Thanks for letting us know.' : 'Report sent. Thanks for letting us know.');
+      } else {
+        const { error } = await supabase.from('user_reports').insert({
+          reporter_id: userId, source: 'ai_response', reported_name: 'Nexora AI', channel: 'brain', reason: reportReason,
+          details: reportDetails.trim().slice(0, 1000), excerpt: reportTarget.text.slice(0, 1000),
+        });
+        if (error) throw error;
+        flash('Thanks. The Nexora team will review this answer.');
+      }
+      setReportTarget(null);
+    } catch (e: any) {
+      if (__DEV__) console.log('[report]', e?.message);
+      flash("Couldn't send the report. Check your connection and try again.");
+    } finally { setReportSending(false); }
+  };
+  // ---- Live Leads & Customers ----
+  const LEAD_STAGES = ['Lead', 'Contacted', 'Qualified'];
+  const isLead = (c: ContactRow) => LEAD_STAGES.includes(c.segment);
+  const loadContacts = async () => {
+    setContactsLoading(true);
+    try {
+      const { data, error } = await supabase.from('customers')
+        .select('id,name,channel,handle,segment,location,total_orders,total_spent,last_order_at,customer_since,ai_recommendation,segments,tags,last_interaction_at,created_at')
+        .order('created_at', { ascending: false }).limit(500);
+      if (error) throw error;
+      setContacts((data ?? []) as ContactRow[]);
+    } finally { setContactsLoading(false); }
+  };
+  const openCustomers = (back?: () => void) => {
+    customersReturnRef.current = back ?? (() => goTab('home'));
+    setContactFilter('All'); setContactSearch('');
+    loadContacts().catch(() => flash("Couldn't load your customers."));
+    setScreen('customersLive');
+  };
+  const openContact = (c: ContactRow) => { setActiveContactId(c.id); setContactTab('Overview'); setScreen(isLead(c) ? 'leadDetail' : 'customerDetail'); };
+  const contactPhone = (c: ContactRow) => (/^\+?[\d\s()-]{7,}$/.test(c.handle || '') ? c.handle.replace(/[^\d+]/g, '') : '');
+  const contactEmail = (c: ContactRow) => (EMAIL_REGEX.test(c.handle || '') ? c.handle : '');
+  const contactConversation = (c: ContactRow) => conversations.find(v => v.live && v.channel === String(c.channel || '').toLowerCase()
+    && ((!!c.handle && (v.handle === c.handle || v.externalId === c.handle.replace(/[^\d]/g, ''))) || v.name.toLowerCase() === c.name.toLowerCase()));
+  const messageContact = (c: ContactRow) => {
+    const conv = contactConversation(c);
+    if (conv) { openConversation(conv); return; }
+    const phone = contactPhone(c), email = contactEmail(c);
+    if (String(c.channel).toLowerCase() === 'whatsapp' && phone) { Linking.openURL(`https://wa.me/${phone.replace(/^\+/, '')}`).catch(() => flash("Couldn't open WhatsApp.")); return; }
+    if (email) { Linking.openURL(`mailto:${email}`).catch(() => flash("Couldn't open your email app.")); return; }
+    if (phone) { Linking.openURL(`sms:${phone}`).catch(() => flash("Couldn't open messages.")); return; }
+    flash(`No conversation with ${c.name} yet. They'll appear in your Inbox when they message you.`);
+  };
+  const callContact = (c: ContactRow) => {
+    const phone = contactPhone(c);
+    if (!phone) { flash(`No phone number saved for ${c.name}.`); return; }
+    Linking.openURL(`tel:${phone}`).catch(() => flash("Couldn't start the call."));
+  };
+  const updateContact = async (c: ContactRow, patch: Partial<ContactRow>, done?: string) => {
+    setContacts(prev => prev.map(x => (x.id === c.id ? { ...x, ...patch } : x)));
+    const { error } = await supabase.from('customers').update({ ...patch, updated_at: new Date().toISOString() }).eq('id', c.id);
+    if (error) { flash("Couldn't save that change."); loadContacts().catch(() => {}); return; }
+    if (done) flash(done);
+    if (patch.segment && !LEAD_STAGES.includes(patch.segment) && isLead(c)) setScreen('customerDetail');
+  };
+  const deleteContact = (c: ContactRow) => Alert.alert(`Delete ${c.name}?`, 'This removes them from your contacts. Their orders and conversations are kept.', [
+    { text: 'Cancel', style: 'cancel' },
+    { text: 'Delete', style: 'destructive', onPress: async () => {
+      const { error } = await supabase.from('customers').delete().eq('id', c.id);
+      if (error) { flash("Couldn't delete."); return; }
+      setContacts(prev => prev.filter(x => x.id !== c.id));
+      flash(`${c.name} deleted`);
+      setScreen(isLead(c) ? 'leads' : 'customersLive');
+    } },
+  ]);
+  const [contactFormError, setContactFormError] = useState('');
+  const saveContactForm = async () => {
+    if (!contactForm || !userId || contactSaving) return;
+    const name = contactForm.name.trim(), email = contactForm.email.trim().toLowerCase(), phone = contactForm.phone.trim();
+    // Errors are shown inside the form: toasts sit behind the bottom sheet and can't be seen.
+    if (!name) { setContactFormError('Enter a name.'); return; }
+    if (!phone && !email) { setContactFormError('Add a phone number or an email address.'); return; }
+    if (email && !EMAIL_REGEX.test(email)) { setContactFormError('Enter a valid email address.'); return; }
+    if (phone && phone.replace(/\D/g, '').length < 7) { setContactFormError('Enter a full phone number.'); return; }
+    setContactFormError('');
+    setContactSaving(true);
+    // location, ai_recommendation and customer_since are NOT NULL in the database: send '' / a date, never null.
+    const { error } = await supabase.from('customers').insert({
+      user_id: userId, name, channel: email && !phone ? 'Email' : 'Whatsapp', handle: phone || email,
+      segment: contactForm.kind === 'lead' ? 'Lead' : 'New', location: contactForm.location.trim(),
+      ai_recommendation: contactForm.note.trim(), customer_since: localIsoDate(),
+      last_interaction_at: new Date().toISOString(), tags: [], segments: [],
+    });
+    setContactSaving(false);
+    if (error) {
+      if (__DEV__) console.log('[contact save]', error.message);
+      setContactFormError(/network|fetch/i.test(error.message) ? "Couldn't reach Nexora. Check your connection and try again." : `Couldn't save: ${error.message}`);
+      return;
+    }
+    flash(contactForm.kind === 'lead' ? 'Lead added' : 'Customer added');
+    setContactForm(null);
+    loadContacts().catch(() => {});
+  };
+  // Save a chat contact from the Inbox as a lead.
+  const saveConversationAsLead = async (conv: Conversation) => {
+    setInboxModal(null);
+    if (!userId) return;
+    const exists = contacts.some(c => c.name.toLowerCase() === conv.name.toLowerCase() && String(c.channel).toLowerCase() === (conv.channel || conv.platform.toLowerCase()));
+    if (exists) { flash(`${conv.name} is already in your contacts`); return; }
+    const { error } = await supabase.from('customers').insert({ user_id: userId, name: conv.name, channel: conv.platform, handle: conv.handle || conv.externalId || '', segment: 'Lead', last_interaction_at: conv.lastAt ?? new Date().toISOString(), tags: [], segments: [] });
+    if (error) { flash("Couldn't save the lead."); return; }
+    loadContacts().catch(() => {});
+    flash(`${conv.name} saved as a lead`);
+  };
+  const ordersFor = (c: ContactRow) => orders.filter(o => (o.customer_name || '').trim().toLowerCase() === c.name.trim().toLowerCase());
+  const money = (n: number) => (n >= 1e6 ? `$${(n / 1e6).toFixed(2)}M` : n >= 1e4 ? `$${(n / 1e3).toFixed(1)}K` : `$${n.toFixed(2)}`);
+  const contactLastSeen = (c: ContactRow) => relTime(c.last_interaction_at || c.created_at);
+  const renderContactForm = () => {
+    if (!contactForm) return null;
+    const f = contactForm;
+    const set = (k: keyof typeof f) => (t: string) => { if (contactFormError) setContactFormError(''); setContactForm(p => (p ? { ...p, [k]: t } : p)); };
+    const close = () => { setContactFormError(''); setContactForm(null); };
+    return (
+      <Modal visible transparent animationType="slide" onRequestClose={close} statusBarTranslucent>
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+        <Pressable style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)' }} onPress={close} accessibilityLabel="Close" />
+        <ScrollView style={{ flexGrow: 0, backgroundColor: '#FFF', borderTopLeftRadius: 22, borderTopRightRadius: 22 }} contentContainerStyle={{ padding: 20, paddingBottom: 20 + insets.bottom }} keyboardShouldPersistTaps="handled">
+          <Text style={{ fontSize: 18, fontWeight: '700', color: '#0B1220' }}>{f.kind === 'lead' ? 'Add lead' : 'Add customer'}</Text>
+          <Text style={[styles.detailFieldLabel, { marginTop: 12 }]}>Full name*</Text>
+          <TextInput value={f.name} onChangeText={set('name')} placeholder="Enter name" placeholderTextColor="#A5AFBB" style={styles.editInput} autoCapitalize="words" maxLength={120} />
+          <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Phone number (WhatsApp)</Text>
+          <TextInput value={f.phone} onChangeText={set('phone')} placeholder="+234 803 000 0000" placeholderTextColor="#A5AFBB" style={styles.editInput} keyboardType="phone-pad" maxLength={20} />
+          <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Email address</Text>
+          <TextInput value={f.email} onChangeText={set('email')} placeholder="name@example.com" placeholderTextColor="#A5AFBB" style={styles.editInput} keyboardType="email-address" autoCapitalize="none" maxLength={200} />
+          <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Location</Text>
+          <TextInput value={f.location} onChangeText={set('location')} placeholder="e.g. Lagos, Nigeria" placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={80} />
+          <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>{f.kind === 'lead' ? 'What are they interested in?' : 'Note'}</Text>
+          <TextInput value={f.note} onChangeText={set('note')} placeholder={f.kind === 'lead' ? 'e.g. Wants the blue headphone in bulk' : 'Optional'} placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={300} />
+          {!!contactFormError && (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 12, padding: 10, borderRadius: 10, backgroundColor: '#FDEDED' }}>
+              <Ionicons name="alert-circle" size={16} color="#D64545" />
+              <Text style={{ flex: 1, color: '#B42318', fontSize: 13 }}>{contactFormError}</Text>
+            </View>
+          )}
+          <Pressable disabled={contactSaving} onPress={saveContactForm} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 16 }]}>
+            {contactSaving ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>{f.kind === 'lead' ? 'Save lead' : 'Save customer'}</Text>}
+          </Pressable>
+        </ScrollView>
+        </KeyboardAvoidingView>
+      </Modal>
+    );
+  };
+  // How much Nexora did while the owner was away (Home-1d card).
+  const loadAwayStats = async () => {
+    const since = new Date(awayStartedAt ?? Date.now() - 24 * 3600_000).toISOString();
+    const head = { count: 'exact' as const, head: true };
+    const [m, e, x, c] = await Promise.all([
+      supabase.from('conversation_messages').select('id', head).eq('sender', 'ai').gte('created_at', since),
+      supabase.from('schedule_events').select('id', head).eq('created_by', 'ai').gte('created_at', since),
+      supabase.from('escalations').select('id', head).gte('created_at', since),
+      supabase.from('conversations').select('id', head).gte('created_at', since),
+    ]);
+    const n = (r: any) => (r?.error ? 0 : r?.count ?? 0);
+    setAwayStats({ actions: n(m) + n(e) + n(x), opportunities: n(c) });
+  };
+
+  // ---- RAG (Retrieval-Augmented Generation) ----
+  // Every answer from Nexora is built from passages retrieved from your knowledge
+  // (items + uploaded documents) by the rag-index / nexora-agent functions.
+  type RagStatus = { items: number; passages: number; pending: number; document_passages: number; documents: number; documents_indexed: number };
+  const [ragStatus, setRagStatus] = useState<RagStatus | null>(null);
+  const [ragError, setRagError] = useState('');
+  const [ragSyncing, setRagSyncing] = useState(false);
+  const [ragQuery, setRagQuery] = useState('');
+  const [ragResults, setRagResults] = useState<null | { id: string; title: string; source_type: string; category: string; content: string; similarity: number; keyword?: boolean; item_id: string | null; document_id: string | null; source_url?: string | null }[]>(null);
+  const [ragSearching, setRagSearching] = useState(false);
+  const [sourceSheet, setSourceSheet] = useState<RagSource | null>(null);
+  const loadRagStatus = async () => {
+    try { const r = await callFn('rag-index', { action: 'status' }); setRagStatus(r as RagStatus); setRagError(''); }
+    catch (e: any) { setRagStatus(null); setRagError(/relation|does not exist|not available|schema cache/i.test(String(e?.message)) ? 'Knowledge search needs its one-time database setup.' : (e?.message || "Couldn't check the index.")); }
+  };
+  // Index older documents and embed every waiting passage (a batch per call).
+  const syncRag = async (quiet = false) => {
+    if (ragSyncing) return;
+    setRagSyncing(true);
+    try {
+      // Each call stays inside Supabase's per-request CPU limit (one document read, or a few
+      // embeddings), so keep calling until nothing is left. Stops if a call makes no progress.
+      let stalled = 0, lastPending = Number.MAX_SAFE_INTEGER;
+      for (let i = 0; i < 200; i++) {
+        const r = await callFn('rag-index', { action: 'documents' }, 60000);
+        const pending = r?.pending ?? 0, docsLeft = r?.remaining_documents ?? 0;
+        setRagStatus(prev => (prev ? { ...prev, pending } : prev));
+        if (pending === 0 && docsLeft === 0) break;
+        stalled = pending >= lastPending && !(r?.indexed_passages > 0) ? stalled + 1 : 0;
+        if (stalled >= 3) break;
+        lastPending = pending;
+        if (i % 10 === 9) loadRagStatus().catch(() => {});
+      }
+      await loadRagStatus();
+      if (!quiet) flash('Knowledge search is up to date');
+    } catch (e: any) {
+      if (!quiet) flash(e?.message || "Couldn't update knowledge search.");
+      loadRagStatus().catch(() => {});
+    } finally { setRagSyncing(false); }
+  };
+  const testRagSearch = async () => {
+    const q = ragQuery.trim();
+    if (!q) return;
+    setRagSearching(true);
+    try { const r = await callFn('rag-index', { action: 'search', query: q, k: 5 }); setRagResults(r.results ?? []); }
+    catch (e: any) { setRagResults([]); flash(e?.message || 'Search failed.'); }
+    finally { setRagSearching(false); }
+  };
+  const openSource = (src: { item_id: string | null; document_id: string | null; title: string; snippet?: string; content?: string; category?: string; type?: string; source_type?: string; url?: string | null; source_url?: string | null }) => {
+    const webUrl = src.url || src.source_url;
+    if ((src.type || src.source_type) === 'web' && webUrl) { setSourceSheet(null); openInApp(webUrl, src.title); return; }
+    if (src.item_id) {
+      const cat = KNOWLEDGE_CATEGORIES.find(k => knowledgeData[k].items.some(i => i.id === src.item_id));
+      if (cat) { setSourceSheet(null); openItemDetail(cat, src.item_id); return; }
+    }
+    setSourceSheet({ n: 0, title: src.title, type: (src.type || src.source_type) === 'document' ? 'document' : 'item', category: src.category || '', item_id: src.item_id, document_id: src.document_id, snippet: src.snippet || src.content || '' });
+  };
+  const renderSourceSheet = () => !sourceSheet ? null : (
+    <Modal visible transparent animationType="slide" onRequestClose={() => setSourceSheet(null)} statusBarTranslucent>
+      <Pressable style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)' }} onPress={() => setSourceSheet(null)} accessibilityLabel="Close" />
+      <View style={{ backgroundColor: '#FFF', borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 20, paddingBottom: 24 + insets.bottom }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <Ionicons name={sourceSheet.type === 'document' ? 'document-text-outline' : 'cube-outline'} size={18} color="#1E56A0" />
+          <Text style={{ flex: 1, fontSize: 16, fontWeight: '700', color: '#0B1220' }} numberOfLines={2}>{sourceSheet.title}</Text>
+        </View>
+        <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}>{sourceSheet.type === 'document' ? 'Passage from an uploaded document' : `From your ${sourceSheet.category || 'knowledge'}`}</Text>
+        <Text style={{ fontSize: 14, color: '#0B1220', lineHeight: 20, marginTop: 12 }}>{sourceSheet.snippet}</Text>
+      </View>
+    </Modal>
+  );
+  // "Sources" row under an AI answer.
+  const renderSources = (sources?: RagSource[]) => {
+    if (!sources?.length) return null;
+    return (
+      <View style={{ marginTop: 6, maxWidth: '92%' }}>
+        <Text style={{ fontSize: 11, color: '#8FA3BC', marginBottom: 4 }}>{sources.some(x => x.type === 'web') ? 'From your knowledge and online research' : 'From your knowledge'}</Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+          {sources.map(src => (
+            <Pressable key={`${src.n}-${src.title}`} onPress={() => openSource(src)} accessibilityRole="button" accessibilityLabel={`Source ${src.n}: ${src.title}`}
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 12, paddingHorizontal: 8, paddingVertical: 4, maxWidth: 220 }}>
+              <Text style={{ fontSize: 11, fontWeight: '700', color: '#7FB2FF' }}>[{src.n}]</Text>
+              <Ionicons name={src.type === 'document' ? 'document-text-outline' : src.type === 'web' ? 'globe-outline' : 'cube-outline'} size={11} color="#C9D6E6" />
+              <Text style={{ fontSize: 11, color: '#C9D6E6' }} numberOfLines={1}>{src.title}</Text>
+            </Pressable>
+          ))}
+        </View>
+      </View>
+    );
+  };
+
+  // ---- In-app browser: anything online opens inside Nexora ----
+  // Sign-ins (Facebook) and payments (Paystack) still use the phone's browser on purpose:
+  // those providers block embedded browsers, and the phone's browser is safer for card details.
+  // (browser state is declared earlier, before the Android back handler that uses it)
+  const [recentLinks, setRecentLinks] = useState<{ title: string; url: string }[]>([]);
+  const hostOf = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u; } };
+  const loadReader = async (url: string) => {
+    setReaderLoading(true); setReaderError('');
+    try {
+      const r = await callFn('nexora-web', { action: 'read', url }, 30000);
+      const page = r.page as ReaderPage;
+      setReaderPage(page);
+      setBrowserNav(prev => ({ ...prev, title: page.title || prev.title, url: page.url || url, loading: false, progress: 1 }));
+    } catch (e: any) {
+      setReaderPage(null);
+      setReaderError(e?.message || "Couldn't open that page.");
+      setBrowserNav(prev => ({ ...prev, loading: false }));
+    } finally { setReaderLoading(false); }
+  };
+  // Move back or forward through pages opened in the reader.
+  const readerStep = (dir: number) => {
+    const h = readerHistory;
+    const idx = Math.max(0, Math.min(h.list.length - 1, h.idx + dir));
+    if (idx === h.idx || !h.list[idx]) return;
+    setReaderHistory({ ...h, idx });
+    setBrowserUrl(h.list[idx]);
+    loadReader(h.list[idx]);
+  };
+  const openInApp = (url: string, title?: string) => {
+    if (!/^https?:\/\//i.test(url)) { Linking.openURL(url).catch(() => flash("Couldn't open that link.")); return; }
+    if (screen !== 'browser') browserReturnRef.current = { screen, tab: mainTab };
+    setReaderHistory(h => (screen === 'browser' ? { list: [...h.list.slice(0, h.idx + 1), url], idx: h.idx + 1 } : { list: [url], idx: 0 }));
+    if (readerMode || !WebView) { setReaderPage(null); loadReader(url); }
+    setBrowserUrl(url);
+    setBrowserNav({ title: title || hostOf(url), url, canGoBack: false, canGoForward: false, loading: true, progress: 0 });
+    setRecentLinks(prev => [{ title: title || hostOf(url), url }, ...prev.filter(l => l.url !== url)].slice(0, 8));
+    setScreen('browser');
+  };
+  const closeBrowser = () => {
+    const r = browserReturnRef.current;
+    setMainTab(r.tab);
+    setScreen(r.screen === 'browser' ? 'main' : r.screen);
+  };
+  const askAboutPage = () => {
+    const { title, url } = browserNav;
+    setMainTab('brain'); setScreen('main');
+    sendChatMessage(`Look at this page for my business and tell me what it offers, the key details (prices, contacts, requirements) and whether it's useful for us: "${title}" ${url}`);
+  };
+  const shareLink = (url: string, title?: string) => { Share.share({ message: title ? `${title}\n${url}` : url }).catch(() => {}); };
+
+  // ---- Find online (web search that opens results inside Nexora) ----
+  type FoundLink = { title: string; url: string; domain: string; why: string };
+  const [exploreQuery, setExploreQuery] = useState('');
+  const [exploreLoading, setExploreLoading] = useState(false);
+  const [exploreResult, setExploreResult] = useState<null | { query: string; summary: string; results: FoundLink[] }>(null);
+  const [exploreError, setExploreError] = useState('');
+  const openExplore = (q?: string) => {
+    setExploreError('');
+    setScreen('explore');
+    if (q) { setExploreQuery(q); runExplore(q); }
+  };
+  const runExplore = async (qIn?: string) => {
+    const q = (qIn ?? exploreQuery).trim();
+    if (!q || exploreLoading) return;
+    setExploreLoading(true); setExploreError('');
+    try {
+      const r = await callFn('nexora-web', { action: 'find', query: q }, 60000);
+      setExploreResult({ query: q, summary: r.summary || '', results: r.results || [] });
+    } catch (e: any) {
+      setExploreResult(null);
+      setExploreError(e?.message || "Couldn't search the web right now.");
+    } finally { setExploreLoading(false); }
+  };
+
+  // ---- Trending for your business (live web research, cached on the phone for 6 hours) ----
+  type Trend = { title: string; type: string; summary: string; why_it_matters: string; action: string; sources: { title: string; url: string }[] };
+  type TrendingBusiness = { name: string; summary: string; opportunity: string; sources: { title: string; url: string }[] };
+  type TrendsData = { generated_at: string; business: string; industry: string; country: string; trends: Trend[]; businesses?: TrendingBusiness[]; next_refresh_at?: string; focus: string };
+  const [trendsData, setTrendsData] = useState<TrendsData | null>(null);
+  const [trendsLoading, setTrendsLoading] = useState(false);
+  const [trendsError, setTrendsError] = useState('');
+  const [trendsFocus, setTrendsFocus] = useState('');
+  const trendsCachePath = () => (FileSystem.documentDirectory && userId ? `${FileSystem.documentDirectory}nexora-trends-${userId}.json` : '');
+  const loadTrends = async (opts: { force?: boolean; focus?: string } = {}) => {
+    const focus = opts.focus ?? trendsFocus;
+    const path = trendsCachePath();
+    if (!opts.force && !focus && path) {
+      try {
+        const info = await FileSystem.getInfoAsync(path);
+        if (info.exists) {
+          const cached = JSON.parse(await FileSystem.readAsStringAsync(path)) as TrendsData;
+          if (cached?.trends?.length) {
+            setTrendsData(cached);
+            // Shown straight away; the server copy (refreshed every 6 hours by the scheduler) is checked below.
+            if (Date.now() - new Date(cached.generated_at).getTime() < 15 * 60_000) return;
+          }
+        }
+      } catch { /* no usable cache */ }
+    }
+    if (trendsLoading) return;
+    setTrendsLoading(true); setTrendsError('');
+    try {
+      // The server keeps trends for 6 hours and a scheduler refreshes them, so this is usually instant.
+      const r = await callFn('nexora-web', { action: 'trends', focus, refresh: !!opts.force && !focus }, 90000);
+      const data: TrendsData = { generated_at: r.generated_at, business: r.business, industry: r.industry, country: r.country, trends: r.trends || [], businesses: r.businesses || [], next_refresh_at: r.next_refresh_at, focus };
+      setTrendsData(data);
+      if (!focus && path) FileSystem.writeAsStringAsync(path, JSON.stringify(data)).catch(() => {});
+    } catch (e: any) {
+      setTrendsError(e?.message || "Couldn't check what's trending right now.");
+    } finally { setTrendsLoading(false); }
+  };
+  const openTrends = () => { setScreen('trends'); loadTrends().catch(() => {}); };
+  const TREND_LOOK: Record<string, { icon: string; color: string; bg: string; label: string }> = {
+    demand: { icon: 'trending-up', color: '#1E9E6D', bg: '#E6F4ED', label: 'Demand' },
+    social: { icon: 'logo-instagram', color: '#C2367C', bg: '#FBE8F1', label: 'Social' },
+    competitor: { icon: 'storefront-outline', color: '#C2760C', bg: '#FDEFE0', label: 'Competitors' },
+    news: { icon: 'newspaper-outline', color: '#1E56A0', bg: '#EAF1FB', label: 'News' },
+    regulation: { icon: 'shield-checkmark-outline', color: '#7C3AED', bg: '#F1EAFE', label: 'Rules & tax' },
+    event: { icon: 'calendar-outline', color: '#0F766E', bg: '#E2F5F3', label: 'Event' },
+    price: { icon: 'pricetag-outline', color: '#D64545', bg: '#FDEDED', label: 'Prices' },
+  };
+
+  // ---- Self-learning knowledge: Nexora learns from the owner's chats and inbox, and researches online ----
+  type LearnStatus = { enabled: boolean; last_run_at: string | null; researched_at: string | null; learned_total: number; waiting_review: number; web_passages: number };
+  type LearnedItem = { id: string; category: string; name: string; subtitle: string; status: string; overview: string; source: string; source_detail: string; created_at: string };
+  const [learnStatus, setLearnStatus] = useState<LearnStatus | null>(null);
+  const [learnSetupNeeded, setLearnSetupNeeded] = useState(false);
+  const [learnBusy, setLearnBusy] = useState<'' | 'run' | 'research'>('');
+  const [learnedItems, setLearnedItems] = useState<LearnedItem[]>([]);
+  const [learnedLoading, setLearnedLoading] = useState(false);
+  const [learnEdit, setLearnEdit] = useState<null | { id: string; name: string; content: string }>(null);
+  const [researchFacts, setResearchFacts] = useState<{ title: string; content: string; url: string }[]>([]);
+  const isOwnerUser = !workspace || workspace.role === 'owner';
+  const loadLearnStatus = async () => {
+    try { setLearnStatus(await callFn('nexora-learn', { action: 'status' })); setLearnSetupNeeded(false); }
+    catch (e: any) { setLearnStatus(null); setLearnSetupNeeded(/learning_state|column|does not exist|schema/i.test(String(e?.message))); }
+  };
+  const runLearning = async (force: boolean) => {
+    if (!isOwnerUser || learnBusy) return;
+    if (force) setLearnBusy('run');
+    try {
+      const r = await callFn('nexora-learn', { action: 'run', force }, 90000);
+      if (r?.learned > 0) { refreshKnowledge().catch(() => {}); syncRag(true).catch(() => {}); }
+      if (force) flash(r?.learned > 0 ? `Nexora learned ${r.learned} new thing${r.learned === 1 ? '' : 's'} from your chats` : (r?.skipped || 'Nothing new to learn yet.'));
+      loadLearnStatus().catch(() => {});
+    } catch (e: any) { if (force) flash(e?.message || "Couldn't learn right now."); }
+    finally { if (force) setLearnBusy(''); }
+  };
+  const researchBusiness = async () => {
+    if (!isOwnerUser || learnBusy) return;
+    setLearnBusy('research');
+    try {
+      const r = await callFn('nexora-web', { action: 'research' }, 120000);
+      setResearchFacts(r.facts ?? []);
+      flash(`Saved ${r.saved ?? 0} facts from the web to your knowledge`);
+      loadLearnStatus().catch(() => {});
+      syncRag(true).catch(() => {});
+    } catch (e: any) { flash(e?.message || "Couldn't research online right now."); }
+    finally { setLearnBusy(''); }
+  };
+  const toggleLearning = async (enabled: boolean) => {
+    setLearnStatus(prev => (prev ? { ...prev, enabled } : prev));
+    try { await callFn('nexora-learn', { action: 'settings', enabled }); flash(enabled ? 'Nexora will learn from your chats' : 'Automatic learning is off'); }
+    catch { setLearnStatus(prev => (prev ? { ...prev, enabled: !enabled } : prev)); flash("Couldn't change that."); }
+  };
+  const loadLearned = async () => {
+    setLearnedLoading(true);
+    try { const r = await callFn('nexora-learn', { action: 'list' }); setLearnedItems(r.items ?? []); }
+    catch (e: any) { flash(e?.message || "Couldn't load what Nexora learned."); }
+    finally { setLearnedLoading(false); }
+  };
+  const openLearned = () => { setScreen('learned'); loadLearned().catch(() => {}); };
+  const approveLearned = async (id: string, edits?: { name: string; content: string }) => {
+    try {
+      await callFn('nexora-learn', { action: 'approve', item_id: id, ...(edits ?? {}) });
+      setLearnedItems(prev => prev.filter(i => i.id !== id));
+      setLearnEdit(null);
+      flash('Confirmed and added to your knowledge');
+      refreshKnowledge().catch(() => {}); loadLearnStatus().catch(() => {});
+    } catch (e: any) { flash(e?.message || "Couldn't save that."); }
+  };
+  const dismissLearned = async (id: string) => {
+    setLearnedItems(prev => prev.filter(i => i.id !== id));
+    try { await callFn('nexora-learn', { action: 'dismiss', item_id: id }); refreshKnowledge().catch(() => {}); loadLearnStatus().catch(() => {}); }
+    catch { flash("Couldn't remove that."); loadLearned().catch(() => {}); }
+  };
+
+  // ---- Partner network: pairing businesses and people with complementary needs ----
+  type NetForm = { display_name: string; industry: string; city: string; country: string; bio: string; offers: string; needs: string; tags: string; visible: boolean; whatsapp: string; email: string; website: string };
+  type NetMatch = { user_id: string; display_name: string; industry: string; city: string; country: string; bio: string; offers: string; needs: string; tags: string[]; score: number; reason: string };
+  type NetConnection = { id: string; direction: 'in' | 'out'; status: string; message: string; reason: string; created_at: string; other: { user_id: string; display_name: string; industry?: string; city?: string; country?: string; bio?: string; offers?: string }; contacts: null | { whatsapp: string; email: string; website: string } };
+  const blankNet = (): NetForm => ({ display_name: workspace?.name || '', industry: workspace?.industry || '', city: '', country: workspace?.country || '', bio: '', offers: '', needs: '', tags: '', visible: true, whatsapp: '', email: '', website: '' });
+  const [netTab, setNetTab] = useState<'matches' | 'requests' | 'profile'>('matches');
+  const [netForm, setNetForm] = useState<NetForm>(blankNet());
+  const [netHasProfile, setNetHasProfile] = useState(false);
+  const [netVisible, setNetVisible] = useState(false);
+  const [netLoading, setNetLoading] = useState(false);
+  const [netError, setNetError] = useState('');
+  const [netBusy, setNetBusy] = useState('');
+  const [netMatches, setNetMatches] = useState<NetMatch[] | null>(null);
+  const [netConnections, setNetConnections] = useState<NetConnection[]>([]);
+  const [connectTarget, setConnectTarget] = useState<NetMatch | null>(null);
+  const [connectMsg, setConnectMsg] = useState('');
+  // Partners found on the open web (businesses not on Nexora yet).
+  type WebPartner = { name: string; kind: string; url: string; domain: string; location: string; why: string; how_to_approach: string };
+  const [netWeb, setNetWeb] = useState<WebPartner[] | null>(null);
+  const [netWebLoading, setNetWebLoading] = useState(false);
+  const [netWebError, setNetWebError] = useState('');
+  const [netWebFocus, setNetWebFocus] = useState('');
+  const searchPartnersWeb = async () => {
+    setNetWebLoading(true); setNetWebError('');
+    try { const r = await callFn('nexora-web', { action: 'partners', focus: netWebFocus.trim() || undefined }, 90000); setNetWeb(r.results ?? []); }
+    catch (e: any) { setNetWebError(e?.message || "Couldn't search the web right now."); }
+    finally { setNetWebLoading(false); }
+  };
+  const loadNetMatches = async () => {
+    try { const r = await callFn('nexora-network', { action: 'matches' }, 60000); setNetMatches(r.matches ?? []); }
+    catch (e: any) { setNetMatches([]); setNetError(e?.message || "Couldn't load matches."); }
+  };
+  const loadNetConnections = async () => {
+    try { const r = await callFn('nexora-network', { action: 'connections' }); setNetConnections(r.connections ?? []); } catch { /* shown as empty */ }
+  };
+  const openNetwork = async () => {
+    setScreen('network'); setNetError(''); setNetLoading(true);
+    try {
+      const r = await callFn('nexora-network', { action: 'get' });
+      if (r.profile) {
+        const p = r.profile, c = r.contacts ?? {};
+        setNetForm({ display_name: p.display_name, industry: p.industry, city: p.city, country: p.country, bio: p.bio, offers: p.offers, needs: p.needs, tags: (p.tags ?? []).join(', '), visible: !!p.visible, whatsapp: c.whatsapp ?? '', email: c.email ?? '', website: c.website ?? '' });
+        setNetHasProfile(true); setNetVisible(!!p.visible);
+        setNetTab(p.visible ? 'matches' : 'profile');
+        if (p.visible) loadNetMatches().catch(() => {});
+      } else {
+        setNetForm(blankNet()); setNetHasProfile(false); setNetVisible(false); setNetTab('profile');
+      }
+      loadNetConnections().catch(() => {});
+    } catch (e: any) { setNetError(e?.message || "Couldn't open the partner network."); }
+    finally { setNetLoading(false); }
+  };
+  const draftNetProfile = async () => {
+    setNetBusy('draft');
+    try {
+      const r = await callFn('nexora-network', { action: 'draft' }, 60000);
+      const p = r.profile ?? {};
+      setNetForm(f => ({ ...f, display_name: p.display_name || f.display_name, industry: p.industry || f.industry, city: p.city || f.city, country: p.country || f.country, bio: p.bio || f.bio, offers: p.offers || f.offers, needs: p.needs || f.needs, tags: (p.tags ?? []).join(', ') || f.tags }));
+      flash('Nexora drafted your profile. Check it, then save.');
+    } catch (e: any) { flash(e?.message || "Couldn't draft a profile."); }
+    finally { setNetBusy(''); }
+  };
+  const saveNetProfile = async () => {
+    const f = netForm;
+    if (!f.display_name.trim()) { flash('Add a name for your profile'); return; }
+    if (f.email.trim() && !EMAIL_REGEX.test(f.email.trim())) { flash('Enter a valid email address'); return; }
+    setNetBusy('save');
+    try {
+      await callFn('nexora-network', { action: 'save', profile: { ...f, tags: f.tags.split(',').map(t => t.trim()).filter(Boolean) }, contacts: { whatsapp: f.whatsapp, email: f.email, website: f.website } }, 60000);
+      setNetHasProfile(true); setNetVisible(f.visible);
+      flash(f.visible ? 'Profile saved. Finding your matches…' : 'Profile saved (hidden from others)');
+      if (f.visible) { setNetTab('matches'); setNetMatches(null); loadNetMatches().catch(() => {}); }
+    } catch (e: any) { flash(e?.message || "Couldn't save your profile."); }
+    finally { setNetBusy(''); }
+  };
+  const sendConnect = async () => {
+    if (!connectTarget) return;
+    setNetBusy('connect');
+    try {
+      await callFn('nexora-network', { action: 'connect', to_user: connectTarget.user_id, message: connectMsg.trim(), reason: connectTarget.reason });
+      setNetMatches(prev => (prev ?? []).filter(m => m.user_id !== connectTarget.user_id));
+      flash(`Request sent to ${connectTarget.display_name}`);
+      setConnectTarget(null); setConnectMsg('');
+      loadNetConnections().catch(() => {});
+    } catch (e: any) { flash(e?.message || "Couldn't send the request."); }
+    finally { setNetBusy(''); }
+  };
+  const respondConnection = async (c: NetConnection, accept: boolean) => {
+    setNetBusy(c.id);
+    try {
+      await callFn('nexora-network', { action: 'respond', id: c.id, accept });
+      flash(c.direction === 'out' ? 'Request cancelled' : accept ? `You're connected with ${c.other.display_name}` : 'Request declined');
+      loadNetConnections().catch(() => {});
+    } catch (e: any) { flash(e?.message || "Couldn't update the request."); }
+    finally { setNetBusy(''); }
+  };
+
+  // ---- Feature shortcuts from the web side panels ----
+  const AUTH_SCREENS: Screen[] = ['launch', 'onboarding', 'signup', 'login', 'forgotPassword', 'verifyEmail'];
+  // ---- Terms of Use inside the app ----
+  const termsReturnRef = useRef<{ screen: Screen; tab: MainTab }>({ screen: 'main', tab: 'profile' });
+  const openTerms = () => { termsReturnRef.current = { screen, tab: mainTab }; setScreen('terms'); };
+  const closeTerms = () => { setMainTab(termsReturnRef.current.tab); setScreen(termsReturnRef.current.screen); };
+
+  // ---- 4-digit email code after sign-up (only once Nexora's email sender is set up) ----
+  const [verifyCode, setVerifyCode] = useState('');
+  const [verifyEmailAddr, setVerifyEmailAddr] = useState('');
+  const [verifyBusy, setVerifyBusy] = useState(false);
+  const [verifyError, setVerifyError] = useState('');
+  const [verifyInfo, setVerifyInfo] = useState('');
+  const [verifyCooldown, setVerifyCooldown] = useState(0);
+  const verifyCheckedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (verifyCooldown <= 0) return;
+    const t = setTimeout(() => setVerifyCooldown(c => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [verifyCooldown]);
+  const sendVerifyCode = async () => {
+    setVerifyBusy(true); setVerifyError(''); setVerifyInfo('');
+    try {
+      const r = await callFn('email-verify', { action: 'send' });
+      if (r.verified || r.required === false) { setScreen('main'); return; }
+      setVerifyInfo(`We sent a new code to ${r.email || verifyEmailAddr}.`); setVerifyCooldown(60);
+    } catch (e: any) { setVerifyError(e?.message || "Couldn't send the code."); }
+    finally { setVerifyBusy(false); }
+  };
+  const checkVerifyCode = async () => {
+    if (!/^\d{4}$/.test(verifyCode)) { setVerifyError('Enter the 4-digit code from your email.'); return; }
+    setVerifyBusy(true); setVerifyError('');
+    try {
+      await callFn('email-verify', { action: 'check', code: verifyCode });
+      setVerifyCode(''); flash('Email confirmed. Welcome to Nexora!'); setScreen('main');
+    } catch (e: any) { setVerifyError(e?.message || "That code didn't work."); }
+    finally { setVerifyBusy(false); }
+  };
+  // Once per signed-in account: if a code is required and not done yet, hold the user on the code screen.
+  useEffect(() => {
+    if (!userId || screen !== 'main' || verifyCheckedRef.current === userId) return;
+    verifyCheckedRef.current = userId;
+    (async () => {
+      try {
+        const st = await callFn('email-verify', { action: 'status' });
+        if (!st.required) return;
+        setVerifyEmailAddr(st.email || ''); setVerifyCode(''); setVerifyError('');
+        setScreen('verifyEmail');
+        const r = await callFn('email-verify', { action: 'send' }).catch((e: any) => { setVerifyError(e?.message || ''); return null; });
+        if (r?.sent) { setVerifyInfo(`We sent a 4-digit code to ${r.email || st.email}.`); setVerifyCooldown(60); }
+      } catch { /* never block sign-in because of a network hiccup */ }
+    })();
+  }, [userId, screen]);
+
+  // ---- Smart follow-ups: Nexora drafts messages for quiet leads and past customers ----
+  // Business Insights dashboard (charts + AI ideas). Free on every plan, the 14-day trial included.
+  const [insights, setInsights] = useState<any | null>(null);
+  const [insightsLoading, setInsightsLoading] = useState(false);
+  const [insightsError, setInsightsError] = useState('');
+  const [insightsW, setInsightsW] = useState(0);
+  const [insightsOpenIdea, setInsightsOpenIdea] = useState<number | null>(0);
+  const loadInsights = async (refresh = false) => {
+    setInsightsError(''); setInsightsLoading(true);
+    try {
+      const r = await callFn('nexora-insights', { action: 'insights', refresh, tz_offset_min: -new Date().getTimezoneOffset() }, 90000);
+      setInsights({ ...r, loaded_at: Date.now() });
+    } catch (e: any) { setInsightsError(e?.message || "Couldn't load your insights."); }
+    finally { setInsightsLoading(false); }
+  };
+  // "When Nexora needs you": how Nexora phones / texts / emails the owner about escalations (nexora-alert function).
+  const [alertCfg, setAlertCfg] = useState<any | null>(null);
+  const [alertInfo, setAlertInfo] = useState<{ twilio: boolean; email: boolean; log: any[]; notSetUp?: boolean } | null>(null);
+  const [alertLoading, setAlertLoading] = useState(false);
+  const [alertBusy, setAlertBusy] = useState('');
+  const [alertPhone, setAlertPhone] = useState('');
+  const [alertCode, setAlertCode] = useState('');
+  const [alertCodeSent, setAlertCodeSent] = useState<'' | 'call' | 'sms'>('');
+  const [alertMsg, setAlertMsg] = useState<{ text: string; bad?: boolean } | null>(null);
+  const alertReturnRef = useRef<() => void>(() => goTab('profile'));
+  const loadOwnerAlerts = async () => {
+    setAlertLoading(true);
+    try {
+      const r = await callFn('nexora-alert', { action: 'settings' });
+      setAlertCfg(r.settings);
+      setAlertInfo({ twilio: !!r.twilio_ready, email: !!r.email_ready, log: r.log ?? [] });
+      if (r.settings?.phone) setAlertPhone(p => p || r.settings.phone);
+    } catch (e: any) {
+      if (e?.code === 'not_set_up') setAlertInfo({ twilio: false, email: false, log: [], notSetUp: true });
+      else setAlertMsg({ text: e?.message || "Couldn't load your alert settings.", bad: true });
+    } finally { setAlertLoading(false); }
+  };
+  const openOwnerAlerts = (back?: () => void) => {
+    alertReturnRef.current = back || (() => goTab('profile'));
+    setAlertMsg(null); setScreen('ownerAlerts'); loadOwnerAlerts().catch(() => {});
+  };
+  const saveOwnerAlerts = async (patch: Record<string, unknown>) => {
+    const prev = alertCfg;
+    setAlertCfg((c: any) => ({ ...(c || { call_enabled: true, call_when: 'high', call_after_min: 10, email_enabled: true, sms_fallback: true, urgent_overrides_quiet: true, only_when_away: false, quiet_start: null, quiet_end: null }), ...patch }));
+    try {
+      const r = await callFn('nexora-alert', { action: 'save', tz_offset_min: -new Date().getTimezoneOffset(), ...patch });
+      setAlertCfg(r.settings);
+    } catch (e: any) { setAlertCfg(prev); flash(e?.message || "Couldn't save that."); }
+  };
+  const startPhoneVerify = async (via: 'call' | 'sms') => {
+    setAlertMsg(null); setAlertBusy('verify');
+    try {
+      await callFn('nexora-alert', { action: 'verify_start', phone: alertPhone.trim(), via });
+      setAlertCodeSent(via); setAlertCode('');
+      setAlertMsg({ text: via === 'call' ? 'Nexora is calling you now. Answer and listen for your 4-digit code.' : 'We texted you a 4-digit code.' });
+      setAlertCfg((c: any) => ({ ...(c || {}), phone: alertPhone.trim(), phone_verified: false }));
+    } catch (e: any) { setAlertMsg({ text: e?.message || "Couldn't send the code.", bad: true }); }
+    finally { setAlertBusy(''); }
+  };
+  const checkPhoneVerify = async () => {
+    setAlertMsg(null); setAlertBusy('check');
+    try {
+      await callFn('nexora-alert', { action: 'verify_check', code: alertCode.trim() });
+      setAlertCodeSent(''); setAlertCode('');
+      setAlertMsg({ text: 'Your number is confirmed. Nexora can now call you when it needs you.' });
+      await saveOwnerAlerts({ call_enabled: true });
+      loadOwnerAlerts().catch(() => {});
+    } catch (e: any) { setAlertMsg({ text: e?.message || "That code didn't work.", bad: true }); }
+    finally { setAlertBusy(''); }
+  };
+  const testOwnerCall = async () => {
+    setAlertMsg(null); setAlertBusy('test');
+    try { await callFn('nexora-alert', { action: 'test_call' }); setAlertMsg({ text: 'Calling you now…' }); }
+    catch (e: any) { setAlertMsg({ text: e?.message || "Couldn't place the test call.", bad: true }); }
+    finally { setAlertBusy(''); }
+  };
+  const ackEscalation = async (id: string) => {
+    setEscAlerts(m => ({ ...m, [id]: { ...(m[id] || {}), acknowledged_at: new Date().toISOString(), response: 'On it (from the app)' } }));
+    try { await callFn('nexora-alert', { action: 'ack', escalation_id: id }); flash("Got it - Nexora won't call you about this"); }
+    catch (e: any) { flash(e?.message || "Couldn't update that."); }
+  };
+  // ---- "Decide once": you decide, Nexora carries it out and learns it (nexora-decide function) ----
+  type DecideState = { esc: EscalationRow; step: 'write' | 'draft' | 'done'; decision: string; message: string; to: string; sendable: boolean; reason: string; busy: '' | 'draft' | 'send' | 'close' | 'rule'; error: string; sent?: boolean; rule?: { situation: string; action: string; limits: string } | null; ruleSaved?: boolean };
+  const [decide, setDecide] = useState<DecideState | null>(null);
+  const [autonomy, setAutonomy] = useState<any | null>(null);
+  const [rulesList, setRulesList] = useState<any[] | null>(null);
+  const [rulesLoading, setRulesLoading] = useState(false);
+  const [ruleForm, setRuleForm] = useState<{ situation: string; action: string; limits: string } | null>(null);
+  const rulesReturnRef = useRef<() => void>(() => goTab('profile'));
+  const patchDecide = (p: Partial<DecideState>) => setDecide(d => (d ? { ...d, ...p } : d));
+  const openDecide = (esc: EscalationRow, decision = '') => setDecide({ esc, step: 'write', decision, message: '', to: '', sendable: false, reason: '', busy: '', error: '' });
+  const decideDraft = async () => {
+    const d = decide; if (!d || !d.decision.trim()) return;
+    patchDecide({ busy: 'draft', error: '' });
+    try {
+      const r = await callFn('nexora-decide', { action: 'draft', escalation_id: d.esc.id, decision: d.decision.trim() }, 45000);
+      patchDecide({ step: 'draft', message: r.message, to: r.to, sendable: !!r.sendable, reason: r.reason || '', busy: '' });
+    } catch (e: any) { patchDecide({ busy: '', error: e?.message || "Couldn't prepare the message." }); }
+  };
+  const decideFinish = async (send: boolean) => {
+    const d = decide; if (!d) return;
+    patchDecide({ busy: send ? 'send' : 'close', error: '' });
+    try {
+      const r = await callFn('nexora-decide', { action: send ? 'send' : 'close', escalation_id: d.esc.id, decision: d.decision.trim(), message: d.message.trim() }, 60000);
+      setEscalations(prev => prev.filter(x => x.id !== d.esc.id));
+      setEscAlerts(m => ({ ...m, [d.esc.id]: { ...(m[d.esc.id] || {}), acknowledged_at: new Date().toISOString(), response: d.decision.trim() } }));
+      patchDecide({ step: 'done', busy: '', sent: !!r.sent, to: r.to || d.to, rule: r.rule || null });
+      loadAutonomy().catch(() => {});
+    } catch (e: any) { patchDecide({ busy: '', error: e?.message || "Couldn't finish that." }); }
+  };
+  const saveDecideRule = async () => {
+    const d = decide; if (!d?.rule) return;
+    patchDecide({ busy: 'rule', error: '' });
+    try {
+      await callFn('nexora-decide', { action: 'save_rule', situation: d.rule.situation, action_text: d.rule.action, limits: d.rule.limits, source_escalation_id: d.esc.id });
+      patchDecide({ busy: '', ruleSaved: true });
+      setRulesList(null); loadAutonomy().catch(() => {});
+    } catch (e: any) { patchDecide({ busy: '', error: e?.message || "Couldn't save the rule." }); }
+  };
+  const loadAutonomy = async () => {
+    try { const r = await callFn('nexora-decide', { action: 'autonomy' }); setAutonomy(r); }
+    catch (e: any) { if (e?.code === 'not_set_up') setAutonomy({ notSetUp: true }); }
+  };
+  const loadRules = async () => {
+    setRulesLoading(true);
+    try {
+      const { data, error } = await supabase.from('owner_rules').select('id,situation,action,limits,enabled,uses,last_used_at,source_customer,created_at').order('created_at', { ascending: false });
+      if (error) throw error;
+      setRulesList(data ?? []);
+    } catch { setRulesList([]); }
+    finally { setRulesLoading(false); }
+  };
+  const openRules = (back?: () => void) => { rulesReturnRef.current = back || (() => goTab('profile')); setRuleForm(null); setScreen('rules'); loadRules().catch(() => {}); loadAutonomy().catch(() => {}); };
+  const toggleRule = async (id: string, enabled: boolean) => {
+    setRulesList(l => (l ?? []).map(r => (r.id === id ? { ...r, enabled } : r)));
+    const { error } = await supabase.from('owner_rules').update({ enabled }).eq('id', id);
+    if (error) { setRulesList(l => (l ?? []).map(r => (r.id === id ? { ...r, enabled: !enabled } : r))); flash("Couldn't update that rule."); }
+  };
+  const deleteRule = async (id: string) => {
+    const before = rulesList;
+    setRulesList(l => (l ?? []).filter(r => r.id !== id));
+    const { error } = await supabase.from('owner_rules').delete().eq('id', id);
+    if (error) { setRulesList(before); flash("Couldn't remove that rule."); } else flash('Rule removed. Nexora will ask you again next time.');
+  };
+  const addRule = async () => {
+    const f = ruleForm; if (!f || f.situation.trim().length < 3 || f.action.trim().length < 3) return;
+    try {
+      await callFn('nexora-decide', { action: 'save_rule', situation: f.situation.trim(), action_text: f.action.trim(), limits: f.limits.trim() });
+      setRuleForm(null); loadRules().catch(() => {}); flash('Rule saved');
+    } catch (e: any) { flash(e?.message || "Couldn't save the rule."); }
+  };
+  useEffect(() => { if (userId && !autonomy) loadAutonomy().catch(() => {}); }, [userId]);
+  useEffect(() => { if (screen === 'agendaPriority' && userId) loadAutonomy().catch(() => {}); }, [screen]);
+  // How much Nexora handled without you this week (Priority actions, Insights, Rules).
+  const renderAutonomyCard = (onDark = false) => {
+    const a = autonomy;
+    if (!a || a.notSetUp) return null;
+    const rate: number | null = a.rate;
+    const delta = rate !== null && a.prev_rate !== null && a.prev_rate !== undefined ? rate - a.prev_rate : null;
+    const hours = Math.round((a.minutes_saved || 0) / 6) / 10;
+    const sub = onDark ? '#B9C6D8' : '#8FA2BC';
+    return (
+      <Pressable onPress={() => openRules(() => setScreen(screen))} accessibilityRole="button" accessibilityLabel="Autonomy score" style={{ borderRadius: 18, padding: 16, backgroundColor: onDark ? '#0F2942' : '#0B1220', marginBottom: 14 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+          <Svg width={64} height={64} viewBox="0 0 64 64">
+            <Circle cx={32} cy={32} r={27} stroke="rgba(255,255,255,0.14)" strokeWidth={7} fill="none" />
+            {rate !== null && <Circle cx={32} cy={32} r={27} stroke="#3FCB8E" strokeWidth={7} fill="none" strokeLinecap="round" strokeDasharray={`${(2 * Math.PI * 27 * rate) / 100} ${2 * Math.PI * 27}`} transform="rotate(-90 32 32)" />}
+            <SvgText x={32} y={37} fontSize={rate !== null && rate >= 100 ? 14 : 16} fontWeight="800" fill="#FFFFFF" textAnchor="middle">{rate === null ? '\u2014' : `${rate}%`}</SvgText>
+          </Svg>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '800' }}>{rate === null ? 'Nexora autonomy' : `Nexora handled ${rate}% of chats without you`}</Text>
+            <Text style={{ color: '#B9C6D8', fontSize: 12.5, marginTop: 3, lineHeight: 17 }}>
+              {rate === null ? 'Turn on Away mode and connect a channel. This shows how much Nexora runs on its own each week.'
+                : `This week: ${a.chats} chat${a.chats === 1 ? '' : 's'}, needed you ${a.needed_you} time${a.needed_you === 1 ? '' : 's'}${a.by_rule ? `, ${a.by_rule} decided by your rules` : ''}${hours >= 0.1 ? ` \u00b7 saved you about ${hours} h` : ''}`}
+            </Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+              {delta !== null && <Text style={{ fontSize: 11, fontWeight: '800', color: delta >= 0 ? '#0B1220' : '#FFFFFF', backgroundColor: delta >= 0 ? '#3FCB8E' : '#D64545', borderRadius: 8, paddingHorizontal: 7, paddingVertical: 2, overflow: 'hidden' }}>{`${delta >= 0 ? '\u25B2' : '\u25BC'} ${Math.abs(delta)} pts vs last week`}</Text>}
+              <Text style={{ fontSize: 11, fontWeight: '700', color: '#D7E2F0', backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 8, paddingHorizontal: 7, paddingVertical: 2, overflow: 'hidden' }}>{`${a.rules_on || 0} rule${a.rules_on === 1 ? '' : 's'} on`}</Text>
+            </View>
+          </View>
+          <Ionicons name="chevron-forward" size={16} color={sub} />
+        </View>
+      </Pressable>
+    );
+  };
+  // Decide sheet: what you decided -> the message Nexora sends -> "handle this yourself next time?"
+  const renderDecideSheet = () => {
+    const d = decide;
+    if (!d) return null;
+    const close = () => { if (!d.busy) setDecide(null); };
+    const input = { borderWidth: 1, borderColor: '#D5DEE8', borderRadius: 12, padding: 12, fontSize: 15, color: '#0B1220', backgroundColor: '#FFFFFF', textAlignVertical: 'top' as const };
+    const btn = (label: string, onPress: () => void, primary: boolean, busy: boolean, disabled = false) => (
+      <Pressable onPress={onPress} disabled={disabled || !!d.busy} accessibilityRole="button" style={{ flex: 1, minHeight: 48, borderRadius: 12, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12, backgroundColor: primary ? (disabled ? '#A9BBD3' : '#1E56A0') : '#FFFFFF', borderWidth: primary ? 0 : 1, borderColor: '#5381BB' }}>
+        {busy ? <ActivityIndicator color={primary ? '#FFF' : '#1E56A0'} /> : <Text style={{ color: primary ? '#FFFFFF' : '#1E56A0', fontWeight: '700', fontSize: 15, textAlign: 'center' }}>{label}</Text>}
+      </Pressable>
+    );
+    const quick = /refund/i.test(d.esc.reason) ? ['Approve the refund and apologise', 'Offer a replacement instead', 'Refuse politely and explain our policy']
+      : /lead|shop link/i.test(d.esc.reason) ? ['Send our price list and ask what they need', 'Offer a call tomorrow morning', 'Give them 10% off their first order']
+      : /complain|unhappy|angry|late|delay/i.test(d.esc.reason) ? ['Apologise and give 10% off the next order', 'Apologise and ship it free today', 'Ask for their order number so I can check']
+      : ['Yes, go ahead', 'No, politely decline', 'Ask them for more details'];
+    return (
+      <Modal visible transparent animationType="slide" onRequestClose={close}>
+        <Pressable style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)' }} onPress={close} />
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <View style={{ backgroundColor: '#F4F7FB', borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 20, paddingBottom: Math.max(insets.bottom, 16) + 12, width: '100%', maxWidth: 620, alignSelf: 'center', maxHeight: hookHeight * 0.9 }}>
+            <ScrollView keyboardShouldPersistTaps="handled">
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                <View style={{ width: 34, height: 34, borderRadius: 17, backgroundColor: '#0B1220', alignItems: 'center', justifyContent: 'center' }}><Ionicons name={d.step === 'done' ? 'checkmark' : 'git-branch-outline'} size={17} color="#FFF" /></View>
+                <Text style={{ flex: 1, fontSize: 18, fontWeight: '800', color: '#0B1220' }}>{d.step === 'write' ? 'What should Nexora do?' : d.step === 'draft' ? 'Nexora will send this' : d.sent ? 'Done. Nexora sent it' : 'Decision saved'}</Text>
+                <Pressable onPress={close} hitSlop={10} accessibilityLabel="Close"><Ionicons name="close" size={22} color="#5C6B7A" /></Pressable>
+              </View>
+              <View style={{ backgroundColor: '#FFFFFF', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#E3E9F0', marginBottom: 14 }}>
+                <Text style={{ fontSize: 12, color: '#5C6B7A', fontWeight: '700' }}>{`${d.esc.customer_name || 'A customer'}${d.esc.channel ? ` \u00b7 ${d.esc.channel}` : ''}`}</Text>
+                <Text style={{ fontSize: 14, color: '#0B1220', marginTop: 3 }} numberOfLines={4}>{d.esc.reason}</Text>
+              </View>
+
+              {d.step === 'write' && (
+                <View>
+                  <TextInput value={d.decision} onChangeText={(v) => patchDecide({ decision: v })} placeholder="e.g. Approve the refund and apologise for the delay" placeholderTextColor="#A5AFBB" multiline autoFocus={!d.decision} style={[input, { minHeight: 84 }]} maxLength={600} />
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+                    {quick.map(q => (
+                      <Pressable key={q} onPress={() => patchDecide({ decision: q })} style={{ paddingHorizontal: 12, paddingVertical: 7, borderRadius: 16, backgroundColor: d.decision === q ? '#1E56A0' : '#EAF1FB' }}>
+                        <Text style={{ fontSize: 13, fontWeight: '600', color: d.decision === q ? '#FFFFFF' : '#1E56A0' }}>{q}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
+                    {btn('Just mark it solved', () => decideFinish(false), false, d.busy === 'close')}
+                    {btn('Next', decideDraft, true, d.busy === 'draft', !d.decision.trim())}
+                  </View>
+                </View>
+              )}
+
+              {d.step === 'draft' && (
+                <View>
+                  <Text style={{ fontSize: 13, color: '#5C6B7A', marginBottom: 6 }}>{d.sendable ? `To ${d.to}. You can edit it.` : d.reason}</Text>
+                  <TextInput value={d.message} onChangeText={(v) => patchDecide({ message: v })} multiline style={[input, { minHeight: 110 }]} maxLength={1500} />
+                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
+                    {btn('Back', () => patchDecide({ step: 'write' }), false, false)}
+                    {d.sendable ? btn('Send to customer', () => decideFinish(true), true, d.busy === 'send', !d.message.trim()) : btn('Save decision', () => decideFinish(false), true, d.busy === 'close')}
+                  </View>
+                </View>
+              )}
+
+              {d.step === 'done' && (
+                <View>
+                  <Text style={{ fontSize: 14, color: '#0B1220', lineHeight: 20 }}>{d.sent ? `Nexora sent your answer to ${d.to} and closed this.` : 'Nexora saved your decision and closed this.'}</Text>
+                  {d.rule ? (
+                    d.ruleSaved ? (
+                      <View style={{ marginTop: 14, flexDirection: 'row', gap: 8, alignItems: 'center', backgroundColor: '#E9F8EE', borderRadius: 12, padding: 12 }}>
+                        <Ionicons name="checkmark-circle" size={18} color="#1E9E6D" />
+                        <Text style={{ flex: 1, fontSize: 13.5, color: '#0B1220' }}>Learned. Next time Nexora handles this on its own and tells you afterwards.</Text>
+                      </View>
+                    ) : (
+                      <View style={{ marginTop: 14, backgroundColor: '#0B1220', borderRadius: 14, padding: 14 }}>
+                        <Text style={{ color: '#7FB2FF', fontSize: 12, fontWeight: '800', letterSpacing: 0.4 }}>DECIDE ONCE</Text>
+                        <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '700', marginTop: 4 }}>Should Nexora handle this itself next time?</Text>
+                        <Text style={{ color: '#B9C6D8', fontSize: 12, marginTop: 10 }}>When</Text>
+                        <TextInput value={d.rule.situation} onChangeText={(v) => patchDecide({ rule: { ...d.rule!, situation: v } })} multiline style={[input, { marginTop: 4, minHeight: 44, backgroundColor: '#0F2942', borderColor: '#2A3C57', color: '#FFFFFF' }]} maxLength={300} />
+                        <Text style={{ color: '#B9C6D8', fontSize: 12, marginTop: 10 }}>Nexora will</Text>
+                        <TextInput value={d.rule.action} onChangeText={(v) => patchDecide({ rule: { ...d.rule!, action: v } })} multiline style={[input, { marginTop: 4, minHeight: 44, backgroundColor: '#0F2942', borderColor: '#2A3C57', color: '#FFFFFF' }]} maxLength={400} />
+                        <Text style={{ color: '#B9C6D8', fontSize: 12, marginTop: 10 }}>Limit (optional)</Text>
+                        <TextInput value={d.rule.limits} onChangeText={(v) => patchDecide({ rule: { ...d.rule!, limits: v } })} placeholder="e.g. up to \u20a610,000" placeholderTextColor="#6D7F98" style={[input, { marginTop: 4, backgroundColor: '#0F2942', borderColor: '#2A3C57', color: '#FFFFFF' }]} maxLength={300} />
+                        <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
+                          <Pressable onPress={() => setDecide(null)} style={{ flex: 1, minHeight: 46, borderRadius: 12, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#2A3C57' }}><Text style={{ color: '#D7E2F0', fontWeight: '700' }}>Not now</Text></Pressable>
+                          <Pressable onPress={saveDecideRule} disabled={!!d.busy} style={{ flex: 1.4, minHeight: 46, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: '#3FCB8E' }}>{d.busy === 'rule' ? <ActivityIndicator color="#0B1220" /> : <Text style={{ color: '#0B1220', fontWeight: '800' }}>Yes, learn this</Text>}</Pressable>
+                        </View>
+                        <Text style={{ color: '#8FA2BC', fontSize: 11.5, marginTop: 10 }}>You can switch rules off any time in What Nexora decides for you. Nexora never takes payments.</Text>
+                      </View>
+                    )
+                  ) : null}
+                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>{btn(d.rule && !d.ruleSaved ? 'Close' : 'Done', () => setDecide(null), !d.rule || !!d.ruleSaved, false)}</View>
+                </View>
+              )}
+              {!!d.error && <Text style={{ color: '#D64545', fontSize: 13, marginTop: 10 }}>{d.error}</Text>}
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+    );
+  };
+
+  // ---- In-app call (Figma "Nexora calls owner", node 1466:371) ----
+  // While the app is open, a new escalation rings here: Nexora reads it out (web voice) and the keypad
+  // gives the same choices as the phone call. When the app is closed, the real phone call (Twilio) does it.
+  type LiveCall = { esc: EscalationRow; startedAt: number; endedAt?: number; outcome?: 'ack' | 'snooze' | 'answer' | 'solved' | 'hangup'; answer?: string; said: string };
+  const [liveCall, setLiveCall] = useState<LiveCall | null>(null);
+  const [lastCall, setLastCall] = useState<LiveCall | null>(null);
+  const [callKeypad, setCallKeypad] = useState(false);
+  const [callAnswerOpen, setCallAnswerOpen] = useState(false);
+  const [callAnswerText, setCallAnswerText] = useState('');
+  const liveCallRef = useRef<LiveCall | null>(null);
+  liveCallRef.current = liveCall;
+  const seenEscRef = useRef<Set<string> | null>(null);
+  const canSpeak = IS_WEB && typeof window !== 'undefined' && 'speechSynthesis' in window;
+  const speak = (text: string) => {
+    if (!canSpeak) return;
+    try {
+      const synth = window.speechSynthesis; synth.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 0.98; u.volume = callSpeakerOn ? 1 : 0.75;
+      const v = synth.getVoices().find(x => /en[-_](GB|US|NG)/i.test(x.lang) && /female|samantha|google|jenny|aria/i.test(x.name)) || synth.getVoices().find(x => /^en/i.test(x.lang));
+      if (v) u.voice = v;
+      synth.speak(u);
+    } catch { /* no voice */ }
+  };
+  const stopSpeaking = () => { try { if (canSpeak) window.speechSynthesis.cancel(); } catch { /* ignore */ } };
+  const callMenu = 'Press 1 if you have got it. Press 2 and I will remind you in 30 minutes. Press 3 to hear this again. Press 4 to tell me what to do. Press 5 to mark it solved.';
+  const callScript = (e: EscalationRow) => {
+    const first = (fullName || '').trim().split(' ')[0];
+    return `Hello${first ? ` ${first}` : ''}, this is Nexora. ${e.customer_name || 'A customer'}${e.channel ? ` on ${e.channel}` : ''} needs you. ${e.reason}`;
+  };
+  const callHeadline = (e: EscalationRow) => {
+    const r = (e.reason || '').toLowerCase();
+    if (/refund/.test(r)) return 'Refund request needs your attention';
+    if (/complain|angry|unhappy|abus|threat/.test(r)) return 'Unhappy customer needs your attention';
+    if (/lead|shop link/.test(r)) return 'New lead needs your attention';
+    if (/order|bulk|wholesale|price|discount/.test(r)) return 'Order decision needs your attention';
+    return `${e.customer_name || 'A customer'} needs your attention`;
+  };
+  const startLiveCall = (e: EscalationRow, back?: () => void) => {
+    const said = callScript(e);
+    setCallMuted(false); setCallSpeakerOn(true); setCallKeypad(false); setCallAnswerOpen(false); setCallAnswerText('');
+    setLiveCall({ esc: e, startedAt: Date.now(), said });
+    callReturnRef.current = back || (() => { refreshEscalations().catch(() => {}); setScreen('agendaPriority'); });
+    setScreen('activeCall');
+    setTimeout(() => speak(`${said} ${callMenu}`), 400);
+  };
+  const finishLiveCall = (outcome: LiveCall['outcome'], answer?: string) => {
+    const c = liveCallRef.current; if (!c) return;
+    const done: LiveCall = { ...c, endedAt: Date.now(), outcome, answer };
+    setLiveCall(null); setLastCall(done); setCallKeypad(false); setCallAnswerOpen(false);
+    callReturnRef.current = null;
+    setScreen('callSummary');
+  };
+  const callKey = async (k: string) => {
+    const c = liveCallRef.current; if (!c) return;
+    const id = c.esc.id;
+    if (k === '1') { speak("Thanks. I won't call again about this. Goodbye."); setEscAlerts(m => ({ ...m, [id]: { ...(m[id] || {}), acknowledged_at: new Date().toISOString(), response: 'On it (pressed 1)' } })); callFn('nexora-alert', { action: 'ack', escalation_id: id, response: 'On it (pressed 1)' }).catch(() => {}); setTimeout(() => finishLiveCall('ack'), 1800); return; }
+    if (k === '2') { speak("Okay, I'll call you back in 30 minutes. Goodbye."); callFn('nexora-alert', { action: 'snooze', escalation_id: id }).then(r => setEscAlerts(m => ({ ...m, [id]: { ...(m[id] || {}), snooze_until: r.snooze_until } }))).catch(() => {}); setTimeout(() => finishLiveCall('snooze'), 1800); return; }
+    if (k === '3') { setCallKeypad(false); speak(`${c.said} ${callMenu}`); return; }
+    if (k === '4') { setCallKeypad(false); setCallAnswerOpen(true); speak("Tell me what you'd like done."); return; }
+    if (k === '5') { speak('Marked as solved. Goodbye.'); callFn('nexora-alert', { action: 'ack', escalation_id: id, response: 'Marked solved on the call' }).catch(() => {}); resolveEscalation(id).catch(() => {}); setTimeout(() => finishLiveCall('solved'), 1500); return; }
+    flash('Choose 1 to 5');
+  };
+  const submitCallAnswer = () => {
+    const c = liveCallRef.current; const text = callAnswerText.trim(); if (!c || !text) return;
+    setEscAlerts(m => ({ ...m, [c.esc.id]: { ...(m[c.esc.id] || {}), acknowledged_at: new Date().toISOString(), response: text } }));
+    callFn('nexora-alert', { action: 'ack', escalation_id: c.esc.id, response: text }).catch(() => {});
+    speak("Got it. I've saved that. Goodbye.");
+    setTimeout(() => finishLiveCall('answer', text), 1500);
+  };
+  const hangUpCall = () => {
+    stopSpeaking();
+    if (liveCallRef.current) { finishLiveCall('hangup'); return; }
+    endCall();
+  };
+  // Ring in the app when a new escalation arrives while you're using Nexora (checked every 30 s while the tab is visible).
+  useEffect(() => {
+    if (!userId) return;
+    let stop = false;
+    const tick = async () => {
+      if (stop || (IS_WEB && typeof document !== 'undefined' && document.visibilityState !== 'visible')) return;
+      const since = new Date(Date.now() - 15 * 60000).toISOString();
+      const { data, error } = await supabase.from('escalations').select('id,customer_name,channel,reason,urgency,created_at').eq('status', 'open').gte('created_at', since).order('created_at', { ascending: false }).limit(5);
+      if (error || stop) return;
+      const rows = (data ?? []) as EscalationRow[];
+      if (!seenEscRef.current) { seenEscRef.current = new Set(rows.map(r => r.id)); return; }
+      const fresh = rows.filter(r => !seenEscRef.current!.has(r.id));
+      fresh.forEach(r => seenEscRef.current!.add(r.id));
+      if (!fresh.length) return;
+      setEscalations(prev => [...fresh.filter(f => !prev.some(p => p.id === f.id)), ...prev]);
+      const cfg = alertCfg;
+      const wants = (r: EscalationRow) => (cfg?.call_enabled ?? true) && cfg?.call_when !== 'never' && (r.urgency === 'high' || cfg?.call_when === 'all');
+      const ring = fresh.find(wants);
+      if (ring && !liveCallRef.current && screen !== 'activeCall') startLiveCall(ring);
+      else flash(`${fresh[0].customer_name || 'A customer'} needs your decision`);
+    };
+    tick();
+    const id = setInterval(tick, 30000);
+    return () => { stop = true; clearInterval(id); };
+  }, [userId, alertCfg?.call_when, alertCfg?.call_enabled, screen === 'activeCall']);
+  // Load once after sign-in so Profile / Away mode can say whether Nexora can reach you.
+  useEffect(() => { if (userId && !alertInfo) loadOwnerAlerts().catch(() => {}); }, [userId]);
+  // Email / text links open "Needs your decision" (…/?open=priority).
+  const openParamDoneRef = useRef(false);
+  useEffect(() => {
+    if (!IS_WEB || openParamDoneRef.current || !userId || screen !== 'main' || typeof window === 'undefined') return;
+    openParamDoneRef.current = true;
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      if (sp.get('open') === 'priority') {
+        sp.delete('open'); const q = sp.toString();
+        window.history.replaceState(null, '', `${window.location.pathname}${q ? `?${q}` : ''}`);
+        refreshEscalations().catch(() => {}); setScreen('agendaPriority');
+      }
+    } catch { /* ignore */ }
+  }, [userId, screen]);
+  const openInsights = (refresh = false) => {
+    setScreen('insights');
+    if (refresh || !insights || Date.now() - (insights.loaded_at || 0) > 30 * 60000) loadInsights(refresh).catch(() => {});
+  };
+  type FollowUp = { customer_id: string; name: string; channel: string; handle: string; segment: string; type: 'lead' | 'winback'; days: number; reason: string; message: string };
+  const [followups, setFollowups] = useState<FollowUp[] | null>(null);
+  const [followupsLoading, setFollowupsLoading] = useState(false);
+  const [followupsError, setFollowupsError] = useState('');
+  const openFollowups = async () => {
+    setScreen('followups'); setFollowupsError(''); setFollowupsLoading(true);
+    try { const r = await callFn('nexora-briefing', { action: 'followups' }, 60000); setFollowups(r.followups ?? []); }
+    catch (e: any) { setFollowups(f => f ?? []); setFollowupsError(e?.message || "Couldn't prepare follow-ups."); }
+    finally { setFollowupsLoading(false); }
+  };
+  const sendFollowup = async (f: FollowUp) => {
+    const digits = (f.handle || '').replace(/[^\d+]/g, '');
+    const isEmail = /@/.test(f.handle || '');
+    try {
+      if (isEmail || f.channel === 'Email') { await Linking.openURL(`mailto:${f.handle}?subject=${encodeURIComponent('Following up')}&body=${encodeURIComponent(f.message)}`); }
+      else if (digits.replace('+', '').length >= 7 && f.channel !== 'Instagram' && f.channel !== 'Facebook') { await Linking.openURL(`https://wa.me/${digits.replace(/^\+/, '')}?text=${encodeURIComponent(f.message)}`); }
+      else if (IS_WEB && typeof navigator !== 'undefined' && (navigator as any).clipboard) { await (navigator as any).clipboard.writeText(f.message); flash(`Message copied. Paste it to ${f.name} on ${f.channel}.`); }
+      else { await Share.share({ message: f.message }); }
+    } catch { flash("Couldn't open the app. The message is ready to copy."); }
+  };
+  const markFollowedUp = async (f: FollowUp) => {
+    const patch: Record<string, unknown> = { last_interaction_at: new Date().toISOString() };
+    if (f.segment === 'Lead') patch.segment = 'Contacted';
+    const { error } = await supabase.from('customers').update(patch).eq('id', f.customer_id);
+    if (error) { flash("Couldn't update this contact."); return; }
+    setFollowups(list => (list ?? []).filter(x => x.customer_id !== f.customer_id));
+    flash(f.segment === 'Lead' ? `${f.name} moved to Contacted` : `Marked ${f.name} as followed up`);
+  };
+
+  // ---- AI shop link (owner settings) ----
+  type MyShop = { slug: string; enabled: boolean; headline: string; about: string; whatsapp: string; show_prices: boolean; views: number; chats: number; leads: number };
+  const [myShop, setMyShop] = useState<MyShop | null>(null);
+  const [shopForm, setShopForm] = useState<MyShop | null>(null);
+  const [shopLoading, setShopLoading] = useState(false);
+  const [shopBusy, setShopBusy] = useState(false);
+  const [shopError, setShopError] = useState('');
+  const openStorefront = async () => {
+    setScreen('storefront'); setShopError(''); setShopLoading(true);
+    try { const r = await callFn('nexora-shop', { action: 'mine' }); setMyShop(r.shop); setShopForm(r.shop); }
+    catch (e: any) { setShopError(e?.code === 'setup' ? "The shop link isn't switched on yet. Run the shop SQL script in Supabase, then try again." : (e?.message || "Couldn't open your shop settings.")); }
+    finally { setShopLoading(false); }
+  };
+  const saveShop = async (patch: Partial<MyShop> = {}) => {
+    if (!shopForm) return;
+    const next = { ...shopForm, ...patch };
+    setShopBusy(true); setShopError('');
+    try {
+      const r = await callFn('nexora-shop', { action: 'save', ...next });
+      setMyShop(r.shop); setShopForm(r.shop);
+      flash(patch.enabled === true ? 'Your shop link is live' : patch.enabled === false ? 'Your shop link is switched off' : 'Shop saved');
+    } catch (e: any) { setShopError(e?.message || "Couldn't save your shop."); }
+    finally { setShopBusy(false); }
+  };
+  const shopUrl = (slug: string) => `${SHOP_BASE_URL}/?shop=${slug}`;
+  const copyShopLink = async (slug: string) => {
+    const link = shopUrl(slug);
+    if (IS_WEB && typeof navigator !== 'undefined' && (navigator as any).clipboard) {
+      try { await (navigator as any).clipboard.writeText(link); flash('Link copied'); return; } catch { /* fall back to share */ }
+    }
+    Share.share({ message: `Chat with ${workspace?.name || 'us'} any time and see what we offer: ${link}` }).catch(() => {});
+  };
+
+  // ---- Daily briefing: what needs the owner today, written by Nexora from their own data ----
+  type BriefingItem = { title: string; detail: string; action: string; priority: 'high' | 'medium' | 'low' };
+  type Briefing = { day: string; greeting: string; headline: string; focus: string; items: BriefingItem[]; stats: Record<string, number>; generated_at: string; ai: boolean };
+  const [briefing, setBriefing] = useState<Briefing | null>(null);
+  const [briefingLoading, setBriefingLoading] = useState(false);
+  const [briefingError, setBriefingError] = useState('');
+  const [briefingOpen, setBriefingOpen] = useState(true);
+  const loadBriefing = async (refresh = false) => {
+    setBriefingLoading(true); setBriefingError('');
+    try {
+      const r = await callFn('nexora-briefing', { action: 'today', tz_offset_min: -new Date().getTimezoneOffset(), refresh }, 60000);
+      setBriefing(r.briefing);
+    } catch (e: any) { setBriefingError(e?.code === 'setup' ? 'setup' : (e?.message || "Couldn't prepare your briefing.")); }
+    finally { setBriefingLoading(false); }
+  };
+  useEffect(() => {
+    const desktopHome = IS_WEB && mainTab === 'home' && hookWidth >= WEB_DESKTOP_HOME_MIN;
+    if (!userId || screen !== 'main' || (mainTab !== 'brain' && !desktopHome) || briefingLoading) return;
+    const today = localIsoDate();
+    if (!briefing || briefing.day !== today) loadBriefing().catch(() => {});
+  }, [userId, screen, mainTab]);
+  // Home dashboard: business overview for the last 30 days and recent activity (server-computed from real data).
+  type HomeOverview = { overview: { revenue: { value: number; change: number | null }; orders: { value: number; change: number | null }; customers: { value: number; new: number; change: number | null }; leads: { value: number; change: number | null } };
+    activity: { kind: string; title: string; subtitle: string; at: string; tag: string; action: string; post_id?: string }[] };
+  const [homeOverview, setHomeOverview] = useState<HomeOverview | null>(null);
+  const homeOverviewAtRef = useRef(0);
+  useEffect(() => {
+    if (!userId || screen !== 'main' || mainTab !== 'home' || !IS_WEB || hookWidth < WEB_DESKTOP_HOME_MIN) return;
+    if (Date.now() - homeOverviewAtRef.current < 60000) return;
+    homeOverviewAtRef.current = Date.now();
+    callFn('nexora-briefing', { action: 'overview' }).then(r => setHomeOverview({ overview: r.overview, activity: r.activity ?? [] })).catch(() => {});
+  }, [userId, screen, mainTab, hookWidth]);
+  const runBriefingAction = (a: string) => {
+    switch (a) {
+      case 'inbox': goTab('inbox'); break;
+      case 'attention': refreshEscalations().catch(() => {}); setScreen('agendaPriority'); break;
+      case 'orders': openOrders('Unshipped'); break;
+      case 'leads': openLeads(); break;
+      case 'followups': openFollowups().catch(() => {}); break;
+      case 'customers': openCustomers(() => goTab('brain')); break;
+      case 'agenda': openSchedule(); break;
+      case 'learned': openLearned(); break;
+      case 'community': openCommunity(); break;
+      case 'trends': openTrends(); break;
+    }
+  };
+  const renderBriefingCard = () => briefingError === 'setup' ? null : (
+
+                  <View style={{ marginBottom: 14, padding: 16, borderRadius: 18, backgroundColor: 'rgba(30,86,160,0.28)', borderWidth: 1, borderColor: 'rgba(127,178,255,0.35)' }}>
+                    <Pressable onPress={() => setBriefingOpen(o => !o)} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }} accessibilityRole="button" accessibilityLabel={briefingOpen ? 'Collapse briefing' : 'Expand briefing'}>
+                      <Ionicons name="sunny" size={18} color="#FFD27A" />
+                      <Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '800', flex: 1 }}>Your briefing{briefing?.greeting ? ` · ${briefing.greeting}` : ''}</Text>
+                      {briefing && !briefingLoading && (
+                        <Pressable onPress={() => loadBriefing(true)} hitSlop={8} accessibilityLabel="Refresh briefing"><Ionicons name="refresh" size={16} color="#9FB0C6" /></Pressable>
+                      )}
+                      <Ionicons name={briefingOpen ? 'chevron-up' : 'chevron-down'} size={16} color="#9FB0C6" />
+                    </Pressable>
+                    {briefingOpen && (
+                      briefingLoading && !briefing ? (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 }}><ActivityIndicator color="#7FB2FF" size="small" /><Text style={{ color: '#B6C3D4', fontSize: 13 }}>Nexora is looking at your chats, orders and schedule…</Text></View>
+                      ) : briefingError && !briefing ? (
+                        <Pressable onPress={() => loadBriefing()} style={{ marginTop: 10 }}><Text style={{ color: '#FFB4A8', fontSize: 13 }}>{briefingError} Tap to try again.</Text></Pressable>
+                      ) : briefing ? (
+                        <>
+                          <Text style={{ color: '#FFFFFF', fontSize: 17, fontWeight: '800', marginTop: 10, lineHeight: 23 }}>{briefing.headline}</Text>
+                          {!!briefing.focus && <Text style={{ color: '#C9D6E6', fontSize: 13, marginTop: 4, lineHeight: 19 }}>{briefing.focus}</Text>}
+                          <View style={{ marginTop: 10, gap: 8 }}>
+                            {briefing.items.map((it, i) => (
+                              <Pressable key={`${it.title}-${i}`} onPress={() => runBriefingAction(it.action)} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 10, padding: 10, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.07)' }}>
+                                <View style={{ width: 30, height: 30, borderRadius: 15, alignItems: 'center', justifyContent: 'center', backgroundColor: it.priority === 'high' ? 'rgba(239,68,68,0.22)' : it.priority === 'medium' ? 'rgba(255,210,122,0.18)' : 'rgba(127,178,255,0.16)' }}>
+                                  <Ionicons name={(BRIEF_ICON[it.action] || 'ellipse') as any} size={15} color={it.priority === 'high' ? '#FCA5A5' : it.priority === 'medium' ? '#FFD27A' : '#7FB2FF'} />
+                                </View>
+                                <View style={{ flex: 1, minWidth: 0 }}>
+                                  <Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '700' }} numberOfLines={1}>{it.title}</Text>
+                                  {!!it.detail && <Text style={{ color: '#9FB0C6', fontSize: 12, marginTop: 1 }} numberOfLines={2}>{it.detail}</Text>}
+                                </View>
+                                <Ionicons name="chevron-forward" size={16} color="#5C6B7A" />
+                              </Pressable>
+                            ))}
+                          </View>
+                          {(briefing.stats?.sales_7d ?? 0) + (briefing.stats?.sales_prev_7d ?? 0) > 0 && (() => {
+                            const a = briefing.stats.sales_7d ?? 0, b = briefing.stats.sales_prev_7d ?? 0;
+                            const pct = b > 0 ? Math.round(((a - b) / b) * 100) : null;
+                            return (
+                              <Text style={{ color: '#9FB0C6', fontSize: 12, marginTop: 10 }}>
+                                Sales this week: <Text style={{ color: '#FFFFFF', fontWeight: '700' }}>{a.toLocaleString()}</Text>
+                                {pct !== null && <Text style={{ color: pct >= 0 ? '#6EE7B7' : '#FCA5A5', fontWeight: '700' }}>  {pct >= 0 ? '▲' : '▼'} {Math.abs(pct)}% vs last week</Text>}
+                              </Text>
+                            );
+                          })()}
+                        </>
+                      ) : null
+                    )}
+                  </View>
+                
+  );
+  const BRIEF_ICON: Record<string, string> = { followups: 'paper-plane', inbox: 'chatbubbles', attention: 'hand-left', orders: 'cube', leads: 'person-add', customers: 'people', agenda: 'calendar', learned: 'bulb', community: 'chatbubbles-outline', trends: 'trending-up' };
+
+  // ---- Community: business owners helping each other (Nexora answers questions too) ----
+  type CommKind = 'question' | 'tip' | 'win' | 'offer';
+  type CommPost = { id: string; kind: CommKind; title: string; body: string; tags: string[]; author_name: string; author_label: string; upvotes: number; reply_count: number; ai_answered: boolean; solved: boolean; created_at: string; mine: boolean; author_level?: string };
+  type CommReply = { id: string; post_id: string; body: string; is_ai: boolean; author_name: string; author_label: string; upvotes: number; accepted: boolean; created_at: string; mine: boolean; author_level?: string };
+  type CommDraft = { kind: CommKind; title: string; body: string; tags: string };
+  const [commPosts, setCommPosts] = useState<CommPost[] | null>(null);
+  const [commVoted, setCommVoted] = useState<string[]>([]);
+  const [commSort, setCommSort] = useState<'hot' | 'new' | 'top'>('hot');
+  const [commKind, setCommKind] = useState<'all' | CommKind | 'mine'>('all');
+  const [commQuery, setCommQuery] = useState('');
+  const [commHelpers, setCommHelpers] = useState<{ name: string; label: string; points: number; answers: number }[]>([]);
+  const [commStats, setCommStats] = useState({ total: 0, today: 0 });
+  const [commError, setCommError] = useState('');
+  const [commLoading, setCommLoading] = useState(false);
+  const [commDraft, setCommDraft] = useState<CommDraft | null>(null);
+  const [commDraftError, setCommDraftError] = useState('');
+  const [commBusy, setCommBusy] = useState('');
+  const [commThread, setCommThread] = useState<{ post: CommPost; replies: CommReply[] } | null>(null);
+  const [commThreadLoading, setCommThreadLoading] = useState(false);
+  const [commReplyText, setCommReplyText] = useState('');
+  const commPollRef = useRef<any>(null);
+  type CommActivity = { id: string; type: 'reply' | 'upvote' | 'accepted' | 'ai_answer' | 'level'; actor_name: string; post_id: string | null; reply_id: string | null; snippet: string; read: boolean; created_at: string; post_title: string };
+  type CommMe = { level: string; rank: number; points: number; next_level: string | null; next_at: number | null; answers: number; best: number };
+  const [commUnread, setCommUnread] = useState(0);
+  const [commMe, setCommMe] = useState<CommMe | null>(null);
+  const [commActivity, setCommActivity] = useState<CommActivity[] | null>(null);
+  const [commActivityOpen, setCommActivityOpen] = useState(false);
+  const commUnreadAtRef = useRef(0);
+  // Unread community alerts, refreshed at most every 2 minutes while Brain or the Community is open.
+  const refreshCommUnread = async (force = false) => {
+    if (!userId || (!force && Date.now() - commUnreadAtRef.current < 120000)) return;
+    commUnreadAtRef.current = Date.now();
+    try { const r = await callFn('nexora-community', { action: 'activity' }); setCommUnread(r.unread ?? 0); } catch { /* not set up yet */ }
+  };
+  const openCommActivity = async () => {
+    setCommActivityOpen(true); setCommActivity(null);
+    try {
+      const r = await callFn('nexora-community', { action: 'activity' });
+      setCommActivity(r.items ?? []);
+      if (r.unread) { setCommUnread(0); callFn('nexora-community', { action: 'activity_read' }).catch(() => {}); }
+    } catch { setCommActivity([]); }
+  };
+  const commAgo = (iso: string) => {
+    const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+    if (s < 60) return 'just now';
+    if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+    if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+    if (s < 604800) return `${Math.floor(s / 86400)}d ago`;
+    return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+  };
+  const openCommPostById = async (id: string) => {
+    setCommActivityOpen(false); setCommThread(null); setCommReplyText(''); setScreen('communityPost');
+    await loadCommThread(id);
+  };
+  // "Ask the community": turn a question asked in Brain into a community post.
+  const askCommunity = (question: string) => {
+    openCommunity();
+    startCommPost('question', question.replace(/\s+/g, ' ').trim().slice(0, 140), '');
+  };
+  const loadCommunity = async (o: { sort?: string; kind?: string; q?: string } = {}) => {
+    const sort = o.sort ?? commSort, kind = o.kind ?? commKind, q = o.q ?? commQuery;
+    setCommLoading(true); setCommError('');
+    try {
+      const r = await callFn('nexora-community', { action: 'feed', sort, kind: kind === 'all' || kind === 'mine' ? undefined : kind, mine: kind === 'mine', q: q.trim() || undefined });
+      setCommPosts(r.posts ?? []); setCommVoted(r.voted ?? []); setCommHelpers(r.helpers ?? []); setCommStats(r.stats ?? { total: 0, today: 0 });
+      setCommUnread(r.unread ?? 0); if (r.me) setCommMe(r.me); commUnreadAtRef.current = Date.now();
+    } catch (e: any) {
+      setCommPosts(p => p ?? []);
+      setCommError(e?.code === 'setup' || e?.status === 404 ? "The community isn't switched on yet. Run the community SQL script in Supabase, then refresh." : (e?.message || "Couldn't load the community."));
+    } finally { setCommLoading(false); }
+  };
+  // What the wider web says (forums, guides, news), for a search or a post.
+  type CommWebResult = { title: string; url: string; domain: string; kind: string; takeaway: string };
+  const [commWeb, setCommWeb] = useState<{ query: string; summary: string; results: CommWebResult[] } | null>(null);
+  const [commWebLoading, setCommWebLoading] = useState('');
+  const [commWebError, setCommWebError] = useState('');
+  const searchCommunityWeb = async (query: string) => {
+    const q = query.trim();
+    if (!q) return;
+    setCommWebLoading(q); setCommWebError('');
+    try { const r = await callFn('nexora-web', { action: 'community', query: q }, 90000); setCommWeb({ query: q, summary: r.summary || '', results: r.results ?? [] }); }
+    catch (e: any) { setCommWebError(e?.message || "Couldn't search the web right now."); }
+    finally { setCommWebLoading(''); }
+  };
+  const openCommunity = () => { setScreen('community'); setCommThread(null); loadCommunity().catch(() => {}); };
+  const loadCommThread = async (id: string, quiet = false) => {
+    if (!quiet) setCommThreadLoading(true);
+    try {
+      const r = await callFn('nexora-community', { action: 'thread', id });
+      setCommThread({ post: r.post, replies: r.replies ?? [] });
+      setCommVoted(v => Array.from(new Set([...v.filter(x => x !== r.post.id && !(r.replies ?? []).some((rp: CommReply) => rp.id === x)), ...(r.voted ?? [])])));
+      return r.post as CommPost;
+    } catch (e: any) { if (!quiet) { flash(e?.message || "Couldn't open this post."); setScreen('community'); } return null; }
+    finally { if (!quiet) setCommThreadLoading(false); }
+  };
+  const openCommPost = async (p: CommPost) => {
+    if (commPollRef.current) { clearTimeout(commPollRef.current); commPollRef.current = null; }
+    setCommThread({ post: p, replies: [] }); setCommReplyText(''); setScreen('communityPost');
+    const post = await loadCommThread(p.id);
+    // A fresh question: Nexora's answer arrives a few seconds after posting, so check back briefly.
+    let tries = 0;
+    const poll = async () => {
+      if (!post || post.kind !== 'question' || tries++ >= 4) return;
+      const fresh = await loadCommThread(p.id, true);
+      if (fresh && !fresh.ai_answered && Date.now() - new Date(fresh.created_at).getTime() < 3 * 60000) commPollRef.current = setTimeout(poll, 5000);
+    };
+    if (post && post.kind === 'question' && !post.ai_answered && Date.now() - new Date(post.created_at).getTime() < 3 * 60000) commPollRef.current = setTimeout(poll, 5000);
+  };
+  useEffect(() => { if (screen === 'main' && mainTab === 'brain') refreshCommUnread().catch(() => {}); }, [screen, mainTab, userId]);
+  useEffect(() => { if (screen !== 'communityPost' && commPollRef.current) { clearTimeout(commPollRef.current); commPollRef.current = null; } }, [screen]);
+  useEffect(() => () => { if (commPollRef.current) clearTimeout(commPollRef.current); }, []);
+  const toggleCommVote = async (type: 'post' | 'reply', id: string, mine: boolean) => {
+    if (mine) { flash("You can't upvote your own post"); return; }
+    const had = commVoted.includes(id);
+    const bump = (n: number) => Math.max(0, n + (had ? -1 : 1));
+    setCommVoted(v => had ? v.filter(x => x !== id) : [...v, id]);
+    if (type === 'post') {
+      setCommPosts(ps => ps?.map(p => p.id === id ? { ...p, upvotes: bump(p.upvotes) } : p) ?? ps);
+      setCommThread(t => t && t.post.id === id ? { ...t, post: { ...t.post, upvotes: bump(t.post.upvotes) } } : t);
+    } else setCommThread(t => t ? { ...t, replies: t.replies.map(r => r.id === id ? { ...r, upvotes: bump(r.upvotes) } : r) } : t);
+    try { await callFn('nexora-community', { action: 'vote', target_type: type, target_id: id }); }
+    catch (e: any) { flash(e?.message || "Couldn't save your vote"); loadCommunity().catch(() => {}); }
+  };
+  const startCommPost = (kind: CommKind = 'question', title = '', body = '') => { setCommDraftError(''); setCommDraft({ kind, title, body, tags: '' }); };
+  const submitCommPost = async () => {
+    if (!commDraft) return;
+    if (commDraft.title.trim().length < 3) { setCommDraftError('Add a short title.'); return; }
+    setCommBusy('post'); setCommDraftError('');
+    try {
+      const r = await callFn('nexora-community', { action: 'post', kind: commDraft.kind, title: commDraft.title, body: commDraft.body, tags: commDraft.tags.split(',').map(t => t.trim()).filter(Boolean) }, 45000);
+      setCommDraft(null);
+      if (screen !== 'community' && screen !== 'communityPost') setScreen('community');
+      setCommPosts(ps => [r.post, ...(ps ?? [])]);
+      flash(r.post.kind === 'question' ? 'Posted. Nexora is writing a first answer…' : 'Posted to the community');
+      openCommPost(r.post).catch(() => {});
+    } catch (e: any) { setCommDraftError(e?.message || "Couldn't publish your post."); }
+    finally { setCommBusy(''); }
+  };
+  const sendCommReply = async () => {
+    const t = commThread; const text = commReplyText.trim();
+    if (!t || !text) return;
+    setCommBusy('reply');
+    try {
+      const r = await callFn('nexora-community', { action: 'reply', post_id: t.post.id, body: text }, 45000);
+      setCommReplyText('');
+      setCommThread(cur => cur && cur.post.id === t.post.id ? { post: { ...cur.post, reply_count: cur.post.reply_count + 1 }, replies: [...cur.replies, r.reply] } : cur);
+      setCommPosts(ps => ps?.map(p => p.id === t.post.id ? { ...p, reply_count: p.reply_count + 1 } : p) ?? ps);
+    } catch (e: any) { flash(e?.message || "Couldn't send your reply."); }
+    finally { setCommBusy(''); }
+  };
+  const reportComm = (type: 'post' | 'reply', id: string) => {
+    Alert.alert('Report this?', 'Report spam, scams, or anything abusive. Items reported by several members are hidden until reviewed.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Report', style: 'destructive', onPress: async () => {
+        try { const r = await callFn('nexora-community', { action: 'report', target_type: type, target_id: id, reason: 'Reported from the app' }); flash(r.message || 'Thanks for reporting'); }
+        catch (e: any) { flash(e?.message || "Couldn't send the report"); }
+      } },
+    ]);
+  };
+  const deleteComm = (type: 'post' | 'reply', id: string) => {
+    Alert.alert(type === 'post' ? 'Delete your post?' : 'Delete your reply?', 'This removes it for everyone.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: async () => {
+        try {
+          await callFn('nexora-community', { action: 'delete', target_type: type, id });
+          if (type === 'post') { setCommPosts(ps => ps?.filter(p => p.id !== id) ?? ps); setCommThread(null); setScreen('community'); }
+          else setCommThread(t => t ? { post: { ...t.post, reply_count: Math.max(0, t.post.reply_count - 1) }, replies: t.replies.filter(r => r.id !== id) } : t);
+          flash('Deleted');
+        } catch (e: any) { flash(e?.message || "Couldn't delete it"); }
+      } },
+    ]);
+  };
+  const acceptCommReply = async (id: string) => {
+    setCommBusy(id);
+    try {
+      const r = await callFn('nexora-community', { action: 'accept', reply_id: id });
+      setCommThread(t => t ? { post: { ...t.post, solved: r.accepted }, replies: t.replies.map(x => ({ ...x, accepted: r.accepted && x.id === id })).sort((a, b) => Number(b.accepted) - Number(a.accepted)) } : t);
+      setCommPosts(ps => ps?.map(p => p.id === commThread?.post.id ? { ...p, solved: r.accepted } : p) ?? ps);
+      flash(r.accepted ? 'Marked as the best answer' : 'Best answer removed');
+    } catch (e: any) { flash(e?.message || "Couldn't update the answer"); }
+    finally { setCommBusy(''); }
+  };
+  // ---- Pictures for web results (Trending, Find partners, Community, Find online) ----
+  // Each page's own preview image (the one a link shows when shared), fetched by the nexora-og function.
+  const [webImages, setWebImages] = useState<Record<string, string>>({});
+  const webImagesAsked = useRef<Set<string>>(new Set());
+  const loadWebImages = async (urls: (string | undefined | null)[]) => {
+    const todo = [...new Set(urls.filter((u): u is string => !!u && /^https?:\/\//.test(u) && !webImagesAsked.current.has(u)))];
+    if (!todo.length) return;
+    todo.forEach(u => webImagesAsked.current.add(u));
+    for (let i = 0; i < todo.length; i += 12) {
+      try {
+        const r = await callFn('nexora-og', { urls: todo.slice(i, i + 12) }, 30000);
+        setWebImages(prev => ({ ...prev, ...(r.images ?? {}) }));
+      } catch { setWebImages(prev => ({ ...prev, ...Object.fromEntries(todo.slice(i, i + 12).map(u => [u, ''])) })); }
+    }
+  };
+  useEffect(() => {
+    if (!trendsData) return;
+    loadWebImages([...trendsData.trends.map(t => t.sources?.[0]?.url), ...(trendsData.businesses ?? []).map(b => b.sources?.[0]?.url)]).catch(() => {});
+  }, [trendsData]);
+  useEffect(() => { if (netWeb?.length) loadWebImages(netWeb.map(w => w.url)).catch(() => {}); }, [netWeb]);
+  // Reopened after a page refresh (web) or from a link: fetch the dashboard if it isn't loaded yet.
+  useEffect(() => { if (screen === 'insights' && userId && !insights && !insightsLoading && !insightsError) loadInsights().catch(() => {}); }, [screen, userId]);
+  useEffect(() => { if (insights?.data?.trends?.length) loadWebImages(insights.data.trends.map((t: any) => t.url)).catch(() => {}); }, [insights]);
+  useEffect(() => { if (commWeb?.results.length) loadWebImages(commWeb.results.map(r => r.url)).catch(() => {}); }, [commWeb]);
+  useEffect(() => { if (exploreResult?.results.length) loadWebImages(exploreResult.results.map(r => r.url)).catch(() => {}); }, [exploreResult]);
+  // A square thumbnail: the page's picture, else the site's own icon on a soft tile while/if none exists.
+  const renderWebThumb = (url: string | undefined, size = 64, radius = 12) => {
+    const img = url ? webImages[url] : '';
+    const host = url ? hostOf(url) : '';
+    if (img) return <ExpoImage source={{ uri: img }} style={{ width: size, height: size, borderRadius: radius, backgroundColor: '#EEF2F7' }} contentFit="cover" cachePolicy="memory-disk" transition={200} onError={() => setWebImages(p => ({ ...p, [url!]: '' }))} />;
+    const pending = !!url && webImages[url] === undefined;
+    return (
+      <View style={{ width: size, height: size, borderRadius: radius, backgroundColor: pending ? '#EEF2F7' : '#EAF1FB', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+        {host ? <ExpoImage source={{ uri: `https://${host}/favicon.ico` }} style={{ width: size * 0.42, height: size * 0.42 }} contentFit="contain" /> : <Ionicons name="globe-outline" size={size * 0.4} color="#1E56A0" />}
+      </View>
+    );
+  };
+  // A wide picture for the top of a card; nothing at all when the page has no picture.
+  const renderWebHero = (url: string | undefined, height = 170) => {
+    const img = url ? webImages[url] : '';
+    if (!img) return null;
+    return <ExpoImage source={{ uri: img }} style={{ width: '100%', height, borderRadius: 12, backgroundColor: '#EEF2F7', marginBottom: 10 }} contentFit="cover" cachePolicy="memory-disk" transition={250} onError={() => setWebImages(p => ({ ...p, [url!]: '' }))} />;
+  };
+
+  const openFeature = (k: FeatureKey) => {
+    switch (k) {
+      case 'knowledge': setMainTab('brain'); setScreen('main'); break;
+      case 'inbox': goTab('inbox'); break;
+      case 'trends': openTrends(); break;
+      case 'partners': openNetwork().catch(() => {}); break;
+      case 'community': openCommunity(); break;
+      case 'shop': openStorefront().catch(() => {}); break;
+      case 'learned': openLearned(); break;
+      case 'account': goTab('profile'); break;
+      case 'sales': setMainTab('brain'); setScreen('main'); sendChatMessage('How are my sales this week compared with last week? Which products sold best?'); break;
+      case 'orders': openOrders('Unshipped'); break;
+      case 'operations': setScreen('knowledgeHealth'); break;
+      case 'agenda': refreshAgenda().catch(() => {}); setScreen('agenda'); break;
+      case 'analytics': openInsights(); break;
+      case 'automation': openConnectChannels(); break;
+      case 'customers': openCustomers(); break;
+      case 'home': goTab('home'); break;
+      case 'leads': openLeads(); break;
+      case 'explore': openExplore(); break;
+      case 'billing': openBilling(() => goTab('home')); break;
+      case 'attention': refreshEscalations().catch(() => {}); setScreen('agendaPriority'); break;
+      case 'rules': openRules(); break;
+      case 'alerts': openOwnerAlerts(); break;
+    }
+  };
+  useEffect(() => {
+    featureHandler = (k: FeatureKey) => {
+      if (!userId || AUTH_SCREENS.includes(screen)) {
+        // Remember it and send the user to sign in; it opens first once they're in.
+        savePendingFeature(k);
+        flash(`Sign in to open ${FEATURE_LABELS[k]}. Nexora will take you there right after.`);
+        if (screen === 'launch' || screen === 'onboarding') setScreen('login');
+        return;
+      }
+      savePendingFeature(null);
+      openFeature(k);
+    };
+    return () => { featureHandler = null; };
+  }, [userId, screen]);
+  // Web: remember where the user is, so a refresh or coming back to the tab reopens the same place.
+  const restoredViewRef = useRef(false);
+  useEffect(() => {
+    if (!IS_WEB || !userId || !restoredViewRef.current || typeof window === 'undefined') return;
+    if (!WEB_RESTORABLE.includes(screen)) return;
+    try { window.localStorage.setItem(WEB_LAST_VIEW_KEY, JSON.stringify({ screen, tab: mainTab, at: Date.now(), user: userId })); } catch { /* private mode */ }
+  }, [screen, mainTab, userId]);
+  const restoreView = (v: { screen: string; tab: MainTab }) => {
+    switch (v.screen) {
+      case 'main': goTab(v.tab || 'home'); break;
+      case 'leads': openLeads(); break;
+      case 'customersLive': openCustomers(() => goTab('home')); break;
+      case 'orders': openOrders('Unshipped'); break;
+      case 'agenda': openSchedule(); break;
+      case 'community': openCommunity(); break;
+      case 'storefront': openStorefront().catch(() => {}); break;
+      case 'followups': openFollowups().catch(() => {}); break;
+      case 'trends': openTrends(); break;
+      case 'explore': openExplore(); break;
+      case 'network': openNetwork().catch(() => {}); break;
+      case 'billing': openBilling(() => goTab('home')); break;
+      case 'learned': openLearned(); break;
+      case 'connectChannels': openConnectChannels(); break;
+      case 'knowledgeHealth': case 'knowledgeList': openFeature('operations'); break;
+    }
+  };
+  useEffect(() => {
+    if (!IS_WEB || !userId || !dataLoaded || AUTH_SCREENS.includes(screen) || restoredViewRef.current) return;
+    restoredViewRef.current = true;
+    if (readPendingFeature()) return;   // a feature clicked before signing in wins
+    let v: any = null;
+    try { v = JSON.parse(window.localStorage.getItem(WEB_LAST_VIEW_KEY) || 'null'); } catch { /* ignore */ }
+    if (!v || v.user !== userId || Date.now() - Number(v.at) > 24 * 3600000) return;
+    if (v.screen === 'main' && (v.tab || 'home') === 'home') return;
+    const t = setTimeout(() => restoreView(v), 200);
+    return () => clearTimeout(t);
+  }, [userId, dataLoaded, screen]);
+  // First thing after signing in: open the feature the user clicked before signing in.
+  useEffect(() => {
+    if (!userId || !dataLoaded || AUTH_SCREENS.includes(screen)) return;
+    const k = readPendingFeature();
+    if (!k) return;
+    savePendingFeature(null);
+    const t = setTimeout(() => openFeature(k), 150);
+    return () => clearTimeout(t);
+  }, [userId, dataLoaded, screen]);
+
+  const renderReportModal = () => {
+    if (!reportTarget) return null;
+    const conv = reportTarget.kind === 'contact' ? conversations.find(c => c.id === reportTarget.convId) : null;
+    return (
+      <Modal visible transparent animationType="slide" onRequestClose={() => setReportTarget(null)} statusBarTranslucent>
+        <Pressable style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)' }} onPress={() => setReportTarget(null)} accessibilityLabel="Close" />
+        <View style={{ backgroundColor: '#FFF', borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 20, paddingBottom: 20 + insets.bottom }}>
+          <Text style={{ fontSize: 18, fontWeight: '700', color: '#0B1220' }}>{reportTarget.kind === 'ai' ? 'Report this answer' : `Report ${conv?.name ?? 'contact'}`}</Text>
+          <Text style={[styles.attentionSubtitle, { marginTop: 4, marginBottom: 12 }]}>
+            {reportTarget.kind === 'ai' ? 'Tell us what was wrong with this AI answer. It helps us make Nexora safer.' : "Reports go to the Nexora safety team. The person won't be told who reported them."}
+          </Text>
+          {REPORT_REASONS.map(r => {
+            const on = reportReason === r.key;
+            return (
+              <Pressable key={r.key} onPress={() => setReportReason(r.key)} accessibilityRole="radio" accessibilityState={{ checked: on }} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10 }}>
+                <Ionicons name={on ? 'radio-button-on' : 'radio-button-off'} size={20} color={on ? '#1E56A0' : '#8A97A6'} />
+                <Text style={{ fontSize: 14, color: '#0B1220' }}>{r.label}</Text>
+              </Pressable>
+            );
+          })}
+          <TextInput
+            value={reportDetails}
+            onChangeText={setReportDetails}
+            placeholder="Add details (optional)"
+            placeholderTextColor="#8A97A6"
+            multiline
+            maxLength={1000}
+            style={[styles.editInput, { height: 84, paddingTop: 10, textAlignVertical: 'top', marginTop: 6 }]}
+          />
+          {reportTarget.kind === 'contact' && !conv?.blocked && (
+            <Pressable onPress={() => setReportAlsoBlock(v => !v)} accessibilityRole="checkbox" accessibilityState={{ checked: reportAlsoBlock }} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 12 }}>
+              <Ionicons name={reportAlsoBlock ? 'checkbox' : 'square-outline'} size={20} color={reportAlsoBlock ? '#1E56A0' : '#8A97A6'} />
+              <Text style={{ fontSize: 14, color: '#0B1220' }}>Also block this contact</Text>
+            </Pressable>
+          )}
+          <Pressable disabled={reportSending} onPress={submitReport} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 16, backgroundColor: '#D64545' }]}>
+            {reportSending ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>Send report</Text>}
+          </Pressable>
+          <Pressable onPress={() => setReportTarget(null)} style={{ alignItems: 'center', marginTop: 12 }}>
+            <Text style={{ color: '#5C6B7A', fontWeight: '600' }}>Cancel</Text>
+          </Pressable>
+        </View>
+      </Modal>
+    );
+  };
+
+  const saveChatMessage = (role: 'user' | 'ai', text: string, imageUrl?: string) => {
+    if (!userId || (!text && !imageUrl)) return;
+    supabase.from('chat_messages').insert({ user_id: userId, role, text, image_url: imageUrl ?? null })
+      .then(({ error }) => { if (error && __DEV__) console.log('[chat save]', error.message); });
+  };
+  // The ai-chat function only sees what we send it, so the owner's trained
+  // knowledge is attached to each question (verified + needs-review items only).
+  const buildBusinessContext = (maxChars = 5500) => {
+    const lines: string[] = [];
+    KNOWLEDGE_CATEGORIES.forEach(cat => knowledgeData[cat].items.filter(i => i.status !== 'Draft').forEach(i => {
+      const fields = i.fields.filter(f => f.label !== 'Status').map(f => `${f.label}: ${f.value}`).join('; ');
+      lines.push(`- [${cat}] ${i.name}${i.subtitle ? ` (${i.subtitle})` : ''}${i.overview ? ` - ${i.overview}` : ''}${fields ? ` | ${fields}` : ''}${i.features?.length ? ` | ${i.features.join('; ')}` : ''}`);
+    }));
+    return lines.join('\n').slice(0, maxChars);
+  };
+
+  // ---- Knowledge: edit / delete / images / upload ----
+  const saveItemEdit = async (asDraft: boolean) => {
+    const item = knowledgeData[activeCategory].items.find(i => i.id === activeItemId);
+    if (!item || !userId) { setScreen('itemDetail'); return; }
+    const nameLabel = KNOWLEDGE_NAME_LABEL[activeCategory];
+    const get = (label: string) => editDraft.find(f => f.label === label)?.value ?? '';
+    const name = get(nameLabel).trim();
+    if (!name) { flash(`${nameLabel} can't be empty.`); return; }
+    const featuresLabel = activeCategory === 'policies' ? 'Policy details' : 'Key Features';
+    const featuresRaw = editDraft.find(f => f.label === featuresLabel)?.value;
+    const features = featuresRaw === undefined ? undefined
+      : featuresRaw.split('\n').map(l => l.replace(/^\s*[\u2022\-*]\s*/, '').trim()).filter(Boolean);
+    const hadCategory = item.fields.some(f => f.label === 'Category');
+    const status = asDraft ? 'Draft' : 'Verified';
+    const fields = editDraft
+      .filter(f => f.label !== nameLabel && f.label !== featuresLabel && f.label !== 'Description' && !(f.label === 'Category' && !hadCategory))
+      .map(f => (f.label === 'Status' ? { ...f, value: status } : f));
+    const isCommerce = activeCategory === 'products' || activeCategory === 'services';
+    const subtitle = isCommerce && get('Category') ? [get('Category'), get('Price')].filter(Boolean).join(' \u00b7 ') : item.subtitle;
+    const overview = isCommerce && editDraft.some(f => f.label === 'Description') ? get('Description') : item.overview;
+    setSavingKnowledge(true);
+    const { error } = await supabase.from('knowledge_items')
+      .update({ name, subtitle, status, overview, fields, features: features ?? item.features ?? [] }).eq('id', item.id);
+    setSavingKnowledge(false);
+    if (error) { flash("Couldn't save your changes. Please try again."); return; }
+    await refreshKnowledge().catch(() => {});
+    flash(asDraft ? 'Saved as draft' : 'Changes saved');
+    setScreen('itemDetail');
+  };
+  const deleteActiveItem = () => {
+    const item = knowledgeData[activeCategory].items.find(i => i.id === activeItemId);
+    if (!item) return;
+    Alert.alert('Delete item', `Delete "${item.name}" from your knowledge base? Nexora will stop using it.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: async () => {
+        const { error } = await supabase.from('knowledge_items').delete().eq('id', item.id);
+        if (error) { flash("Couldn't delete that item. Please try again."); return; }
+        await refreshKnowledge().catch(() => {});
+        flash('Item deleted');
+        setScreen('knowledgeList');
+      } },
+    ]);
+  };
+  const uploadKnowledgeImage = async (uri: string): Promise<string | null> => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error('signed out');
+      let local = uri;
+      try {
+        const m = await ImageManipulator.manipulateAsync(uri, [{ resize: { width: 1024 } }], { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG });
+        local = m.uri;
+      } catch { /* upload the original if resizing fails */ }
+      const path = `${session.user.id}/${Date.now()}.jpg`;
+      const up = await uploadBinary(`${SUPABASE_URL}/storage/v1/object/knowledge-images/${path}`, local,
+        { 'Content-Type': 'image/jpeg', Authorization: `Bearer ${session.access_token}`, apikey: SUPABASE_ANON_KEY });
+      if (up.status < 200 || up.status >= 300) throw new Error(`HTTP ${up.status}`);
+      return supabase.storage.from('knowledge-images').getPublicUrl(path).data.publicUrl;
+    } catch (e: any) {
+      if (__DEV__) console.log('[knowledge image upload]', e?.message);
+      flash("Couldn't upload that image. Please try again.");
+      return null;
+    }
+  };
+  const pickLibraryImage = async (): Promise<string | null> => {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (perm.status !== 'granted') { flash('Allow photo access in Settings to choose an image.'); return null; }
+    const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.7, allowsEditing: true });
+    if (r.canceled || !r.assets?.[0]?.uri) return null;
+    return r.assets[0].uri;
+  };
+  const changeItemImage = async () => {
+    const item = knowledgeData[activeCategory].items.find(i => i.id === activeItemId);
+    if (!item) return;
+    const uri = await pickLibraryImage();
+    if (!uri) return;
+    const url = await uploadKnowledgeImage(uri);
+    if (!url) return;
+    const { error } = await supabase.from('knowledge_items').update({ image_url: url }).eq('id', item.id);
+    if (error) { flash("Couldn't save the new image."); return; }
+    await refreshKnowledge().catch(() => {});
+    flash('Image updated');
+  };
+  const attachImageToExtracted = async () => {
+    const target = imageMatchTarget
+      ?? extractedItems.find(i => i.type === 'Pricing Item' && !i.image)?.id
+      ?? extractedItems[0]?.id;
+    if (!target) { flash('Nothing to attach an image to yet.'); setAddKnowledgeStep('review'); return; }
+    const uri = await pickLibraryImage();
+    if (!uri) return;
+    const url = await uploadKnowledgeImage(uri);
+    if (!url) return;
+    setExtractedItems(prev => prev.map(i => (i.id === target ? { ...i, image: url } : i)));
+    flash('Image added');
+    setAddKnowledgeStep('review');
+  };
+  // "Tell Nexora": the owner's own words become a small text document that goes
+  // through the same AI extraction and review as an uploaded file.
+  const submitTellNexora = async () => {
+    const text = tellText.trim();
+    if (text.length < 15) { flash('Tell Nexora a little more (a sentence or two).'); return; }
+    try {
+      const name = `Note from ${(fullName || 'owner').split(' ')[0]} ${localIsoDate()}.txt`;
+      let uri = `data:text/plain;charset=utf-8,${encodeURIComponent(text)}`;
+      if (!IS_WEB) {
+        uri = `${FileSystem.cacheDirectory}nexora-note-${Date.now()}.txt`;
+        await FileSystem.writeAsStringAsync(uri, text, { encoding: FileSystem.EncodingType.UTF8 });
+      }
+      setTellOpen(false);
+      setTellText('');
+      startKnowledgeUpload({ uri, name, size: text.length });
+    } catch {
+      flash("Couldn't save that. Please try again.");
+    }
+  };
+  const saveAddItemForm = async () => {
+    const f = addItemForm;
+    if (!f || addItemSaving) return;
+    const name = f.name.trim();
+    if (!name) { flash(`Enter the ${f.kind} name`); return; }
+    if (!userId) { flash('Please sign in again.'); return; }
+    setAddItemSaving(true);
+    try {
+      const rawPrice = f.price.trim();
+      const priceNum = parseFloat(rawPrice.replace(/[^\d.]/g, ''));
+      const price = rawPrice ? (Number.isFinite(priceNum) ? `$${priceNum.toFixed(2)}` : rawPrice) : '';
+      const spec = f.kind === 'product' ? [f.model.trim(), f.specs.trim()].filter(Boolean).join(' - ') : '';
+      const description = f.kind === 'service' ? f.description.trim() : '';
+      const category: KnowledgeCategory = f.kind === 'product' ? 'products' : 'services';
+      const look = CATEGORY_LOOK[category];
+      const fields: KnowledgeField[] = [
+        ...(f.kind === 'service' && f.type ? [{ label: 'Service type', value: f.type }] : []),
+        ...(spec ? [{ label: 'Specification', value: spec }] : []),
+        ...(price ? [{ label: 'Price', value: price }] : []),
+        // Typed in by the owner, so it's trusted knowledge straight away.
+        { label: 'Status', value: 'Verified' },
+      ];
+      const image_url = f.image ? await uploadKnowledgeImage(f.image) : null;
+      const { error } = await supabase.from('knowledge_items').insert({
+        user_id: userId, category, name, subtitle: price, status: 'Verified', overview: description || spec, fields, features: [],
+        icon: look.icon, icon_bg: look.iconBg, icon_color: look.iconColor, image_url,
+      });
+      if (error) throw error;
+      setAddItemForm(null);
+      await refreshKnowledge().catch(() => {});
+      syncRag(true).catch(() => {});   // make it searchable for Nexora right away
+      flash(`${name} saved${f.image && !image_url ? ' (photo upload failed)' : ''}. Nexora can now answer questions about it.`);
+    } catch (e: any) {
+      if (__DEV__) console.log('[add item]', e?.message);
+      flash("Couldn't save. Check your connection and try again.");
+    } finally {
+      setAddItemSaving(false);
+    }
+  };
+  const startKnowledgeUpload = async (file: { uri: string; name: string; size?: number | null }) => {
+    if (!userId) { flash('Please sign in again.'); return; }
+    const ext = (file.name.split('.').pop() || '').toLowerCase();
+    if (!['pdf', 'csv', 'txt'].includes(ext)) { flash('Please choose a PDF, CSV or TXT file.'); return; }
+    if ((file.size ?? 0) > 20 * 1024 * 1024) { flash('That file is over the 20 MB limit.'); return; }
+    setUploadedFileName(file.name);
+    setExtractError('');
+    setScreen('addKnowledge');
+    setAddKnowledgeStep('processing');
+    let docId: string | undefined;
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error('Please sign in again.');
+      const path = `${session.user.id}/${Date.now()}-${file.name.replace(/[^\w.\-]+/g, '_')}`;
+      const contentType = ext === 'pdf' ? 'application/pdf' : ext === 'csv' ? 'text/csv' : 'text/plain';
+      const up = await uploadBinary(`${SUPABASE_URL}/storage/v1/object/knowledge-files/${path}`, file.uri,
+        { 'Content-Type': contentType, Authorization: `Bearer ${session.access_token}`, apikey: SUPABASE_ANON_KEY });
+      if (up.status < 200 || up.status >= 300) throw new Error(`Upload failed (HTTP ${up.status}).`);
+      const ins = await supabase.from('knowledge_documents')
+        .insert({ user_id: session.user.id, name: file.name, status: 'Processing', size_bytes: file.size ?? 0, mime_type: contentType, storage_path: path })
+        .select('id').single();
+      docId = ins.data?.id;
+      const res = await withLongTimeout(fetch(`${SUPABASE_FUNCTIONS_URL}/extract-knowledge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ path }),
+      }), 'Analysing took too long. Try a smaller file.');
+      const result = await res.json();
+      if (!res.ok || !result.success) throw new Error(result.message || 'Could not analyse that file.');
+      const raws: ExtractedRaw[] = result.items ?? [];
+      if (raws.length === 0) throw new Error("We couldn't find any business information in that file.");
+      const reviews: ExtractedReview[] = raws.map((raw, i) => ({ id: `x${i}`, name: raw.name, subtitle: raw.subtitle || raw.category, type: reviewTypeFor(raw), raw }));
+      setExtractedItems(reviews);
+      setReviewChecks(Object.fromEntries(reviews.map(r => [r.id, true])));
+      if (docId) await supabase.from('knowledge_documents').update({ status: 'Processed' }).eq('id', docId);
+      // RAG: split the whole document into searchable passages so Nexora can quote it later.
+      if (docId) callFn('rag-index', { action: 'document', document_id: docId }, 90000).then(() => loadRagStatus()).catch(() => {});
+      refreshDocs().catch(() => {});
+      setAddKnowledgeStep('summary');
+    } catch (e: any) {
+      if (docId) await supabase.from('knowledge_documents').update({ status: 'Failed' }).eq('id', docId);
+      refreshDocs().catch(() => {});
+      setExtractError(e?.message || 'Something went wrong analysing that file.');
+      setAddKnowledgeStep('upload');
+    }
+  };
+  const commitExtracted = async () => {
+    const chosen = extractedItems.filter(i => reviewChecks[i.id]);
+    if (!userId) { flash('Please sign in again.'); return; }
+    if (chosen.length === 0) { flash('Select at least one item to add.'); return; }
+    setSavingKnowledge(true);
+    const base = Date.now();
+    const rows = chosen.map((c, idx) => {
+      const look = CATEGORY_LOOK[c.raw.category];
+      const withStatus = c.raw.category === 'products' || c.raw.category === 'services';
+      return {
+        user_id: userId, category: c.raw.category, name: c.raw.name, subtitle: c.raw.subtitle, status: 'Need review',
+        overview: c.raw.overview,
+        fields: [...c.raw.fields.filter(f => f.label !== 'Status'), ...(withStatus ? [{ label: 'Status', value: 'Need review' }] : [])],
+        features: c.raw.features, image_url: c.image ?? null,
+        icon: look.icon, icon_bg: look.iconBg, icon_color: look.iconColor,
+        created_at: new Date(base + idx).toISOString(),
+      };
+    });
+    const { error } = await supabase.from('knowledge_items').insert(rows);
+    setSavingKnowledge(false);
+    if (error) { flash("Couldn't add those items. Please try again."); return; }
+    await refreshKnowledge().catch(() => {});
+    setExtractedItems([]);
+    flash(`${rows.length} item${rows.length === 1 ? '' : 's'} added - review them before they go live`);
+    openKnowledgeList(chosen[0].raw.category);
+  };
+  const deleteKnowledgeDoc = (doc: { id: string; name: string; path: string | null }) => {
+    Alert.alert('Remove document', `Remove "${doc.name}"? Items already added from it stay in your knowledge base.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Remove', style: 'destructive', onPress: async () => {
+        if (doc.path) await supabase.storage.from('knowledge-files').remove([doc.path]);
+        const { error } = await supabase.from('knowledge_documents').delete().eq('id', doc.id);
+        if (error) { flash("Couldn't remove that document."); return; }
+        refreshDocs().catch(() => {});
+      } },
+    ]);
+  };
+  // ---- Customers / schedule saved from the image-based flows ----
+  const saveCustomerFromForm = async () => {
+    const name = (truthFields.newName ?? '').trim();
+    const phone = (truthFields.newPhone ?? '').trim();
+    const email = (truthFields.newEmail ?? '').trim().toLowerCase();
+    if (!name) { showTruthToast("Enter the customer's name"); return; }
+    if (!phone && !email) { showTruthToast('Add a phone number or email'); return; }
+    if (email && !EMAIL_REGEX.test(email)) { showTruthToast('Enter a valid email address'); return; }
+    if (!userId) { showTruthToast('Please sign in again'); return; }
+    const tags = (truthFields.newTags ?? '').split(',').map(t => t.trim()).filter(Boolean).slice(0, 10);
+    const { error } = await supabase.from('customers')
+      .insert({ user_id: userId, name, channel: email ? 'Email' : 'Whatsapp', handle: email || (phone.startsWith('+') ? phone : `+234 ${phone.replace(/^0/, '')}`), segment: truthFields.newSegment || 'New', tags });
+    if (error) { showTruthToast("Couldn't save customer"); return; }
+    setTruthFields(p => ({ ...p, newName: '', newPhone: '', newEmail: '', newSegment: '', newTags: '' }));
+    showTruthToast('Customer saved');
+    openCustomers();
+  };
+  const stageScheduleFromForm = () => {
+    const who = (truthFields.scheduleCustomer ?? '').trim();
+    if (!who) { showTruthToast('Enter a customer name first'); return; }
+    pendingEventRef.current = { title: `Meeting with ${who}`, with_whom: who, event_date: todayIso, start_time: '10:00 AM' };
+    openTruth('conflictTime');
+  };
+  const commitScheduledEvent = async (time: string, doneMsg: string) => {
+    const ev = pendingEventRef.current;
+    if (ev && userId) {
+      const { error } = await supabase.from('schedule_events').insert({ user_id: userId, ...ev, start_time: time });
+      if (error) { showTruthToast("Couldn't save the event"); return; }
+      setTruthFields(p => ({ ...p, scheduleCustomer: '' }));
+    }
+    pendingEventRef.current = null;
+    showTruthToast(doneMsg);
+    openTruth('scheduleHome');
+  };
+  // Groq agent replying AS the business to a customer (autopilot). Honors the channel's AI toggles server-side.
+  const askAgentForReply = async (conv: Conversation) => {
+    const { data: { session } } = await supabase.auth.getSession();
+    let msgs = conv.messages.filter(m => m.text && !m.checklist);
+    if (!msgs.some(m => m.from === 'customer') && conv.lastMessage) msgs = [{ id: 'last', from: 'customer', text: conv.lastMessage, time: '' }];
+    const lastIdx = msgs.map(m => m.from).lastIndexOf('customer');
+    if (lastIdx < 0) return null;
+    const history = msgs.slice(Math.max(0, lastIdx - 8), lastIdx).map(m => ({ role: m.from === 'customer' ? 'user' : 'assistant', content: m.text }));
+    const res = await withLongTimeout(fetch(`${SUPABASE_FUNCTIONS_URL}/nexora-agent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session?.access_token ?? SUPABASE_ANON_KEY}` },
+      body: JSON.stringify({ mode: 'autopilot', message: msgs[lastIdx].text, history, customer: { name: conv.name, channel: conv.channel || conv.platform.toLowerCase() }, client_now: clientNow() }),
+    }), 'That took too long. Please try again.', 45000);
+    const r = await res.json();
+    if (!res.ok || !r.success) throw new Error(r.message || 'The assistant is unavailable right now.');
+    if (r.actions?.length) refreshAgenda().catch(() => {});
+    if (r.escalated) refreshEscalations().catch(() => {});
+    return { reply: String(r.reply || '').trim(), escalated: !!r.escalated, needsApproval: !!r.needs_approval, sources: (Array.isArray(r.sources) ? r.sources : []) as RagSource[] };
+  };
+  const regenerateSuggestion = async (convId: string) => {
+    const conv = conversations.find(c => c.id === convId);
+    if (!conv?.aiSuggestion) return;
+    try {
+      const r = await askAgentForReply(conv);
+      if (!r?.reply) { flash('Nexora has nothing new to suggest here.'); return; }
+      const reasons = r.sources.length ? r.sources.slice(0, 4).map(src => `Found in: ${src.title}`) : ['Nothing specific found in your knowledge base: check before sending'];
+      setConversations(prev => prev.map(c => (c.id === convId && c.aiSuggestion ? { ...c, aiSuggestion: { ...c.aiSuggestion, text: r.reply, reasons, confidence: r.sources.length ? Math.min(95, 70 + r.sources.length * 6) : 55 } } : c)));
+      if (conv.live) supabase.from('conversations').update({ ai_suggestion: r.reply }).eq('id', convId).then(() => {});
+    } catch (e: any) {
+      flash(e?.message || "Couldn't regenerate right now.");
+    }
+  };
+  // Away-mode auto replies now happen on the server (meta-webhook ->
+  // nexora-agent -> WhatsApp/Messenger/Instagram) the moment a customer
+  // writes, even when this phone is off. The old in-app autopilot only
+  // "replied" inside the app and never reached the customer, so it's gone.
+  useEffect(() => {
+    drawerBridge = {
+      name: fullName, email: userEmail, away: awayMode, setAway, signOut: handleLogout,
+      go: (k: string) => {
+        switch (k) {
+          case 'home': setHomeCommandExpanded(false); goTab('home'); break;
+          case 'inbox': goTab('inbox'); break;
+          case 'brain': goTab('brain'); break;
+          case 'profile': goTab('profile'); break;
+          case 'schedule': openSchedule(); break;
+          case 'orders': openOrders('Unshipped'); break;
+          case 'attention': refreshEscalations().catch(() => {}); setScreen('agendaPriority'); break;
+          case 'ownerAlerts': openOwnerAlerts(); break;
+          case 'rules': openRules(); break;
+          case 'leads': openLeads(); break;
+          case 'customers': openCustomers(() => goTab('home')); break;
+          case 'channels': openConnectChannels(); break;
+          case 'billing': openBilling(() => goTab('home')); break;
+          case 'trends': openTrends(); break;
+          case 'explore': openExplore(); break;
+          case 'network': openNetwork(); break;
+          case 'community': openCommunity(); break;
+          case 'shop': openStorefront().catch(() => {}); break;
+          case 'insights': openInsights(); break;
+        }
+      },
+    };
+    drawerRefresh();
+  });
+  const setAway = async (v: boolean) => {
+    if (!v && awayMode) setAwayEndedAt(Date.now());
+    if (v && !awayMode) { setAwayStartedAt(Date.now()); setAwayStats({ actions: 0, opportunities: 0 }); }
+    setHomeView('auto');
+    setAwayMode(v);
+    if (userId) {
+      const { error } = await supabase.from('profiles').update({ is_away: v }).eq('id', userId);
+      if (error) { setAwayMode(!v); flash("Couldn't update away mode."); return; }
+    }
+    flash(v ? 'Away mode on - Nexora is handling customers' : 'Welcome back - Nexora will only draft replies');
+  };
+  const deleteMyAccount = () => {
+    Alert.alert('Delete account', 'This permanently deletes your account, knowledge base, customers and chat history. This cannot be undone.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete forever', style: 'destructive', onPress: async () => {
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          if (!session) throw new Error('Please sign in again.');
+          const res = await withLongTimeout(fetch(`${SUPABASE_FUNCTIONS_URL}/delete-account`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` }, body: '{}',
+          }), 'Deleting took too long. Please try again.', 30000);
+          const r = await res.json().catch(() => ({}));
+          if (!res.ok || !r.success) throw new Error(r.message || "Couldn't delete your account.");
+          await supabase.auth.signOut().catch(() => {});
+          setScreen('login'); setLoginIndex(0);
+          flash('Your account has been deleted.');
+        } catch (e: any) {
+          flash(e?.message || "Couldn't delete your account.");
+        }
+      } },
+    ]);
+  };
+
+  // ---- Orders / schedule / escalations ----
+  const refreshOrders = async () => {
+    const { data, error } = await supabase.from('orders').select('id,customer_name,items,total,status,tracking,created_at').order('created_at', { ascending: false }).limit(300);
+    if (error) throw error;
+    setOrders((data ?? []) as OrderRow[]);
+  };
+  const refreshAgenda = async () => {
+    const { data, error } = await supabase.from('schedule_events')
+      .select('id,title,with_whom,event_date,start_time,end_time,notes,event_type,status,created_by').order('event_date', { ascending: true }).limit(800);
+    if (error) throw error;
+    setAgendaEvents((data ?? []) as AgendaEvent[]);
+  };
+  const refreshEscalations = async () => {
+    const { data, error } = await supabase.from('escalations').select('id,customer_name,channel,reason,urgency,created_at').eq('status', 'open').order('created_at', { ascending: false }).limit(20);
+    if (error) throw error;
+    setEscalations((data ?? []) as EscalationRow[]);
+    const ids = (data ?? []).map((x: any) => x.id);
+    if (ids.length) {
+      const al = await supabase.from('owner_alerts').select('escalation_id,attempts,emailed_at,last_alert_at,last_channel,last_status,acknowledged_at,snooze_until,response').in('escalation_id', ids);
+      if (!al.error) setEscAlerts(Object.fromEntries((al.data ?? []).map((a: any) => [a.escalation_id, a])));
+    }
+  };
+  const openOrders = (filter: 'Unshipped' | 'Shipped' | 'All' = 'Unshipped') => { setOrdersFilter(filter); refreshOrders().catch(() => {}); setScreen('orders'); };
+  const openMissingImages = () => setScreen('missingImages');
+  const setOrderStatus = async (o: OrderRow, status: OrderRow['status']) => {
+    const { error } = await supabase.from('orders').update({ status, ...(status === 'shipped' ? { shipped_at: new Date().toISOString() } : {}) }).eq('id', o.id);
+    if (error) { flash("Couldn't update that order."); return; }
+    await refreshOrders().catch(() => {});
+    flash(status === 'shipped' ? `${o.customer_name}'s order marked as shipped` : status === 'delivered' ? 'Marked as delivered' : 'Order updated');
+  };
+  const addImageToItem = async (item: KnowledgeItem) => {
+    setBusyItemId(item.id);
+    try {
+      const uri = await pickLibraryImage();
+      if (!uri) return;
+      const url = await uploadKnowledgeImage(uri);
+      if (!url) return;
+      const { error } = await supabase.from('knowledge_items').update({ image_url: url }).eq('id', item.id);
+      if (error) { flash("Couldn't save the image."); return; }
+      await refreshKnowledge().catch(() => {});
+      flash('Image added');
+    } finally { setBusyItemId(null); }
+  };
+  const openAgendaCreate = (prefill?: Partial<typeof agendaForm>) => {
+    setAgendaConflict(null);
+    setAgendaForm({ id: null, type: 'meeting', title: '', withWhom: '', date: agendaDate, time: '10:00 AM', duration: 60, notes: '', ...prefill });
+    setScreen('agendaCreate');
+  };
+  const openAgendaEdit = (e: AgendaEvent) => {
+    const s0 = toMinutes(e.start_time) ?? 600;
+    setAgendaConflict(null);
+    setAgendaForm({ id: e.id, type: e.event_type, title: e.title, withWhom: e.with_whom, date: e.event_date, time: fmtMinutes(s0), duration: Math.max(15, eventEnd(e) - s0), notes: e.notes });
+    setScreen('agendaCreate');
+  };
+  const freeSlotsFor = (date: string, duration: number, excludeId: string | null) => {
+    const evs = agendaEvents.filter(x => x.event_date === date && x.status !== 'cancelled' && x.id !== excludeId);
+    const out: string[] = [];
+    for (let m = 9 * 60; m + duration <= 17 * 60 && out.length < 6; m += 30) {
+      if (!evs.some(x => m < eventEnd(x) && m + duration > (toMinutes(x.start_time) ?? 0))) out.push(fmtMinutes(m));
+    }
+    return out;
+  };
+  const saveAgendaEvent = async (opts?: { force?: boolean; time?: string }) => {
+    const f = agendaForm;
+    const time = opts?.time ?? f.time;
+    const kind = f.type === 'meeting' ? 'Meeting' : f.type === 'task' ? 'Task' : 'Follow-up';
+    const title = f.title.trim() || (f.withWhom.trim() ? `${kind} with ${f.withWhom.trim()}` : '');
+    if (!title) { flash('Add a title or who this is with.'); return; }
+    if (!userId) { flash('Please sign in again.'); return; }
+    const sMin = toMinutes(time);
+    if (sMin === null) { flash('Pick a start time.'); return; }
+    const eMin = sMin + f.duration;
+    if (!opts?.force) {
+      const clash = agendaEvents.filter(x => x.id !== f.id && x.event_date === f.date && x.status !== 'cancelled' && sMin < eventEnd(x) && eMin > (toMinutes(x.start_time) ?? 0));
+      if (clash.length) {
+        setAgendaForm(p => ({ ...p, time }));
+        setAgendaConflict({ titles: clash.map(c => c.title), suggested: freeSlotsFor(f.date, f.duration, f.id) });
+        return;
+      }
+    }
+    const row = { title, with_whom: f.withWhom.trim(), event_date: f.date, start_time: fmtMinutes(sMin), end_time: fmtMinutes(eMin), notes: f.notes.trim(), event_type: f.type };
+    setSavingAgenda(true);
+    const { error } = f.id
+      ? await supabase.from('schedule_events').update(row).eq('id', f.id)
+      : await supabase.from('schedule_events').insert({ user_id: userId, ...row, created_by: 'owner' });
+    setSavingAgenda(false);
+    if (error) { flash("Couldn't save that. Please try again."); return; }
+    await refreshAgenda().catch(() => {});
+    setAgendaConflict(null);
+    setAgendaDate(f.date);
+    flash(f.id ? 'Event updated' : `Scheduled for ${niceDate(f.date)}, ${fmtMinutes(sMin)}`);
+    setScreen('agenda');
+  };
+  const setEventStatus = async (e: AgendaEvent, status: AgendaEvent['status']) => {
+    const { error } = await supabase.from('schedule_events').update({ status }).eq('id', e.id);
+    if (error) { flash("Couldn't update that event."); return; }
+    await refreshAgenda().catch(() => {});
+    flash(status === 'completed' ? 'Marked as done' : 'Event restored');
+  };
+  const deleteAgendaEvent = (e: AgendaEvent) => {
+    Alert.alert('Delete event', `Delete "${e.title}"?`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: async () => {
+        const { error } = await supabase.from('schedule_events').delete().eq('id', e.id);
+        if (error) { flash("Couldn't delete that event."); return; }
+        await refreshAgenda().catch(() => {});
+        flash('Event deleted');
+      } },
+    ]);
+  };
+  const resolveEscalation = async (id: string) => {
+    const { error } = await supabase.from('escalations').update({ status: 'resolved' }).eq('id', id);
+    if (error) { flash("Couldn't update that."); return; }
+    setEscalations(prev => prev.filter(x => x.id !== id));
+  };
+  const getPriorityActions = () => {
+    const out: { id: string; icon: string; color: string; title: string; subtitle: string; cta: string; onPress: () => void }[] = [];
+    const today = localIsoDate();
+    const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+    const active = agendaEvents.filter(e => e.status === 'scheduled');
+    const byDay: Record<string, AgendaEvent[]> = {};
+    active.forEach(e => { (byDay[e.event_date] = byDay[e.event_date] || []).push(e); });
+    Object.values(byDay).forEach(list => {
+      const sorted = [...list].sort((a, b) => (toMinutes(a.start_time) ?? 0) - (toMinutes(b.start_time) ?? 0));
+      for (let i = 1; i < sorted.length; i++) {
+        if ((toMinutes(sorted[i].start_time) ?? 0) < eventEnd(sorted[i - 1])) {
+          out.push({ id: `c-${sorted[i].id}`, icon: 'alert-circle-outline', color: '#D64545', title: `Conflict: ${sorted[i - 1].title} & ${sorted[i].title}`, subtitle: `${niceDate(sorted[i].event_date)} at ${sorted[i].start_time}`, cta: 'Reschedule', onPress: () => openAgendaEdit(sorted[i]) });
+        }
+      }
+    });
+    active.filter(e => e.event_date < today || (e.event_date === today && eventEnd(e) < nowMin)).forEach(e => {
+      out.push({ id: `o-${e.id}`, icon: 'time-outline', color: '#E5A63A', title: `${e.title} is past due`, subtitle: `${niceDate(e.event_date)} at ${e.start_time}`, cta: 'Mark done', onPress: () => setEventStatus(e, 'completed') });
+    });
+    active.filter(e => e.event_type === 'follow_up' && e.event_date >= today && e.event_date <= addDaysIso(today, 2)).forEach(e => {
+      out.push({ id: `f-${e.id}`, icon: 'chatbubble-outline', color: '#1E56A0', title: `Follow up: ${e.title}`, subtitle: `${niceDate(e.event_date)} at ${e.start_time}`, cta: 'Open', onPress: () => { setAgendaDate(e.event_date); setScreen('agenda'); } });
+    });
+    const stale = orders.filter(o => (o.status === 'pending' || o.status === 'processing') && Date.now() - new Date(o.created_at).getTime() > 24 * 3600000).length;
+    if (stale > 0) out.push({ id: 'orders-stale', icon: 'cube-outline', color: '#E5A63A', title: `${stale} order${stale === 1 ? '' : 's'} waiting over 24 hours`, subtitle: 'Ship them to keep customers happy', cta: 'Ship orders', onPress: () => openOrders('Unshipped') });
+    return out;
+  };
+
+  // ---- Schedule frames (Figma) : form state, pickers, conflict check, save ----
+  const setS = (patch: Partial<SchedForm>) => setSched(p => ({ ...p, ...patch }));
+  const openCreateSchedule = () => { setSched(initialSched('follow_up')); setConflictInfo(null); openTruth('createSchedule'); };
+  const switchSchedKind = (kind: SchedKind) => { setSched(p => ({ ...p, kind })); openTruth(schedFrameFor(kind)); };
+  const applyAiSuggestion = (kind: SchedKind) => {
+    setSched(p => ({ ...p, date: addDaysIso(localIsoDate(), 1), time: '10:00 AM', duration: 30, ...(kind === 'task' ? { priority: 'High' as const } : {}) }));
+    showTruthToast('Suggestion applied');
+  };
+  const openPicker = async (kind: NonNullable<typeof picker>) => {
+    if (kind === 'who' || kind === 'related' || kind === 'participant') {
+      const { data } = await supabase.from('customers').select('name,segment,handle').order('last_interaction_at', { ascending: false }).limit(40);
+      setCustomerOptions((data ?? []).map((c: any) => ({ name: c.name, meta: [c.segment, c.handle].filter(Boolean).join(' \u2022 ') })));
+    }
+    setPicker(kind);
+  };
+  const stageSchedule = async () => {
+    const f = sched;
+    const title = f.kind === 'follow_up' ? `Follow up with ${f.who}` : f.title.trim();
+    if (!title) { showTruthToast(f.kind === 'meeting' ? 'Enter a meeting title' : 'Enter a task title'); return; }
+    if (!userId) { showTruthToast('Please sign in again'); return; }
+    const sMin = toMinutes(f.time);
+    if (sMin === null) { showTruthToast('Pick a start time'); return; }
+    const eMin = sMin + f.duration;
+    const clash = agendaEvents.filter(x => x.event_date === f.date && x.status !== 'cancelled' && sMin < eventEnd(x) && eMin > (toMinutes(x.start_time) ?? 0));
+    if (clash.length === 0) { await commitSchedule(f.time); return; }
+    const free: number[] = [];
+    for (let m = 8 * 60; m + f.duration <= 18 * 60; m += 30) {
+      if (!agendaEvents.some(x => x.event_date === f.date && x.status !== 'cancelled' && m < eventEnd(x) && m + f.duration > (toMinutes(x.start_time) ?? 0))) free.push(m);
+    }
+    free.sort((a, b) => Math.abs(a - sMin) - Math.abs(b - sMin));
+    setConflictInfo({ existing: `${clash[0].start_time} - ${clash[0].end_time}`, options: free.slice(0, 3).map(m => `${fmtMinutes(m)} - ${fmtMinutes(m + f.duration)}`) });
+    setConflictChoice(0);
+    openTruth('conflictTime');
+  };
+  const commitSchedule = async (startLabel: string) => {
+    const f = sched;
+    const sMin = toMinutes(startLabel);
+    if (!userId || sMin === null) return;
+    const withWhom = f.kind === 'follow_up' ? f.who : f.kind === 'meeting' ? Array.from(new Set(f.participants.map(p => p.name))).join(', ') : f.related;
+    const row = {
+      user_id: userId,
+      title: f.kind === 'follow_up' ? `Follow up with ${f.who}` : f.title.trim(),
+      with_whom: withWhom, event_date: f.date, start_time: fmtMinutes(sMin), end_time: fmtMinutes(sMin + f.duration),
+      notes: f.desc.trim(), event_type: f.kind, priority: f.priority.toLowerCase(), reminder: f.reminder, created_by: 'owner',
+    };
+    const { error } = await supabase.from('schedule_events').insert(row);
+    if (error) { showTruthToast("Couldn't save the event"); return; }
+    await refreshAgenda().catch(() => {});
+    setConflictInfo(null);
+    setSched(initialSched('follow_up'));
+    showTruthToast(`Scheduled for ${niceDate(f.date)}, ${fmtMinutes(sMin)}`);
+    openTruth('scheduleHome');
+  };
+  // ---- Post flow (Edit Post -> Platform Adaptation -> Platform Adaptation2) ----
+  const postMore = () => Alert.alert('Post options', undefined, [
+    { text: 'Save as draft', onPress: () => showTruthToast('Draft saved') },
+    { text: 'Discard post', style: 'destructive', onPress: () => { setPost(initialPost()); openTruth('createPostHome'); } },
+    { text: 'Cancel', style: 'cancel' },
+  ]);
+  const pickPostMedia = async () => {
+    const uri = await pickLibraryImage();
+    if (uri) { setPost(p => ({ ...p, mediaUri: uri })); showTruthToast('Media added'); }
+  };
+  // FIX (deploy): this used to only show "Post approved" without posting
+  // anywhere. It now opens Android's real share sheet with the post text (and
+  // photo, where the target app supports it) so the owner publishes it to
+  // Facebook / Instagram / WhatsApp / TikTok / X from their own accounts.
+  // "Schedule Post": saves a reminder task in the schedule at the chosen time, then shows "Post Scheduled".
+  const schedulePost = async (ps: { date: string; hour: number; minute: number; pm: boolean }) => {
+    if (!post.text.trim()) { showTruthToast('Add a description first'); return; }
+    const h24 = (ps.hour % 12) + (ps.pm ? 12 : 0);
+    const start = `${((h24 + 11) % 12) + 1}:${String(ps.minute).padStart(2, '0')} ${ps.pm ? 'PM' : 'AM'}`;
+    const endMin = h24 * 60 + ps.minute + 15;
+    const end = `${((Math.floor(endMin / 60) % 24 + 11) % 12) + 1}:${String(endMin % 60).padStart(2, '0')} ${Math.floor(endMin / 60) % 24 >= 12 ? 'PM' : 'AM'}`;
+    const platforms = Object.entries(post.platforms).filter(([, on]) => on).map(([n]) => n).join(', ');
+    if (userId) {
+      const { error } = await supabase.from('schedule_events').insert({ user_id: userId, title: 'Publish social post', with_whom: platforms, event_date: ps.date, start_time: start, end_time: end, notes: post.text.slice(0, 500), event_type: 'task', created_by: 'ai' });
+      if (error) { showTruthToast("Couldn't save the schedule. Please try again."); return; }
+      refreshAgenda().catch(() => {});
+    }
+    openTruth('postScheduled');
+  };
+  const approvePost = async () => {
+    const text = post.text.trim();
+    if (!text) { showTruthToast('Add a description first'); return; }
+    openTruth('publishing');
+    await new Promise(r => setTimeout(r, 1400));
+    try {
+      const res = await Share.share(post.mediaUri ? { message: text, url: post.mediaUri } : { message: text }, { dialogTitle: 'Publish your post' });
+      if (res.action === Share.sharedAction) { setPost(initialPost()); openTruth('published'); }
+      else { showTruthToast('Publishing cancelled'); openTruth('platformAdapt2'); }
+    } catch {
+      openTruth('publishFailed');
+    }
+  };
+
+  const saveQuickItem = async (kind: 'product' | 'service'): Promise<boolean> => {
+    const name = ((kind === 'product' ? truthFields.productName : truthFields.serviceName) ?? '').trim();
+    if (!name) { showTruthToast(`Enter a ${kind} name`); return false; }
+    if (!userId) { showTruthToast('Please sign in again'); return false; }
+    const rawPrice = ((kind === 'product' ? truthFields.productPrice : truthFields.servicePrice) ?? '').trim();
+    const priceNum = parseFloat(rawPrice.replace(/[^\d.]/g, ''));
+    const price = rawPrice ? (Number.isFinite(priceNum) ? `$${priceNum.toFixed(2)}` : rawPrice) : '';
+    const spec = kind === 'product'
+      ? [truthFields.productModel, truthFields.productSpecs].map(v => (v ?? '').trim()).filter(Boolean).join(' - ')
+      : '';
+    const description = kind === 'service' ? (truthFields.serviceDescription ?? '').trim() : '';
+    const category: KnowledgeCategory = kind === 'product' ? 'products' : 'services';
+    const look = CATEGORY_LOOK[category];
+    const serviceType = kind === 'service' ? (truthFields.serviceType ?? '').trim() : '';
+    const fields: KnowledgeField[] = [
+      ...(serviceType ? [{ label: 'Service type', value: serviceType }] : []),
+      ...(spec ? [{ label: 'Specification', value: spec }] : []),
+      ...(price ? [{ label: 'Price', value: price }] : []),
+      { label: 'Status', value: 'Need review' },
+    ];
+    const localImg = kind === 'product' ? truthFields.productImage : truthFields.serviceImage;
+    const image_url = localImg ? await uploadKnowledgeImage(localImg) : null;
+    if (localImg && !image_url) showTruthToast("Saved without the photo (upload failed)");
+    const { error } = await supabase.from('knowledge_items').insert({
+      user_id: userId, category, name, subtitle: price, status: 'Need review', overview: description || spec, fields, features: [],
+      icon: look.icon, icon_bg: look.iconBg, icon_color: look.iconColor, image_url,
+    });
+    if (error) { showTruthToast("Couldn't save. Try again"); return false; }
+    await refreshKnowledge().catch(() => {});
+    setTruthFields(p => kind === 'product'
+      ? { ...p, productName: '', productModel: '', productSpecs: '', productPrice: '', productImage: '' }
+      : { ...p, serviceName: '', serviceDescription: '', servicePrice: '', serviceType: '', serviceImage: '' });
+    showTruthToast(kind === 'product' ? 'Product saved' : 'Service saved');
+    return true;
+  };
+
   const openAddKnowledge = () => {
     setAddKnowledgeStep('choose');
     setReviewFilter('All');
@@ -1438,16 +6075,847 @@ export default function HomeScreen(){
     setScreen('socialMedia');
   };
 
+  // Home "Connect Apps" -> Inbox-1 (or Inbox-4 once Instagram is connected).
+  // FIX (deploy): Connect Apps is now a live screen backed by the
+  // channel-connect function (the old Inbox-1..4 truth images showed a fake
+  // "connected" WhatsApp number and Instagram handle).
+  const openConnectChannels = () => { loadChannels().catch(() => {}); if (!workspaceChecked) loadWorkspaceInfo().catch(() => {}); setScreen('connectChannels'); };
+
+  // Home "Lead" -> Leads list ("Lead to Customers").
+  const openLeads = () => { setContactFilter('All'); setContactSearch(''); loadContacts().catch(() => flash("Couldn't load your leads.")); setScreen('leads'); };
+
+  // Home "Schedule" -> Schedule-1.
+  const openSchedule = () => { if (NATIVE_SCHEDULE) { setAgendaDate(localIsoDate()); setScreen('agenda'); } else openTruth('scheduleHome'); };
+
   const handleCommandCenterPress=(label:string)=>{
     if(label==='Train AI'){setScreen('knowledgeHealth');return;}
     if(label==='Policies'){openKnowledgeList('policies');return;}
     if(label==='FAQs'){openKnowledgeList('faqs');return;}
     if(label==='Inbox'){setMainTab('inbox');setScreen('main');return;}
-    if(label==='Connect Apps'){openSocialMediaScreen('Brain Chat Share');return;}
-    if(label==='Schedule'){setScreen('calendar');return;}
+    if(label==='Connect Apps'){openConnectChannels();return;}
+    if(label==='Lead' || label==='Leads'){openLeads();return;}
+    if(label==='Schedule'){openSchedule();return;}
+    if(label==='Create Post'){openTruth('createPostHome');return;}
     setMainTab('brain');
     sendChatMessage(`Help me with: ${label}`);
   };
+  // ---- Truth-screen navigation --------------------------------------
+  const goTab = (tab: MainTab) => { setMainTab(tab); setScreen('main'); };
+  const connectHubKey = (): TruthKey =>
+    (CONNECT_APPS_SHOWS_CONNECTED_STATE && connectedChannels.instagram ? 'inbox4' : 'inbox1');
+  const startCall = (returnKey: TruthKey) => { callReturnRef.current = () => openTruth(returnKey); setScreen('activeCall'); };
+  const endCall = () => {
+    const back = callReturnRef.current;
+    callReturnRef.current = null;
+    if (back) back(); else setScreen('inboxChat');
+  };
+  const truthBack = (key: TruthKey): (() => void) => {
+    switch (key) {
+      case 'inbox1': case 'inbox4': return () => goTab('home');
+      case 'inbox2': case 'inbox3': return () => openTruth('inbox1');
+      case 'channelOptions': return () => openTruth(connectHubKey());
+      case 'channelDetailsIg': case 'channelDetailsWa': return () => openTruth('channelOptions');
+      case 'leadsList': return () => goTab('home');
+      case 'leadProfile': return () => openLeads();
+      case 'leadDemoInvite': return () => (demoInviteBackRef.current ? demoInviteBackRef.current() : openLeads());
+      case 'customers': return () => (customersBackRef.current ? customersBackRef.current() : goTab('inbox'));
+      case 'customerProfile': return () => openCustomers();
+      case 'interactionHistory': return () => openCustomers();
+      case 'addCustomer': return () => openCustomers();
+      case 'scheduleHome': return () => goTab('home');
+      case 'scheduleList': return () => openTruth('scheduleHome');
+      case 'createSchedule': case 'scheduleTask': case 'scheduleMeeting': return () => { setConflictInfo(null); openTruth('scheduleHome'); };
+      case 'conflictTime': return () => openTruth(schedFrameFor(sched.kind));
+      case 'editPost': return () => openTruth(postKindRef.current === 'announcement' ? 'announcement' : aiBackRef.current);
+      case 'platformAdapt': return () => openTruth(postKindRef.current === 'service' ? 'servicePostEdit' : postKindRef.current === 'promotion' ? 'promoPost' : 'editPost');
+      case 'platformAdapt2': return () => openTruth('platformAdapt');
+      case 'createPostHome': return () => goTab('home');
+      case 'productPostSuggested': case 'productPostAll': case 'servicePostSuggested': case 'servicePostAll': return () => openTruth('createPostHome');
+      case 'productAdd': case 'serviceAdd': return () => (addOriginRef.current === 'train' ? setScreen('knowledgeHealth') : openTruth(addBackRef.current));
+      case 'aiContent': case 'aiGen1': case 'aiGen2': case 'aiGen3': return () => openTruth(aiBackRef.current);
+      case 'announcement': case 'promoPick': return () => openTruth('createPostHome');
+      case 'promoSelect': return () => openTruth('promoPick');
+      case 'promoForm': case 'promoReady': return () => openTruth('promoSelect');
+      case 'promoType': case 'promoStart': case 'promoEnd': return () => openTruth(promo.touched ? 'promoReady' : 'promoForm');
+      case 'promoPost': return () => openTruth('promoReady');
+      case 'servicePostEdit': return () => openTruth(aiBackRef.current);
+      case 'publishing': case 'publishFailed': case 'schedulePostDate': case 'platformAdaptFb': return () => openTruth('platformAdapt2');
+      case 'published': case 'postScheduled': case 'scheduledPost': return () => openTruth('createPostHome');
+      default: return () => goTab('home');
+    }
+  };
+  truthBackRef.current = truthBack;
+  // Bottom pill nav drawn into every Lead / Customer / Schedule frame.
+  const truthNavSpots = (): Hotspot[] => [
+    { x: 36, y: 782, w: 58, h: 54, label: 'nav-home', onPress: () => goTab('home') },
+    { x: 96, y: 782, w: 102, h: 54, label: 'nav-inbox', onPress: () => goTab('inbox') },
+    { x: 204, y: 782, w: 54, h: 54, label: 'nav-brain', onPress: () => goTab('brain') },
+    { x: 258, y: 782, w: 50, h: 54, label: 'nav-lead', onPress: () => openLeads() },
+    { x: 308, y: 782, w: 54, h: 54, label: 'nav-profile', onPress: () => goTab('profile') },
+  ];
+  const getTruthHotspots = (key: TruthKey): Hotspot[] => {
+    const back: Hotspot = { x: 8, y: 46, w: 52, h: 42, label: 'back', onPress: truthBack(key) };
+    const askPill: Hotspot = { x: 237, y: 722, w: 140, h: 38, label: 'ask-nexora', onPress: () => goTab('brain') };
+    const askRound: Hotspot = { x: 339, y: 722, w: 40, h: 38, label: 'ask-nexora', onPress: () => goTab('brain') };
+    const nav = truthNavSpots();
+    // Bottom bar with Brain active (AI Content Generation, Published, Scheduled, Failed frames).
+    const brainNav: Hotspot[] = [
+      { x: 36, y: 782, w: 58, h: 54, label: 'nav-home', onPress: () => goTab('home') },
+      { x: 94, y: 782, w: 46, h: 54, label: 'nav-inbox', onPress: () => goTab('inbox') },
+      { x: 141, y: 782, w: 101, h: 54, label: 'nav-brain', onPress: () => goTab('brain') },
+      { x: 244, y: 782, w: 60, h: 54, label: 'nav-lead', onPress: () => openLeads() },
+      { x: 304, y: 782, w: 58, h: 54, label: 'nav-profile', onPress: () => goTab('profile') },
+    ];
+    // "Choose how to use image": AI image / Uploaded / Both.
+    const imageUseSpots = (top: number): Hotspot[] => (['AI image', 'Uploaded', 'Both'] as const).map((m, i): Hotspot => ({
+      x: [14, 144, 273][i], y: top, w: 100, h: 69, label: `image-${m}`,
+      onPress: () => { if (m !== 'AI image' && !post.mediaUri) { pickPostMedia(); return; } showTruthToast(m === 'AI image' ? 'Nexora will design the image' : m === 'Uploaded' ? 'Your own photo will be used' : 'Nexora will combine your photo with its design'); },
+    }));
+    const openDemoInvite = (from: TruthKey) => { demoInviteBackRef.current = () => openTruth(from); openTruth('leadDemoInvite'); };
+    const ask = (q: string) => () => { setMainTab('brain'); setScreen('main'); sendChatMessage(q); };
+    // The "..." menu drawn in the top-right of the profile / form frames.
+    const kebab = (title: string, q: string): Hotspot => ({ x: 344, y: 44, w: 42, h: 44, label: 'more', onPress: () => Alert.alert(title, undefined, [
+      { text: 'Ask Nexora about this', onPress: ask(q) },
+      { text: 'Go to Inbox', onPress: () => goTab('inbox') },
+      { text: 'Cancel', style: 'cancel' },
+    ]) });
+    const header: Hotspot[] = [
+      { x: 10, y: 58, w: 52, h: 46, label: 'menu', onPress: () => drawerOpenFn() },
+      { x: 298, y: 58, w: 38, h: 46, label: 'bell', onPress: () => goTab('inbox') },
+      { x: 340, y: 56, w: 44, h: 46, label: 'avatar', onPress: () => goTab('profile') },
+    ];
+    switch (key) {
+      // ---- Connect Apps flow (Inbox-1 -> 2 -> 3 -> 4 -> options -> settings)
+      // These five frames were not in the attached SVGs, so their tap areas
+      // are ESTIMATED -- turn on TRUTH_DEBUG_HOTSPOTS and nudge if needed.
+      case 'inbox1':
+        return [
+          back,
+          { x: 272, y: 208, w: 96, h: 40, label: 'whatsapp-connect', onPress: () => openConnectChannels() },
+          { x: 272, y: 290, w: 96, h: 40, label: 'facebook-connect', onPress: () => openConnectChannels() },
+          { x: 272, y: 370, w: 96, h: 40, label: 'instagram-connect', onPress: () => { setSettingsChannelKey('instagram'); openTruth('inbox2'); } },
+          { x: 272, y: 478, w: 96, h: 40, label: 'email-connect', onPress: () => openConnectChannels() },
+          { x: 272, y: 557, w: 96, h: 40, label: 'sms-connect', onPress: () => openConnectChannels() },
+          askPill,
+        ];
+      case 'inbox2':
+        return [{ x: 0, y: 0, w: 393, h: 852, label: 'continue', estimated: true, onPress: () => openTruth('inbox3') }];
+      case 'inbox3':
+        return [{ x: 16, y: 640, w: 361, h: 130, label: 'done', estimated: true, onPress: () => openConnectChannels() }];
+      case 'inbox4':
+        return [
+          back,
+          { x: 335, y: 182, w: 46, h: 48, label: 'whatsapp-menu', estimated: true, onPress: () => { setSettingsChannelKey('whatsapp'); openTruth('channelOptions'); } },
+          { x: 335, y: 254, w: 46, h: 56, label: 'instagram-menu', estimated: true, onPress: () => { setSettingsChannelKey('instagram'); openTruth('channelOptions'); } },
+        ];
+      case 'channelOptions':
+        return [
+          { x: 0, y: 0, w: 393, h: 420, label: 'dismiss', onPress: () => openTruth(connectHubKey()) },
+          { x: 340, y: 432, w: 46, h: 46, label: 'close', onPress: () => openTruth(connectHubKey()) },
+          { x: 0, y: 522, w: 393, h: 54, label: 'channel-settings', onPress: () => openTruth(settingsChannelKey === 'whatsapp' ? 'channelDetailsWa' : 'channelDetailsIg') },
+          { x: 0, y: 600, w: 393, h: 54, label: 'ai-permissions', onPress: () => setScreen('aiPermissions') },
+          { x: 0, y: 677, w: 393, h: 54, label: 'view-connection', onPress: () => openTruth(settingsChannelKey === 'whatsapp' ? 'channelDetailsWa' : 'channelDetailsIg') },
+          { x: 0, y: 758, w: 393, h: 52, label: 'disconnect', onPress: () => openConnectChannels() },
+        ];
+      case 'channelDetailsIg':
+      case 'channelDetailsWa':
+        return [
+          back,
+          { x: 16, y: 735, w: 190, h: 90, label: 'save-changes', estimated: true, onPress: () => openTruth(connectHubKey()) },
+          { x: 212, y: 735, w: 165, h: 90, label: 'ask-nexora', estimated: true, onPress: () => goTab('brain') },
+        ];
+
+      // ---- Lead flow (measured from the attached SVGs)
+      case 'leadsList': {
+        const tops = [281, 373, 465, 557, 649, 741];
+        return [
+          ...tops.map((top, i): Hotspot => ({ x: 0, y: top, w: 393, h: i === tops.length - 1 ? 41 : 91, label: `lead-row-${i + 1}`, onPress: () => openLeads() })),
+          // Small addition (not in the Figma frame): the only way into the Customers list from Leads.
+          { x: 291, y: 104, w: 86, h: 26, label: 'customers', chip: 'Customers \u203A', onPress: () => { openCustomers(() => openLeads()); } },
+          ...header,
+          { x: 16, y: 178, w: 361, h: 42, label: 'search-leads', onPress: ask('Show me my leads and who I should follow up with first.') },
+          { x: 16, y: 237, w: 80, h: 34, label: 'filter-all', onPress: ask('List all my leads with their status.') },
+          { x: 113, y: 237, w: 90, h: 34, label: 'filter-new', onPress: ask('Which of my leads are new and have not been contacted yet?') },
+          { x: 221, y: 237, w: 116, h: 34, label: 'filter-contacted', onPress: ask('Which leads have I already contacted, and who needs a follow-up?') },
+          { x: 352, y: 237, w: 41, h: 34, label: 'filter-qualified', onPress: ask('Which of my leads are qualified and ready to buy?') },
+          askRound,
+          ...nav,
+        ];
+      }
+      case 'leadProfile':
+        return [
+          back,
+          { x: 16, y: 174, w: 172, h: 40, label: 'message', onPress: () => goTab('inbox') },
+          { x: 204, y: 174, w: 172, h: 40, label: 'call', onPress: () => startCall('leadProfile') },
+          { x: 92, y: 742, w: 213, h: 33, label: 'view-recommendations', onPress: () => openDemoInvite('leadProfile') },
+          kebab('Lead', 'Summarise this lead and suggest my next step to convert them.'),
+          askRound,
+          ...nav,
+        ];
+      case 'leadDemoInvite':
+        return [
+          back,
+          { x: 16, y: 663, w: 361, h: 46, label: 'take-action', onPress: () => { showTruthToast('Demo invite sent'); truthBack('leadDemoInvite')(); } },
+          { x: 16, y: 719, w: 316, h: 46, label: 'view-other-suggestions', onPress: ask('Give me other ways to convert this lead besides a product demo invitation.') },
+          kebab('Recommendation', 'Explain why you recommend sending a personalized demo invitation.'),
+          askRound,
+          ...nav,
+        ];
+
+      // ---- Customers branch
+      case 'customers': {
+        const tops = [194, 286, 378, 470, 562, 654];
+        return [
+          back,
+          { x: 322, y: 52, w: 58, h: 32, label: 'add', onPress: () => openTruth('addCustomer') },
+          { x: 16, y: 99, w: 361, h: 38, label: 'search-customers', onPress: ask('Show me my customers, newest first, with how much each has spent.') },
+          ...tops.map((top, i): Hotspot => ({ x: 0, y: top, w: 393, h: 91, label: `customer-row-${i + 1}`, onPress: () => openCustomers() })),
+          askPill,
+          ...nav,
+        ];
+      }
+      case 'customerProfile':
+        return [
+          back,
+          { x: 16, y: 187, w: 160, h: 40, label: 'message', onPress: () => goTab('inbox') },
+          { x: 216, y: 187, w: 160, h: 40, label: 'call', onPress: () => startCall('customerProfile') },
+          { x: 140, y: 246, w: 76, h: 34, label: 'order-tab', onPress: () => openOrders('All') },
+          { x: 240, y: 246, w: 145, h: 34, label: 'interaction-history-tab', onPress: () => openTruth('interactionHistory') },
+          kebab('Customer', 'Summarise this customer: what they bought, what they asked about, and what I should offer them next.'),
+          { x: 92, y: 593, w: 223, h: 33, label: 'send-personalized-offer', onPress: () => openDemoInvite('customerProfile') },
+          askPill,
+          ...nav,
+        ];
+      case 'interactionHistory': {
+        const rowTops = [148, 237, 326, 415, 504, 593, 682];
+        const rowGo = [() => goTab('inbox'), () => openOrders('All'), () => showTruthToast('Calls are logged here after they end'), () => openOrders('All'), () => goTab('inbox'), () => showTruthToast('Notes are added from the customer profile'), () => openOrders('All')];
+        return [
+          back,
+          kebab('Interaction history', 'Summarise my recent interactions with this customer.'),
+          { x: 16, y: 94, w: 80, h: 32, label: 'filter-all', onPress: () => showTruthToast('Showing all interactions') },
+          { x: 110, y: 94, w: 96, h: 32, label: 'filter-messages', onPress: () => goTab('inbox') },
+          { x: 218, y: 94, w: 76, h: 32, label: 'filter-calls', onPress: () => showTruthToast('Calls are logged here after they end') },
+          { x: 306, y: 94, w: 87, h: 32, label: 'filter-orders', onPress: () => openOrders('All') },
+          ...rowTops.map((top, i): Hotspot => ({ x: 0, y: top, w: 393, h: 86, label: `interaction-${i + 1}`, onPress: rowGo[i] })),
+          askPill,
+          ...nav,
+        ];
+      }
+      case 'addCustomer':
+        return [
+          back,
+          { x: 16, y: 716, w: 361, h: 50, label: 'save-customer', onPress: () => { saveCustomerFromForm(); } },
+          { x: 16, y: 467, w: 361, h: 38, label: 'segment', onPress: () => Alert.alert('Customer segment', undefined, [
+            ...(['New', 'VIP', 'Active'] as const).map(seg => ({ text: seg, onPress: () => setField('newSegment', seg) })),
+            { text: 'Cancel', style: 'cancel' as const },
+          ]) },
+          kebab('New customer', 'How should I group and tag my customers?'),
+          ...nav,
+        ];
+
+      // ---- Schedule flow (measured from the attached SVGs)
+      case 'scheduleHome':
+      case 'scheduleList': {
+        const isHome = key === 'scheduleHome';
+        const header: Hotspot[] = [
+          { x: 10, y: 62, w: 56, h: 44, label: 'menu', onPress: () => drawerOpenFn() },
+          { x: 298, y: 62, w: 38, h: 44, label: 'bell', onPress: () => goTab('inbox') },
+          { x: 340, y: 60, w: 44, h: 44, label: 'avatar', onPress: () => goTab('profile') },
+          { x: 342, y: 112, w: 40, h: 40, label: 'create-schedule', onPress: () => openCreateSchedule() },
+          { x: 259, y: 174, w: 28, h: 36, label: 'previous-day', onPress: () => (isHome ? openTruth('scheduleList') : showTruthToast('Earlier days are listed below')) },
+          { x: 287, y: 174, w: 63, h: 36, label: 'today', onPress: () => (isHome ? showTruthToast('Showing today') : openTruth('scheduleHome')) },
+          { x: 352, y: 174, w: 26, h: 36, label: 'next-day', onPress: () => showTruthToast('Nothing scheduled for the next day yet') },
+        ];
+        const internal = () => showTruthToast('Internal team event');
+        if (isHome) {
+          const chip = (label: string, x: number, w: number, onPress: () => void): Hotspot => ({ x, y: 227, w, h: 70, label, onPress });
+          return [
+            ...header,
+            chip('day-sat', 16, 60, () => openTruth('scheduleList')),
+            chip('day-sun', 86, 60, () => openTruth('scheduleList')),
+            chip('day-tue', 226, 60, () => showTruthToast('Nothing scheduled for this day yet')),
+            chip('day-wed', 295, 60, () => showTruthToast('Nothing scheduled for this day yet')),
+            chip('day-thu', 365, 28, () => showTruthToast('Nothing scheduled for this day yet')),
+            { x: 82, y: 388, w: 279, h: 40, label: 'view-priority-actions', onPress: () => openTruth('scheduleList') },
+            { x: 0, y: 451, w: 393, h: 95, label: 'event-team-sync', onPress: internal },
+            { x: 0, y: 546, w: 393, h: 95, label: 'event-call-sarah', onPress: () => openCustomers() },
+            { x: 0, y: 641, w: 393, h: 85, label: 'event-product-demo', onPress: () => openLeads() },
+            askRound,
+            ...nav,
+          ];
+        }
+        return [
+          ...header,
+          { x: 234, y: 581, w: 22, h: 32, label: 'previous-day-2', onPress: () => showTruthToast('Showing earlier days') },
+          { x: 260, y: 581, w: 93, h: 32, label: 'yesterday', onPress: () => showTruthToast('Showing yesterday') },
+          { x: 356, y: 581, w: 22, h: 32, label: 'next-day-2', onPress: () => openTruth('scheduleHome') },
+          { x: 0, y: 215, w: 393, h: 90, label: 'event-marcus', onPress: () => openCustomers() },
+          { x: 0, y: 305, w: 393, h: 86, label: 'event-tunde', onPress: () => openCustomers() },
+          { x: 0, y: 392, w: 393, h: 89, label: 'event-product-demo', onPress: () => openLeads() },
+          { x: 0, y: 481, w: 393, h: 87, label: 'event-support-review', onPress: internal },
+          { x: 0, y: 625, w: 393, h: 82, label: 'event-support-review-2', onPress: internal },
+          askRound,
+          ...nav,
+        ];
+      }
+      case 'createSchedule': {
+        return [
+          back,
+          { x: 80, y: 205, w: 270, h: 34, label: 'use-suggestion', onPress: () => applyAiSuggestion('follow_up') },
+          { x: 145, y: 274, w: 100, h: 70, label: 'tab-meeting', onPress: () => switchSchedKind('meeting') },
+          { x: 274, y: 274, w: 102, h: 70, label: 'tab-task', onPress: () => switchSchedKind('task') },
+          { x: 16, y: 388, w: 361, h: 62, label: 'who-card', onPress: () => openPicker('who') },
+          { x: 15, y: 500, w: 208, h: 40, label: 'date', onPress: () => openPicker('date') },
+          { x: 245, y: 500, w: 130, h: 40, label: 'time', onPress: () => openPicker('time') },
+          { x: 16, y: 586, w: 361, h: 40, label: 'reminder', onPress: () => openPicker('reminder') },
+          { x: 16, y: 673, w: 361, h: 40, label: 'assigned-to', onPress: () => showTruthToast('Assigned to NEXORA AI (Customer Support)') },
+          // The frame's own Schedule / Cancel buttons are below the fold, so the chip sits in the empty header.
+          { x: 296, y: 50, w: 86, h: 34, label: 'schedule', chip: 'Schedule \u203A', onPress: () => stageSchedule() },
+          ...nav,
+        ];
+      }
+      case 'scheduleTask': {
+        return [
+          back,
+          { x: 82, y: 211, w: 272, h: 34, label: 'use-suggestion', onPress: () => applyAiSuggestion('task') },
+          { x: 16, y: 279, w: 100, h: 70, label: 'tab-follow-up', onPress: () => switchSchedKind('follow_up') },
+          { x: 146, y: 279, w: 100, h: 70, label: 'tab-meeting', onPress: () => switchSchedKind('meeting') },
+          { x: 16, y: 484, w: 361, h: 40, label: 'related-customer', onPress: () => openPicker('related') },
+          { x: 16, y: 570, w: 110, h: 40, label: 'priority-low', onPress: () => setS({ priority: 'Low' }) },
+          { x: 141, y: 570, w: 110, h: 40, label: 'priority-medium', onPress: () => setS({ priority: 'Medium' }) },
+          { x: 266, y: 570, w: 110, h: 40, label: 'priority-high', onPress: () => setS({ priority: 'High' }) },
+          { x: 16, y: 759, w: 210, h: 22, label: 'date', onPress: () => openPicker('date') },
+          { x: 247, y: 759, w: 130, h: 22, label: 'time', onPress: () => openPicker('time') },
+          // The frame's own Schedule button is below the fold, so the chip sits in the empty header.
+          { x: 296, y: 50, w: 86, h: 34, label: 'schedule', chip: 'Schedule \u203A', onPress: () => stageSchedule() },
+          ...nav,
+        ];
+      }
+      case 'scheduleMeeting': {
+        return [
+          back,
+          { x: 82, y: 181, w: 272, h: 34, label: 'use-suggestion', onPress: () => applyAiSuggestion('meeting') },
+          { x: 16, y: 249, w: 100, h: 70, label: 'tab-follow-up', onPress: () => switchSchedKind('follow_up') },
+          { x: 276, y: 249, w: 100, h: 70, label: 'tab-task', onPress: () => switchSchedKind('task') },
+          { x: 160, y: 466, w: 28, h: 28, label: 'remove-participant-1', onPress: () => setS({ touchedParticipants: true, participants: sched.participants.filter((_, i) => i !== 0) }) },
+          { x: 345, y: 466, w: 28, h: 28, label: 'remove-participant-2', onPress: () => setS({ touchedParticipants: true, participants: sched.participants.filter((_, i) => i !== 1) }) },
+          { x: 16, y: 517, w: 140, h: 26, label: 'add-participant', onPress: () => (sched.participants.length >= 2 ? showTruthToast('You can add up to 2 participants here') : openPicker('participant')) },
+          { x: 16, y: 585, w: 361, h: 40, label: 'related-lead', onPress: () => openPicker('related') },
+          { x: 16, y: 672, w: 110, h: 40, label: 'priority-low', onPress: () => setS({ priority: 'Low' }) },
+          { x: 141, y: 672, w: 110, h: 40, label: 'priority-medium', onPress: () => setS({ priority: 'Medium' }) },
+          { x: 266, y: 672, w: 110, h: 40, label: 'priority-high', onPress: () => setS({ priority: 'High' }) },
+          { x: 16, y: 759, w: 210, h: 22, label: 'date', onPress: () => openPicker('date') },
+          { x: 247, y: 759, w: 130, h: 22, label: 'time', onPress: () => openPicker('time') },
+          // The frame's own Schedule button is below the fold, so the chip sits in the empty header.
+          { x: 296, y: 50, w: 86, h: 34, label: 'schedule', chip: 'Schedule \u203A', onPress: () => stageSchedule() },
+          ...nav,
+        ];
+      }
+      case 'conflictTime': {
+        const opts = conflictInfo?.options ?? [];
+        return [
+          { x: 0, y: 0, w: 393, h: 155, label: 'dismiss', onPress: () => openTruth(schedFrameFor(sched.kind)) },
+          { x: 251, y: 271, w: 110, h: 28, label: 'view-calendar', onPress: () => openTruth('scheduleHome') },
+          { x: 16, y: 308, w: 361, h: 67, label: 'option-1', onPress: () => opts[0] && setConflictChoice(0) },
+          { x: 16, y: 384, w: 361, h: 66, label: 'option-2', onPress: () => opts[1] && setConflictChoice(1) },
+          { x: 16, y: 460, w: 361, h: 66, label: 'option-3', onPress: () => opts[2] && setConflictChoice(2) },
+          { x: 32, y: 546, w: 329, h: 50, label: 'reschedule', onPress: () => { const o = opts[conflictChoice]; if (!o) { showTruthToast('No other free time that day'); return; } commitSchedule(o.split(' - ')[0]); } },
+          { x: 32, y: 616, w: 329, h: 50, label: 'keep-original-time', onPress: () => commitSchedule(sched.time) },
+        ];
+      }
+      // ---- Post flow
+      case 'editPost':
+        return [
+          back,
+          { x: 346, y: 52, w: 36, h: 42, label: 'more', onPress: () => postMore() },
+          ...imageUseSpots(350),
+          { x: 114, y: 641, w: 79, h: 79, label: 'add-media', onPress: () => pickPostMedia() },
+          { x: 14, y: 641, w: 79, h: 79, label: 'media', onPress: () => pickPostMedia() },
+          // Next sits below the fold in this frame, so it's a chip in the header.
+          { x: 252, y: 50, w: 86, h: 34, label: 'next', chip: 'Next \u203A', onPress: () => { if (!post.text.trim()) { showTruthToast('Add a description first'); return; } openTruth(POST_FLOW.editNext); } },
+          ...nav,
+        ];
+      case 'servicePostEdit':
+      case 'promoPost':
+        return [
+          back,
+          { x: 346, y: 52, w: 36, h: 42, label: 'more', onPress: () => postMore() },
+          ...imageUseSpots(523),
+          { x: 252, y: 50, w: 86, h: 34, label: 'next', chip: 'Next \u203A', onPress: () => { if (!post.text.trim()) { showTruthToast('Add a description first'); return; } openTruth('platformAdapt'); } },
+          ...nav,
+        ];
+      case 'announcement': {
+        const tiles: [string, number, number][] = [['New Launch', 14, 130], ['Business Updates', 208, 130], ['Events', 14, 250], ['Opening hours', 208, 250], ['Important Notice', 14, 370], ['Others', 208, 370]];
+        return [
+          back,
+          { x: 346, y: 52, w: 36, h: 42, label: 'more', onPress: () => postMore() },
+          ...tiles.map(([t, x, y]): Hotspot => ({ x, y, w: 166, h: 92, label: `type-${t}`, onPress: () => setAnnType(t) })),
+          { x: 14, y: 670, w: 79, h: 79, label: 'media', onPress: () => pickPostMedia() },
+          { x: 114, y: 670, w: 79, h: 79, label: 'add-media', onPress: () => pickPostMedia() },
+          { x: 252, y: 50, w: 86, h: 34, label: 'next', chip: 'Next \u203A', onPress: () => {
+            setPost(p => ({ ...p, text: p.text && p.text !== POST_DEFAULT_TEXT ? p.text : `${annType.toUpperCase()}\nWe have exciting news to share with our customers. Send us a DM for details!` }));
+            postKindRef.current = 'announcement'; aiBackRef.current = 'announcement'; openTruth('aiContent');
+          } },
+          ...nav,
+        ];
+      }
+      // ---- Promotion flow (Create Promotion frames)
+      case 'promoPick':
+        return [back, { x: 346, y: 52, w: 36, h: 42, label: 'more', onPress: () => postMore() }, { x: 14, y: 98, w: 364, h: 92, label: 'promote', onPress: () => openTruth('promoSelect') },
+          { x: 14, y: 230, w: 364, h: 520, label: 'pick-first', onPress: () => { showTruthToast('Select a product or service first'); openTruth('promoSelect'); } }, askPill, ...nav];
+      case 'promoSelect': {
+        const rows: [string, string, number][] = [['Power installations', 'Electrical services', 214], ['Website design & engineering', 'IT & Tech Solutions', 316], ['Hair styling', 'Beauty & Personal Care', 418], ['Delivery Service', 'Logistics & Freight', 520], ['Bluetooth Speaker', 'Electronics', 622]];
+        return [
+          back,
+          { x: 346, y: 52, w: 36, h: 42, label: 'more', onPress: () => postMore() },
+          { x: 14, y: 98, w: 364, h: 40, label: 'search', onPress: () => openKnowledgeList('services') },
+          ...rows.map(([item, sub, y]): Hotspot => ({ x: 14, y, w: 364, h: 91, label: `pick-${item}`, onPress: () => { setPromo(p => ({ ...p, item, itemSub: sub })); openTruth(promo.touched ? 'promoReady' : 'promoForm'); } })),
+          askPill, ...nav,
+        ];
+      }
+      case 'promoForm':
+      case 'promoReady':
+        return [
+          back,
+          { x: 346, y: 52, w: 36, h: 42, label: 'more', onPress: () => postMore() },
+          { x: 14, y: 98, w: 364, h: 92, label: 'change-item', onPress: () => openTruth('promoSelect') },
+          { x: 14, y: 298, w: 364, h: 38, label: 'promotion-type', onPress: () => openTruth('promoType') },
+          { x: 14, y: 558, w: 364, h: 40, label: 'start-date', onPress: () => openTruth('promoStart') },
+          { x: 14, y: 645, w: 364, h: 40, label: 'end-date', onPress: () => openTruth('promoEnd') },
+          { x: 252, y: 50, w: 86, h: 34, label: 'continue', chip: 'Continue \u203A', onPress: () => {
+            if (!promo.touched) { showTruthToast('Choose a promotion type'); openTruth('promoType'); return; }
+            setPost(p => ({ ...p, text: `SPECIAL OFFER: ${promo.type.toUpperCase()} ON ${promo.item.toUpperCase()}!\nValid ${prettyDate(promo.start)} to ${prettyDate(promo.end)}. Send us a DM to book or order today!` }));
+            postKindRef.current = 'promotion'; aiBackRef.current = 'promoReady'; openTruth('aiContent');
+          } },
+          askPill, ...nav,
+        ];
+      case 'promoType': {
+        const opts: [string, number, number][] = [['Percentage discount', 354, 25], ['Fixed discount', 381, 34], ['Bundle offer', 416, 31], ['Limited-time offer', 448, 32]];
+        return [
+          back,
+          { x: 14, y: 298, w: 364, h: 38, label: 'close-type', onPress: () => openTruth(promo.touched ? 'promoReady' : 'promoForm') },
+          ...opts.map(([t, y, h]): Hotspot => ({ x: 14, y, w: 364, h, label: `type-${t}`, onPress: () => { setPromo(p => ({ ...p, type: t, touched: true })); openTruth('promoReady'); } })),
+          askPill, ...nav,
+        ];
+      }
+      case 'promoStart':
+      case 'promoEnd': {
+        const isStart = key === 'promoStart';
+        const pick = () => setTruthList({ title: isStart ? 'Promotion starts' : 'Promotion ends', items: Array.from({ length: 30 }, (_, i) => isoPlus(i)).map(d => ({ label: prettyDate(d), onPick: () => { setPromo(p => (isStart ? { ...p, start: d, end: p.end < d ? d : p.end, touched: true } : { ...p, end: d < p.start ? p.start : d, touched: true })); openTruth('promoReady'); } })) });
+        return [
+          back,
+          { x: 14, y: isStart ? 558 : 645, w: 364, h: 40, label: 'date-field', onPress: pick },
+          { x: 335, y: isStart ? 610 : 697, w: 46, h: 40, label: 'close-calendar', onPress: () => openTruth(promo.touched ? 'promoReady' : 'promoForm') },
+          { x: 14, y: isStart ? 655 : 742, w: 364, h: 120, label: 'calendar', onPress: pick },
+          ...nav,
+        ];
+      }
+      // ---- After generation: publishing results and scheduling
+      case 'publishing':
+        return [back];
+      case 'published':
+        return [back, { x: 15, y: 540, w: 362, h: 49, label: 'view-post', onPress: () => openTruth('platformAdapt2') }, { x: 15, y: 601, w: 362, h: 49, label: 'create-another-post', onPress: () => { setPost(initialPost()); openTruth('createPostHome'); } }, ...brainNav];
+      case 'postScheduled':
+        return [back, { x: 15, y: 540, w: 362, h: 49, label: 'view-scheduled-post', onPress: () => openTruth('scheduledPost') }, { x: 15, y: 601, w: 362, h: 49, label: 'create-new-post', onPress: () => { setPost(initialPost()); openTruth('createPostHome'); } }, ...brainNav];
+      case 'publishFailed':
+        return [back, { x: 15, y: 546, w: 362, h: 49, label: 'retry', onPress: () => approvePost() }, { x: 15, y: 606, w: 362, h: 49, label: 'view-details', onPress: () => showTruthToast('TikTok needs to be reconnected in Connected channels') }, ...brainNav];
+      case 'scheduledPost':
+        return [
+          back,
+          { x: 346, y: 52, w: 36, h: 42, label: 'more', onPress: () => postMore() },
+          { x: 130, y: 100, w: 100, h: 32, label: 'tab-facebook', onPress: () => openTruth('platformAdaptFb') },
+          { x: 15, y: 662, w: 362, h: 48, label: 'edit', onPress: () => openTruth('editPost') },
+          { x: 15, y: 722, w: 362, h: 49, label: 'create-new-post', onPress: () => { setPost(initialPost()); openTruth('createPostHome'); } },
+          ...nav,
+        ];
+      case 'platformAdaptFb':
+        return [
+          back,
+          { x: 346, y: 52, w: 36, h: 42, label: 'more', onPress: () => postMore() },
+          { x: 15, y: 100, w: 96, h: 32, label: 'tab-instagram', onPress: () => openTruth('platformAdapt2') },
+          { x: 250, y: 100, w: 86, h: 32, label: 'tab-tiktok', onPress: () => showTruthToast('TikTok uses the Instagram layout for now') },
+          { x: 15, y: 552, w: 362, h: 48, label: 'schedule-post', onPress: () => openTruth('schedulePostDate') },
+          { x: 15, y: 612, w: 362, h: 49, label: 'approve-and-publish', onPress: () => approvePost() },
+          askPill, ...nav,
+        ];
+      case 'schedulePostDate': {
+        const s2 = postSched;
+        return [
+          { x: 0, y: 0, w: 393, h: 395, label: 'dismiss', onPress: () => openTruth('platformAdapt2') },
+          { x: 350, y: 404, w: 40, h: 40, label: 'close', onPress: () => openTruth('platformAdapt2') },
+          { x: 15, y: 525, w: 362, h: 38, label: 'date', onPress: () => setTruthList({ title: 'Publish on', items: Array.from({ length: 30 }, (_, i) => isoPlus(i)).map(d => ({ label: prettyDate(d), onPick: () => setPostSched(p => ({ ...p, date: d })) })) }) },
+          { x: 17, y: 611, w: 108, h: 50, label: 'hour', onPress: () => setTruthList({ title: 'Hour', items: Array.from({ length: 12 }, (_, i) => i + 1).map(h => ({ label: String(h), onPick: () => setPostSched(p => ({ ...p, hour: h })) })) }) },
+          { x: 141, y: 611, w: 109, h: 50, label: 'minutes', onPress: () => setTruthList({ title: 'Minutes', items: [0, 15, 30, 45].map(m => ({ label: String(m).padStart(2, '0'), onPick: () => setPostSched(p => ({ ...p, minute: m })) })) }) },
+          { x: 265, y: 611, w: 55, h: 50, label: 'am', onPress: () => setPostSched(p => ({ ...p, pm: false })) },
+          { x: 320, y: 611, w: 55, h: 50, label: 'pm', onPress: () => setPostSched(p => ({ ...p, pm: true })) },
+          { x: 31, y: 786, w: 161, h: 44, label: 'cancel', onPress: () => openTruth('platformAdapt2') },
+          { x: 201, y: 786, w: 159, h: 44, label: 'confirm', onPress: () => schedulePost(s2) },
+        ];
+      }
+      case 'platformAdapt': {
+        const cards: [string, number, number][] = [['Instagram', 139, 108], ['Facebook', 257, 108], ['Tiktok', 376, 108], ['WhatsApp', 494, 108], ['X', 613, 100]];
+        return [
+          back,
+          { x: 346, y: 52, w: 36, h: 42, label: 'more', onPress: () => postMore() },
+          ...cards.map(([name, y, h]): Hotspot => ({ x: 16, y, w: 361, h, label: `platform-${name}`, onPress: () => setPost(p => ({ ...p, platforms: { ...p.platforms, [name]: !p.platforms[name] } })) })),
+          { x: 16, y: 716, w: 361, h: 48, label: 'next', onPress: () => { if (!Object.values(post.platforms).some(Boolean)) { showTruthToast('Select at least one platform'); return; } openTruth(POST_FLOW.adaptNext); } },
+          ...nav,
+        ];
+      }
+      case 'platformAdapt2':
+        return [
+          back,
+          { x: 346, y: 52, w: 36, h: 42, label: 'more', onPress: () => postMore() },
+          { x: 15, y: 100, w: 96, h: 32, label: 'tab-instagram', onPress: () => setPost(p => ({ ...p, adaptTab: 'Instagram' })) },
+          { x: 130, y: 100, w: 100, h: 32, label: 'tab-facebook', onPress: () => openTruth('platformAdaptFb') },
+          { x: 250, y: 100, w: 86, h: 32, label: 'tab-tiktok', onPress: () => { setPost(p => ({ ...p, adaptTab: 'TikTok' })); showTruthToast('TikTok preview uses the Instagram layout for now'); } },
+          { x: 15, y: 662, w: 362, h: 48, label: 'schedule-post', onPress: () => openTruth('schedulePostDate') },
+          { x: 15, y: 722, w: 362, h: 49, label: 'approve-and-publish', onPress: () => approvePost() },
+          ...nav,
+        ];
+      // ---- Create Post flow (measured from the attached SVGs)
+      case 'createPostHome':
+        return [
+          back,
+          { x: 16, y: 186, w: 361, h: 72, label: 'product-post', onPress: () => openTruth('productPostSuggested') },
+          { x: 16, y: 264, w: 361, h: 72, label: 'service-post', onPress: () => openTruth('servicePostSuggested') },
+          { x: 16, y: 342, w: 361, h: 72, label: 'promotion-post', onPress: () => { postKindRef.current = 'promotion'; openTruth('promoPick'); } },
+          { x: 16, y: 420, w: 361, h: 72, label: 'announcement-post', onPress: () => { postKindRef.current = 'announcement'; setPost(p => ({ ...p, text: '' })); openTruth('announcement'); } },
+          { x: 322, y: 52, w: 58, h: 32, label: 'add', onPress: () => { addOriginRef.current = 'post'; addBackRef.current = 'createPostHome'; openTruth('productAdd'); } },
+          { x: 82, y: 666, w: 223, h: 33, label: 'create-personalized-post', onPress: () => { postKindRef.current = 'product'; aiBackRef.current = 'createPostHome'; openTruth('aiContent'); } },
+          askPill,
+          ...nav,
+        ];
+      case 'productPostSuggested':
+      case 'productPostAll':
+      case 'servicePostSuggested':
+      case 'servicePostAll': {
+        const isProduct = key === 'productPostSuggested' || key === 'productPostAll';
+        const onSuggested = key === 'productPostSuggested' || key === 'servicePostSuggested';
+        const suggestedKey: TruthKey = isProduct ? 'productPostSuggested' : 'servicePostSuggested';
+        const allKey: TruthKey = isProduct ? 'productPostAll' : 'servicePostAll';
+        const addKey: TruthKey = isProduct ? 'productAdd' : 'serviceAdd';
+        const goAdd = () => { addOriginRef.current = 'post'; addBackRef.current = key; openTruth(addKey); };
+        const useTops = onSuggested ? [349.5, 447.5, 545.5] : [349.5, 447.5, 545.5, 643.5];
+        return [
+          back,
+          { x: 322, y: 52, w: 58, h: 32, label: 'add', onPress: goAdd },
+          // Nexora Suggestions / All tab switch: tapping the inactive half swaps the list.
+          onSuggested
+            ? { x: 197, y: 246, w: 180, h: 49, label: 'tab-all', onPress: () => openTruth(allKey) }
+            : { x: 18, y: 246, w: 179, h: 49, label: 'tab-suggestions', onPress: () => openTruth(suggestedKey) },
+          ...useTops.map((top, i): Hotspot => ({ x: 291, y: top - 8, w: 80, h: 39, label: `use-${i + 1}`, onPress: () => { postKindRef.current = isProduct ? 'product' : 'service'; aiBackRef.current = key; openTruth('aiContent'); } })),
+          ...(onSuggested ? [
+            { x: 16, y: 618, w: 190, h: 32, label: 'show-more-suggestions', onPress: () => openTruth(allKey) },
+            { x: 16, y: 684, w: 250, h: 38, label: 'add-manually', onPress: goAdd },
+          ] as Hotspot[] : [
+            { x: 16, y: 716, w: 190, h: 30, label: 'show-more', onPress: () => openKnowledgeList(isProduct ? 'products' : 'services') },
+          ] as Hotspot[]),
+          { x: 16, y: 199, w: 361, h: 38, label: 'search', onPress: () => openKnowledgeList(isProduct ? 'products' : 'services') },
+          askPill,
+          ...nav,
+        ];
+      }
+      case 'productAdd':
+      case 'serviceAdd':
+        return [
+          back,
+          { x: 16, y: 97, w: 160, h: 117, label: 'add-image', onPress: async () => { const uri = await pickLibraryImage(); if (uri) { setField(key === 'productAdd' ? 'productImage' : 'serviceImage', uri); showTruthToast('Image added'); } } },
+          { x: 297, y: 97, w: 80, h: 80, label: 'add-image-2', onPress: async () => { const uri = await pickLibraryImage(); if (uri) { setField(key === 'productAdd' ? 'productImage' : 'serviceImage', uri); showTruthToast('Image added'); } } },
+          ...(key === 'serviceAdd' ? [{ x: 16.5, y: 349.5, w: 360, h: 39, label: 'service-type', onPress: () => Alert.alert('Service type', undefined, [
+            ...['Installation', 'Repair', 'Delivery', 'Consultation', 'Other'].map(t => ({ text: t, onPress: () => setField('serviceType', t) })),
+            { text: 'Cancel', style: 'cancel' as const },
+          ]) }] as Hotspot[] : []),
+          { x: 16, y: 716, w: 361, h: 50, label: 'continue', onPress: async () => {
+            const ok = await saveQuickItem(key === 'productAdd' ? 'product' : 'service');
+            if (!ok) return;
+            if (addOriginRef.current === 'train') { openKnowledgeList(key === 'productAdd' ? 'products' : 'services'); return; }
+            postKindRef.current = key === 'productAdd' ? 'product' : 'service'; aiBackRef.current = key; openTruth('aiContent');
+          } },
+          // No Ask NEXORA tap area here: that pill is drawn on top of Continue in the design,
+          // and it was taking taps meant for Continue.
+          ...nav,
+        ];
+      case 'aiContent':
+      case 'aiGen1':
+      case 'aiGen2':
+      case 'aiGen3':
+        return [
+          back,
+          // This frame's bottom bar has Brain active, so its icons sit at different x positions.
+          { x: 36, y: 782, w: 58, h: 54, label: 'nav-home', onPress: () => goTab('home') },
+          { x: 94, y: 782, w: 46, h: 54, label: 'nav-inbox', onPress: () => goTab('inbox') },
+          { x: 141, y: 782, w: 101, h: 54, label: 'nav-brain', onPress: () => goTab('brain') },
+          { x: 244, y: 782, w: 60, h: 54, label: 'nav-lead', onPress: () => openLeads() },
+          { x: 304, y: 782, w: 58, h: 54, label: 'nav-profile', onPress: () => goTab('profile') },
+        ];
+      default:
+        return [back];
+    }
+  };
+  // Native pieces drawn over the Figma frames so choices (priority, radios, dates, platforms...) show up
+  // on screen. Each one only appears once the value differs from what the frame already shows.
+  const getTruthOverlays = (key: TruthKey, sc: number): React.ReactNode[] => {
+    const out: React.ReactNode[] = [];
+    const box = (k: string, x: number, y: number, w: number, h: number, style: any, children?: React.ReactNode) => (
+      <View key={k} pointerEvents="none" style={[{ position: 'absolute', left: x * sc, top: y * sc, width: w * sc, height: h * sc, zIndex: 12 }, style]}>{children}</View>
+    );
+    const radio = (k: string, cx: number, cy: number, selected: boolean, color: string) => out.push(
+      box(`${k}-cover`, cx - 15, cy - 15, 30, 30, { backgroundColor: '#FFF', borderRadius: 15 * sc, alignItems: 'center', justifyContent: 'center' },
+        <View style={{ width: 24 * sc, height: 24 * sc, borderRadius: 12 * sc, borderWidth: (selected ? 2 : 1.5) * sc, borderColor: selected ? color : '#0B1220', alignItems: 'center', justifyContent: 'center' }}>
+          {selected && <View style={{ width: 12 * sc, height: 12 * sc, borderRadius: 6 * sc, backgroundColor: color }} />}
+        </View>)
+    );
+    const dateLabel = new Date(`${sched.date}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    const priorityRing = (y: number) => (['Low', 'Medium', 'High'] as const).forEach((pr, i) => {
+      if (sched.priority === pr) out.push(box(`pr-${pr}`, [16, 141, 266][i], y, 110, 40, { borderRadius: 8 * sc, borderWidth: 2.5 * sc, borderColor: PRIORITY_COLOR[pr] }));
+    });
+    if (key === 'conflictTime' && conflictInfo) {
+      out.push(box('c-msg', 92, 213, 252, 34, { backgroundColor: '#FFECEC', justifyContent: 'center' },
+        <Text style={{ fontSize: 13 * sc, lineHeight: 17 * sc, color: '#6B7280' }}>You already have a meeting at {conflictInfo.existing}</Text>));
+      [0, 1, 2].forEach(i => {
+        const o = conflictInfo.options[i];
+        const rowTop = [308, 384, 460][i];
+        if (!o) { out.push(box(`c-empty-${i}`, 17, rowTop + 1, 359, 64, { backgroundColor: '#FFF' })); return; }
+        out.push(box(`c-t-${i}`, 78, [319, 395, 471][i], 168, 22, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 14 * sc, color: '#111827' }}>Move to {o}</Text>));
+        radio(`c-r-${i}`, 56, [341, 417, 493][i], conflictChoice === i, '#0F2942');
+      });
+    }
+    if (key === 'createSchedule') {
+      out.push(box('d-date', 60, 507, 150, 26, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 14 * sc, color: '#000' }}>{dateLabel}</Text>));
+      out.push(box('d-time', 290, 507, 78, 26, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 14 * sc, color: '#000' }}>{sched.time}</Text>));
+      if (sched.touchedWho) out.push(box('d-who', 84, 397, 250, 46, { backgroundColor: '#FFF' }, <>
+        <Text numberOfLines={1} style={{ fontSize: 16 * sc, fontWeight: '700', color: '#0B1220' }}>{sched.who}</Text>
+        <Text numberOfLines={1} style={{ fontSize: 13 * sc, color: '#6B7280', marginTop: 3 * sc }}>{sched.whoMeta}</Text>
+      </>));
+    }
+    if (key === 'addCustomer' && truthFields.newSegment) {
+      out.push(box('ac-seg', 42, 472, 270, 26, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 13 * sc, color: '#0B1220' }}>{truthFields.newSegment}</Text>));
+    }
+    if (key === 'serviceAdd' && truthFields.serviceType) {
+      out.push(box('sa-type', 30, 355, 280, 28, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 13 * sc, color: '#0B1220' }}>{truthFields.serviceType}</Text>));
+    }
+    const pickedImg = key === 'productAdd' ? truthFields.productImage : key === 'serviceAdd' ? truthFields.serviceImage : undefined;
+    if (pickedImg) out.push(box('pa-img', 196, 97, 80, 80, { borderRadius: 12 * sc, overflow: 'hidden', backgroundColor: '#FFF' }, <Image source={{ uri: pickedImg }} style={{ width: '100%', height: '100%' }} />));
+    if (key === 'scheduleTask') {
+      priorityRing(570);
+      if (sched.touchedRelated) out.push(box('t-rel', 56, 493, 262, 22, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 14 * sc, color: '#0B1220' }}>{sched.related}</Text>));
+    }
+    if (key === 'scheduleMeeting') {
+      priorityRing(672);
+      if (sched.touchedRelated) out.push(box('m-rel', 56, 594, 262, 22, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 14 * sc, color: '#0B1220' }}>{sched.related}</Text>));
+      if (sched.touchedParticipants) {
+        [0, 1].forEach(i => {
+          const pp = sched.participants[i];
+          const x = i === 0 ? 16 : 202, w = i === 0 ? 174 : 175;
+          if (!pp) { out.push(box(`pp-${i}`, x - 1, 453, w + 2, 56, { backgroundColor: '#FFF' })); return; }
+          out.push(box(`pp-${i}`, x, 454, w, 54, { backgroundColor: '#FFF', borderRadius: 12 * sc, borderWidth: 1, borderColor: '#D5D9E0', flexDirection: 'row', alignItems: 'center', paddingLeft: 10 * sc }, <>
+            <View style={{ width: 36 * sc, height: 36 * sc, borderRadius: 18 * sc, backgroundColor: '#E9EFF6', alignItems: 'center', justifyContent: 'center' }}>
+              <Text style={{ fontSize: 13 * sc, fontWeight: '700', color: '#1E56A0' }}>{pp.name.split(' ').map(w2 => w2[0]).slice(0, 2).join('').toUpperCase()}</Text>
+            </View>
+            <View style={{ marginLeft: 10 * sc, flex: 1 }}>
+              <Text numberOfLines={1} style={{ fontSize: 13 * sc, fontWeight: '700', color: '#0B1220' }}>{pp.name}</Text>
+              <Text numberOfLines={1} style={{ fontSize: 12 * sc, color: '#6B7280' }}>{pp.meta}</Text>
+            </View>
+            <View style={{ width: 28 * sc, alignItems: 'center' }}><Ionicons name="close" size={20 * sc} color="#0B1220" /></View>
+          </>));
+        });
+      }
+    }
+    if (key === 'editPost') {
+      if (post.text !== POST_DEFAULT_TEXT) out.push(box('p-count', 316, 579, 60, 16, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 12 * sc, color: '#6B7280', textAlign: 'right' }}>{post.text.length}/500</Text>));
+      if (post.mediaUri) out.push(box('p-media', 14, 641, 79, 79, { borderRadius: 12 * sc, overflow: 'hidden' }, <Image source={{ uri: post.mediaUri }} style={{ width: '100%', height: '100%' }} />));
+    }
+    if (key === 'announcement') {
+      const pos: Record<string, [number, number]> = { 'New Launch': [14, 130], 'Business Updates': [208, 130], Events: [14, 250], 'Opening hours': [208, 250], 'Important Notice': [14, 370], Others: [208, 370] };
+      const sel = pos[annType];
+      if (annType !== 'New Launch') {
+        out.push(box('an-clear', 14, 130, 166, 92, { borderRadius: 12 * sc, borderWidth: 3 * sc, borderColor: '#FFF' }));
+        if (sel) out.push(box('an-sel', sel[0], sel[1], 166, 92, { borderRadius: 12 * sc, borderWidth: 1.5 * sc, borderColor: '#1E56A0', backgroundColor: 'rgba(30,86,160,0.12)' }));
+      }
+      if (post.mediaUri) out.push(box('an-media', 14, 670, 79, 79, { borderRadius: 12 * sc, overflow: 'hidden' }, <Image source={{ uri: post.mediaUri }} style={{ width: '100%', height: '100%' }} />));
+    }
+    if (key === 'promoForm' || key === 'promoReady' || key === 'promoType' || key === 'promoStart' || key === 'promoEnd') {
+      if (promo.item !== 'Power installations') {
+        out.push(box('pr-item', 110, 124, 140, 22, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text numberOfLines={1} style={{ fontSize: 14 * sc, fontWeight: '600', color: '#0B1220' }}>{promo.item}</Text>));
+        out.push(box('pr-sub', 110, 148, 140, 18, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text numberOfLines={1} style={{ fontSize: 12 * sc, color: '#6B7280' }}>{promo.itemSub}</Text>));
+      }
+    }
+    if (key === 'promoReady') {
+      if (promo.type !== 'Fixed discount') out.push(box('pr-type', 28, 306, 260, 24, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 14 * sc, color: '#0B1220' }}>{promo.type}</Text>));
+      out.push(box('pr-start', 28, 566, 200, 24, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 14 * sc, color: '#0B1220' }}>{prettyDate(promo.start)}</Text>));
+      out.push(box('pr-end', 28, 653, 200, 24, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 14 * sc, color: '#0B1220' }}>{prettyDate(promo.end)}</Text>));
+    }
+    if (key === 'schedulePostDate') {
+      const ps = postSched;
+      const when = `${new Date(`${ps.date}T12:00:00`).toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })} \u2022 ${ps.hour}:${String(ps.minute).padStart(2, '0')} ${ps.pm ? 'PM' : 'AM'}`;
+      out.push(box('sp-date', 28, 532, 250, 24, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 14 * sc, color: '#0B1220' }}>{prettyDate(ps.date)}</Text>));
+      out.push(box('sp-hour', 26, 622, 60, 30, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 20 * sc, color: '#0B1220' }}>{ps.hour}</Text>));
+      out.push(box('sp-min', 150, 622, 60, 30, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 20 * sc, color: '#0B1220' }}>{String(ps.minute).padStart(2, '0')}</Text>));
+      out.push(box('sp-am', 265, 612, 55, 48, { backgroundColor: ps.pm ? '#FFF' : '#0F2942', alignItems: 'center', justifyContent: 'center' }, <Text style={{ fontSize: 20 * sc, color: ps.pm ? '#0B1220' : '#FFF' }}>AM</Text>));
+      out.push(box('sp-pm', 320, 612, 55, 48, { backgroundColor: ps.pm ? '#0F2942' : '#FFF', alignItems: 'center', justifyContent: 'center' }, <Text style={{ fontSize: 20 * sc, color: ps.pm ? '#FFF' : '#0B1220' }}>PM</Text>));
+      out.push(box('sp-sum', 30, 690, 332, 34, { backgroundColor: '#E0EDFB', alignItems: 'center', justifyContent: 'center' }, <Text style={{ fontSize: 19 * sc, color: '#0B1220' }}>{when}</Text>));
+    }
+    if (key === 'platformAdapt') {
+      const picked = Object.values(post.platforms).filter(Boolean).length;
+      out.push(box('pa-count', 298, 102, 80, 18, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 13 * sc, color: '#6B7280', textAlign: 'right' }}>{picked}/5 Selected</Text>));
+      const def = { Facebook: false, Instagram: true, Tiktok: true, WhatsApp: true, X: false };
+      if (JSON.stringify(post.platforms) !== JSON.stringify(def)) {
+        ([['Instagram', 139, 108, 193], ['Facebook', 257, 108, 311], ['Tiktok', 376, 108, 430], ['WhatsApp', 494, 108, 548], ['X', 613, 100, 667]] as [string, number, number, number][]).forEach(([name, y, h, cy]) => {
+          const on = !!post.platforms[name];
+          out.push(box(`pa-card-${name}`, 15, y - 1, 363, h + 2, { borderRadius: 15 * sc, borderWidth: (on ? 2.5 : 4) * sc, borderColor: on ? '#1E56A0' : '#FFF' },
+            on ? undefined : <View style={{ flex: 1, borderRadius: 12 * sc, borderWidth: 1, borderColor: '#E4E7EB' }} />));
+          radio(`pa-r-${name}`, 350, cy, on, '#1E56A0');
+        });
+      }
+    }
+    if (key === 'platformAdapt2' && post.adaptTab !== 'Instagram') {
+      ([['Instagram', 15, 96], ['TikTok', 250, 86]] as [string, number, number][]).forEach(([name, x, w]) => {
+        const on = post.adaptTab === name;
+        out.push(box(`pb-${name}`, x, 101, w, 32, { backgroundColor: on ? '#0F2942' : '#FFF', borderRadius: 16 * sc, borderWidth: on ? 0 : 1, borderColor: '#E5E7EB', alignItems: 'center', justifyContent: 'center' },
+          <Text style={{ fontSize: 14 * sc, color: on ? '#FFF' : '#6B7280' }}>{name}</Text>));
+      });
+    }
+    return out;
+  };
+  // Bottom sheet used by the date / time / customer / reminder fields on the schedule frames.
+  const renderSchedulePicker = () => {
+    if (!picker) return null;
+    const title = picker === 'date' ? 'Choose a date' : picker === 'time' ? 'Choose a time' : picker === 'reminder' ? 'Reminder' : picker === 'participant' ? 'Add participant' : picker === 'who' ? 'Who to follow up with' : 'Related customer or lead';
+    const row = (k: string, label: string, sub: string | undefined, selected: boolean, onPress: () => void, dim?: boolean) => (
+      <Pressable key={k} onPress={onPress} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 13, paddingHorizontal: 20, backgroundColor: selected ? '#EAF1FB' : '#FFF' }}>
+        <View style={{ flex: 1 }}>
+          <Text style={{ fontSize: 15, fontWeight: '600', color: dim ? '#A5AFBB' : '#0B1220' }}>{label}</Text>
+          {!!sub && <Text style={{ fontSize: 12, color: '#8A97A6', marginTop: 2 }}>{sub}</Text>}
+        </View>
+        {selected && <Ionicons name="checkmark" size={20} color="#1E56A0" />}
+      </Pressable>
+    );
+    const today = localIsoDate();
+    let body: React.ReactNode = null;
+    if (picker === 'date') {
+      body = Array.from({ length: 21 }, (_, i) => addDaysIso(today, i)).map(d => row(d, niceDate(d), d === today ? 'Today' : d === addDaysIso(today, 1) ? 'Tomorrow' : undefined, d === sched.date, () => { setS({ date: d }); setPicker(null); }));
+    } else if (picker === 'time') {
+      body = TIME_SLOTS.map(t => {
+        const m = toMinutes(t) ?? 0;
+        const busy = agendaEvents.some(x => x.event_date === sched.date && x.status !== 'cancelled' && m < eventEnd(x) && m + sched.duration > (toMinutes(x.start_time) ?? 0));
+        return row(t, t, busy ? 'You already have something at this time' : undefined, t === sched.time, () => { setS({ time: t }); setPicker(null); }, busy);
+      });
+    } else if (picker === 'reminder') {
+      body = REMINDER_OPTIONS.map(o => row(o, o, undefined, o === sched.reminder, () => { setS({ reminder: o, touchedReminder: true }); setPicker(null); }));
+    } else {
+      body = customerOptions.length === 0
+        ? <Text style={{ padding: 20, color: '#8A97A6' }}>No customers yet. Add one from the Customers screen first.</Text>
+        : customerOptions.map(c => row(c.name, c.name, c.meta, false, () => {
+            if (picker === 'who') setS({ who: c.name, whoMeta: c.meta, touchedWho: true });
+            else if (picker === 'related') setS({ related: c.name, touchedRelated: true });
+            else setS({ touchedParticipants: true, participants: [...sched.participants.slice(0, 2), { name: c.name, meta: c.meta.split(' \u2022 ')[0] || 'Customer' }].slice(0, 2) });
+            setPicker(null);
+          }));
+    }
+    return (
+      <Modal visible transparent animationType="slide" onRequestClose={() => setPicker(null)} statusBarTranslucent>
+        <Pressable style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)' }} onPress={() => setPicker(null)} accessibilityLabel="Close" />
+        <View style={{ backgroundColor: '#FFF', borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '68%', paddingTop: 18, paddingBottom: insets.bottom + 12 }}>
+          <Text style={{ fontSize: 17, fontWeight: '700', color: '#0B1220', paddingHorizontal: 20, marginBottom: 8 }}>{title}</Text>
+          <ScrollView>{body}</ScrollView>
+        </View>
+      </Modal>
+    );
+  };
+  const setField = (k: string, v: string) => setTruthFields(p => ({ ...p, [k]: v }));
+  // Real text inputs laid over the form frames so the fields can be typed in.
+  const getTruthInputs = (key: TruthKey): TruthInput[] => {
+    if (key === 'addCustomer') {
+      return [
+        { label: 'full-name', x: 16.5, y: 205.5, w: 360, h: 39, value: truthFields.newName ?? '', onChangeText: t => setField('newName', t), autoCapitalize: 'words' },
+        { label: 'phone', x: 126.5, y: 292.5, w: 250, h: 39, value: truthFields.newPhone ?? '', onChangeText: t => setField('newPhone', t), keyboardType: 'phone-pad' },
+        { label: 'email', x: 16.5, y: 379.5, w: 360, h: 39, value: truthFields.newEmail ?? '', onChangeText: t => setField('newEmail', t), keyboardType: 'email-address' },
+        { label: 'tags', x: 16.5, y: 554.5, w: 320, h: 39, value: truthFields.newTags ?? '', onChangeText: t => setField('newTags', t), maxLength: 120 },
+      ];
+    }
+    if (key === 'scheduleTask') {
+      return [
+        { label: 'task-title', x: 16, y: 397, w: 361, h: 40, value: sched.title, onChangeText: t => setS({ title: t }), padLeft: 42, fontSize: 13, maxLength: 120 },
+        { label: 'task-description', x: 16, y: 658, w: 361, h: 58, value: sched.desc, onChangeText: t => setS({ desc: t }), padLeft: 10, fontSize: 13, multiline: true, maxLength: 500 },
+      ];
+    }
+    if (key === 'scheduleMeeting') {
+      return [{ label: 'meeting-title', x: 16, y: 367, w: 361, h: 40, value: sched.title, onChangeText: t => setS({ title: t }), padLeft: 42, fontSize: 13, maxLength: 120 }];
+    }
+    if (key === 'editPost') {
+      return [{ label: 'post-description', x: 15, y: 477, w: 361, h: 96, value: post.text, onChangeText: t => setPost(p => ({ ...p, text: t })), padLeft: 12, fontSize: 13.5, multiline: true, maxLength: 500 }];
+    }
+    if (key === 'servicePostEdit' || key === 'promoPost') {
+      return [{ label: 'post-description', x: 15, y: 651, w: 361, h: 124, value: post.text, onChangeText: t => setPost(p => ({ ...p, text: t })), padLeft: 12, fontSize: 13.5, multiline: true, maxLength: 500 }];
+    }
+    if (key === 'announcement') {
+      return [{ label: 'announce-text', x: 15, y: 506, w: 361, h: 66, value: post.text, onChangeText: t => setPost(p => ({ ...p, text: t })), padLeft: 12, fontSize: 13.5, multiline: true, maxLength: 500 }];
+    }
+    if (key === 'productAdd') {
+      return [
+        { label: 'product-name', x: 16.5, y: 262.5, w: 360, h: 39, value: truthFields.productName ?? '', onChangeText: t => setField('productName', t), autoCapitalize: 'words' },
+        { label: 'model', x: 16.5, y: 349.5, w: 360, h: 39, value: truthFields.productModel ?? '', onChangeText: t => setField('productModel', t) },
+        { label: 'specifications', x: 16.5, y: 436.5, w: 360, h: 59, value: truthFields.productSpecs ?? '', onChangeText: t => setField('productSpecs', t), multiline: true },
+        { label: 'price', x: 16.5, y: 561.5, w: 330, h: 39, value: truthFields.productPrice ?? '', onChangeText: t => setField('productPrice', t), keyboardType: 'phone-pad' },
+      ];
+    }
+    if (key === 'serviceAdd') {
+      return [
+        { label: 'service-name', x: 16.5, y: 262.5, w: 360, h: 39, value: truthFields.serviceName ?? '', onChangeText: t => setField('serviceName', t), autoCapitalize: 'words' },
+        // y 349.5 is the "Service type" dropdown, left as part of the image.
+        { label: 'description', x: 16.5, y: 436.5, w: 360, h: 59, value: truthFields.serviceDescription ?? '', onChangeText: t => setField('serviceDescription', t), multiline: true },
+        { label: 'price', x: 16.5, y: 561.5, w: 360, h: 39, value: truthFields.servicePrice ?? '', onChangeText: t => setField('servicePrice', t), keyboardType: 'phone-pad' },
+      ];
+    }
+    return [];
+  };
+
+  // ---- Send once, appears in every connected channel -----------------
+  // Only customers who wrote in the last 24h can receive a free-form message
+  // (Meta's messaging-window rule), and never blocked contacts.
+  const broadcastRecipients = (channelKey: string) => conversations.filter(c => c.live && c.channel === channelKey && !c.blocked && !!c.lastAt && Date.now() - new Date(c.lastAt).getTime() < REPLY_WINDOW_MS);
+  const broadcastConvoCount = (channelKey: string) => broadcastRecipients(channelKey).length;
+  // Sends one message to every eligible customer on a channel through the
+  // send-message function (real WhatsApp / Messenger / Instagram delivery).
+  const deliverToChannel = async (channelKey: string, text: string): Promise<{ sent: number; failed: number }> => {
+    const targets = broadcastRecipients(channelKey);
+    if (targets.length === 0) throw new Error('No customers on this channel have messaged you in the last 24 hours.');
+    let sent = 0, failed = 0;
+    for (const c of targets) {
+      try { await callFn('send-message', { conversation_id: c.id, text, sender: 'owner' }); sent++; }
+      catch { failed++; }
+    }
+    if (sent === 0) throw new Error('The platform refused every message.');
+    return { sent, failed };
+  };
+  const openBroadcast = (prefill: string = '') => {
+    broadcastReturnRef.current = screen === 'inboxChat' ? 'inboxChat' : 'main';
+    if (broadcastReturnRef.current === 'main') setMainTab('inbox');
+    setBroadcastText(prefill);
+    setBroadcastStatus({});
+    setScreen('broadcast');
+  };
+  const sendBroadcast = async (keys: string[]) => {
+    const text = broadcastText.trim();
+    if (!text || keys.length === 0 || broadcastSending) return;
+    setBroadcastSending(true);
+    setBroadcastStatus(Object.fromEntries(keys.map(k => [k, 'sending' as const])));
+    await Promise.all(keys.map(async key => {
+      try {
+        const r = await deliverToChannel(key, text);
+        setBroadcastStatus(p => ({ ...p, [key]: 'sent' }));
+        if (r.failed) flash(`${CONNECT_CHANNELS.find(c => c.key === key)?.name}: ${r.sent} sent, ${r.failed} couldn't be delivered`);
+      } catch (e: any) {
+        setBroadcastStatus(p => ({ ...p, [key]: 'failed' }));
+        flash(`${CONNECT_CHANNELS.find(c => c.key === key)?.name}: ${e?.message || 'not delivered'}`);
+      }
+    }));
+    setBroadcastSending(false);
+    setBroadcastText('');
+    loadConversations().catch(() => {});
+  };
+
   const handleForgotPassword=()=>{setAuthError('');setResetError('');setInfoMessage('');setResetEmail(loginEmail.trim().toLowerCase());setResetOtp('');setResetOtpDigits(['','','','']);setResetOtpTimer(60);setResetToken('');setResetPassword('');setResetConfirmPassword('');setResetStep('email');setScreen('forgotPassword');};
 
   // masks an email for display, e.g. "jo***@gmail.com"
@@ -1485,9 +6953,9 @@ export default function HomeScreen(){
     handleSendResetOtp();
   };
 
-  const handleSendResetOtp=async()=>{const cleanEmail=resetEmail.trim().toLowerCase();if(!cleanEmail||!EMAIL_REGEX.test(cleanEmail)){setResetError('Please enter a valid email address.');return}setResetError('');setInfoMessage('');setLoading(true);try{const response=await withTimeout(fetch(`${SUPABASE_FUNCTIONS_URL}/request-password-reset`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_ANON_KEY},body:JSON.stringify({email:cleanEmail})}),'Request timed out. Check your internet connection.');const result=await response.json();if(!response.ok||!result.success)throw new Error(result.message||'Unable to send verification code.');setResetEmail(cleanEmail);setResetOtpDigits(['','','','']);setResetOtp('');setResetOtpTimer(60);setResetStep('otp');setInfoMessage('A 4-digit verification code has been sent to your email.');}catch(error:any){setResetError(error?.message||'Unable to send verification code.');}finally{setLoading(false)}};
+  const handleSendResetOtp=async()=>{const cleanEmail=resetEmail.trim().toLowerCase();if(!cleanEmail||!EMAIL_REGEX.test(cleanEmail)){setResetError('Please enter a valid email address.');return}setResetError('');setInfoMessage('');setLoading(true);try{const response=await withTimeout(fetch(`${SUPABASE_FUNCTIONS_URL}/request-password-reset`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_ANON_KEY},body:JSON.stringify({email:cleanEmail})}),'Request timed out. Check your internet connection.');const result=await response.json();if(!response.ok||!result.success)throw new Error(result.message||result.error||'Unable to send verification code.');setResetEmail(cleanEmail);setResetOtpDigits(['','','','']);setResetOtp('');setResetOtpTimer(60);setResetStep('otp');setInfoMessage('A 4-digit verification code has been sent to your email.');}catch(error:any){setResetError(error?.message||'Unable to send verification code.');}finally{setLoading(false)}};
 
-  const handleVerifyResetOtp=async()=>{const cleanEmail=resetEmail.trim().toLowerCase();const cleanOtp=resetOtp.trim();if(!/^\d{4}$/.test(cleanOtp)){setResetError('Enter the 4-digit verification code.');return}setResetError('');setInfoMessage('');setLoading(true);try{const response=await withTimeout(fetch(`${SUPABASE_FUNCTIONS_URL}/verify-otp`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_ANON_KEY},body:JSON.stringify({email:cleanEmail,otp:cleanOtp})}),'Request timed out. Check your internet connection.');const result=await response.json();if(!response.ok||!result.success)throw new Error(result.message||'Invalid or expired verification code.');if(!result.resetToken)throw new Error('Verification succeeded but no reset token was returned.');setResetToken(result.resetToken);setResetStep('password');setInfoMessage('Code verified. Create your new password.');}catch(error:any){setResetError(error?.message||'Invalid or expired verification code.');}finally{setLoading(false)}};
+  const handleVerifyResetOtp=async()=>{const cleanEmail=resetEmail.trim().toLowerCase();const cleanOtp=resetOtp.trim();if(!/^\d{4}$/.test(cleanOtp)){setResetError('Enter the 4-digit verification code.');return}setResetError('');setInfoMessage('');setLoading(true);try{const response=await withTimeout(fetch(`${SUPABASE_FUNCTIONS_URL}/verify-otp`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_ANON_KEY},body:JSON.stringify({email:cleanEmail,otp:cleanOtp})}),'Request timed out. Check your internet connection.');const result=await response.json();if(!response.ok||!result.success)throw new Error(result.message||result.error||'Invalid or expired verification code.');if(!result.resetToken)throw new Error('Verification succeeded but no reset token was returned.');setResetToken(result.resetToken);setResetStep('password');setInfoMessage('Code verified. Create your new password.');}catch(error:any){setResetError(error?.message||'Invalid or expired verification code.');}finally{setLoading(false)}};
 
   const handleUpdateResetPassword=async()=>{
     if(!resetToken){setResetError('Your verification session has expired. Please request a new code.');return}
@@ -1511,15 +6979,15 @@ export default function HomeScreen(){
 
   const handleButtonPressIn=()=>{
     Animated.parallel([
-      Animated.spring(buttonScale,{toValue:.96,friction:6,tension:180,useNativeDriver:true}),
-      Animated.timing(buttonOpacity,{toValue:.82,duration:80,useNativeDriver:true})
+      Animated.spring(buttonScale,{toValue:.96,friction:6,tension:180,useNativeDriver:!IS_WEB}),
+      Animated.timing(buttonOpacity,{toValue:.82,duration:80,useNativeDriver:!IS_WEB})
     ]).start();
   };
 
   const handleButtonPressOut=()=>{
     Animated.parallel([
-      Animated.spring(buttonScale,{toValue:1,friction:5,tension:180,useNativeDriver:true}),
-      Animated.timing(buttonOpacity,{toValue:1,duration:100,useNativeDriver:true})
+      Animated.spring(buttonScale,{toValue:1,friction:5,tension:180,useNativeDriver:!IS_WEB}),
+      Animated.timing(buttonOpacity,{toValue:1,duration:100,useNativeDriver:!IS_WEB})
     ]).start();
   };
 
@@ -1614,6 +7082,313 @@ export default function HomeScreen(){
     }
   };
 
+  // ---- Web (computer): onboarding, sign up, log in and password reset as one professional page ----
+  const renderWebAuthPage = () => {
+    const mode: 'signup' | 'login' | 'forgot' = screen === 'login' ? 'login' : screen === 'forgotPassword' ? 'forgot' : 'signup';
+    const twoCol = hookWidth >= 1100;
+    const compact = hookWidth < 600;   // phone browser: just the form, no brand panel
+    const input = (props: any, icon: string, right?: React.ReactNode) => (
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, height: 50, borderRadius: 12, borderWidth: 1, borderColor: '#D5DEE8', backgroundColor: '#FFFFFF', paddingHorizontal: 14, marginTop: 6 }}>
+        <Ionicons name={icon as any} size={18} color="#8A97A6" />
+        <TextInput placeholderTextColor="#A5AFBB" style={{ flex: 1, minWidth: 0, fontSize: 15, color: '#0B1220', height: 48 }} {...props} />
+        {right}
+      </View>
+    );
+    const label = (t: string) => <Text style={{ fontSize: 13, fontWeight: '600', color: '#334155', marginTop: 14 }}>{t}</Text>;
+    const eye = (on: boolean, toggle: () => void) => (
+      <Pressable onPress={toggle} hitSlop={8} accessibilityLabel={on ? 'Hide password' : 'Show password'}><Ionicons name={on ? 'eye-off-outline' : 'eye-outline'} size={18} color="#8A97A6" /></Pressable>
+    );
+    const primary = (text: string, onPress: () => void, enabled: boolean) => (
+      <Pressable disabled={!enabled || loading} onPress={onPress} accessibilityRole="button" style={{ marginTop: 22, height: 50, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: enabled ? '#1E56A0' : '#A9B9CC' }}>
+        {loading ? <ActivityIndicator color="#FFF" /> : <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '700' }}>{text}</Text>}
+      </Pressable>
+    );
+    const message = () => (
+      <>
+        {!!authError && <View style={{ marginTop: 14, padding: 12, borderRadius: 10, backgroundColor: '#FDECEC' }}><Text style={{ color: '#B42318', fontSize: 13, lineHeight: 18 }}>{authError}</Text></View>}
+        {!!infoMessage && !authError && <View style={{ marginTop: 14, padding: 12, borderRadius: 10, backgroundColor: '#E9F8EE' }}><Text style={{ color: '#15803D', fontSize: 13, lineHeight: 18 }}>{infoMessage}</Text></View>}
+      </>
+    );
+    const features: [string, string, string][] = [
+      ['sparkles', 'Answers from your own business knowledge', 'Products, prices and policies, with sources.'],
+      ['chatbubbles', 'Replies to customers while you are away', 'WhatsApp, Instagram and Facebook in one inbox.'],
+      ['people', 'A community of business owners', 'Ask questions, share wins, find partners online.'],
+      ['trending-up', 'Watches the market for you', 'Trends and trending businesses, refreshed every 6 hours.'],
+    ];
+    const togglePick = (k: FeatureKey) => setInterestPicks(p => {
+      const next = p.includes(k) ? p.filter(x => x !== k) : [...p, k];
+      savePendingFeature(next[0] ?? null);
+      return next;
+    });
+    const switchTo = (m: 'signup' | 'login') => { setAuthError(''); setInfoMessage(''); setScreen(m === 'login' ? 'login' : 'signup'); if (m === 'signup') setSignupIndex(1); };
+    return (
+      <View style={{ flex: 1, flexDirection: twoCol ? 'row' : 'column', backgroundColor: '#F4F7FB' }}>
+        <StatusBar style="light" />
+        {/* Brand side */}
+        {compact && (
+          <View style={{ height: 60, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: '#E6ECF3' }}>
+            <View style={{ width: 32, height: 32, borderRadius: 9, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="sparkles" size={16} color="#FFFFFF" /></View>
+            <Text style={{ marginLeft: 10, fontSize: 17, fontWeight: '800', color: '#0B1220' }}>Nexora AI</Text>
+          </View>
+        )}
+        <View style={{ display: compact ? 'none' : 'flex', flex: twoCol ? 1.15 : undefined, backgroundColor: '#0B1220', paddingHorizontal: twoCol ? 56 : 32, paddingVertical: twoCol ? 48 : 28, justifyContent: 'space-between' }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+            <NexoraLogo size={44} />
+            <View>
+              <Text style={{ color: '#FFFFFF', fontSize: 20, fontWeight: '800' }}>Nexora AI</Text>
+              <Text style={{ color: '#9FB0C6', fontSize: 12 }}>AI Business Manager</Text>
+            </View>
+          </View>
+          <View style={{ marginTop: twoCol ? 0 : 24, maxWidth: 560 }}>
+            <Text style={{ color: '#FFFFFF', fontSize: twoCol ? 40 : 28, lineHeight: twoCol ? 48 : 34, fontWeight: '800' }}>Run your business with an AI manager that never sleeps.</Text>
+            <Text style={{ color: '#B6C3D4', fontSize: 16, lineHeight: 24, marginTop: 14 }}>Nexora learns your products and customers, answers them for you, and tells you what needs your attention each day.</Text>
+            {twoCol && (
+              <View style={{ marginTop: 28, gap: 16 }}>
+                {features.map(([icon, title, sub]) => (
+                  <View key={title} style={{ flexDirection: 'row', gap: 14, alignItems: 'flex-start' }}>
+                    <View style={{ width: 38, height: 38, borderRadius: 11, backgroundColor: 'rgba(127,178,255,0.14)', alignItems: 'center', justifyContent: 'center' }}><Ionicons name={icon as any} size={18} color="#7FB2FF" /></View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '700' }}>{title}</Text>
+                      <Text style={{ color: '#9FB0C6', fontSize: 13, marginTop: 2 }}>{sub}</Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            )}
+            <Text style={{ color: '#D7E2F0', fontSize: 14, fontWeight: '700', marginTop: 28 }}>What should Nexora help you with first?</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+              {INTEREST_TILES.map(t => {
+                const on = interestPicks.includes(t.key);
+                return (
+                  <Pressable key={t.key} onPress={() => togglePick(t.key)} accessibilityRole="button" accessibilityState={{ selected: on }}
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 18, borderWidth: 1, borderColor: on ? '#7FB2FF' : 'rgba(255,255,255,0.18)', backgroundColor: on ? 'rgba(127,178,255,0.18)' : 'transparent' }}>
+                    {on && <Ionicons name="checkmark" size={14} color="#7FB2FF" />}
+                    <Text style={{ color: on ? '#FFFFFF' : '#C9D6E6', fontSize: 13, fontWeight: '600' }}>{t.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            {interestPicks.length > 0 && <Text style={{ color: '#7FB2FF', fontSize: 12, marginTop: 8 }}>Sign in to get that information. Nexora opens {FEATURE_LABELS[interestPicks[0]]} first.</Text>}
+          </View>
+          {twoCol && <Text style={{ color: '#5C6B7A', fontSize: 12 }}>© {new Date().getFullYear()} Nexora AI · ATOD Tech</Text>}
+        </View>
+
+        {/* Form side */}
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ flexGrow: 1, justifyContent: compact ? 'flex-start' : 'center', alignItems: 'center', padding: compact ? 16 : 32, paddingBottom: compact ? 120 : 32 }} keyboardShouldPersistTaps="handled">
+          <View style={{ width: '100%', maxWidth: 440, backgroundColor: '#FFFFFF', borderRadius: 20, padding: compact ? 20 : 32, borderWidth: 1, borderColor: '#E6ECF3', shadowColor: '#0B1220', shadowOpacity: 0.06, shadowRadius: 24, shadowOffset: { width: 0, height: 8 } }}>
+            {mode !== 'forgot' && (
+              <View style={{ flexDirection: 'row', backgroundColor: '#F1F5F9', borderRadius: 12, padding: 4, marginBottom: 22 }}>
+                {(['signup', 'login'] as const).map(m => (
+                  <Pressable key={m} onPress={() => switchTo(m)} style={{ flex: 1, height: 40, borderRadius: 9, alignItems: 'center', justifyContent: 'center', backgroundColor: mode === m ? '#FFFFFF' : 'transparent', shadowColor: '#0B1220', shadowOpacity: mode === m ? 0.08 : 0, shadowRadius: 6 }}>
+                    <Text style={{ fontSize: 14, fontWeight: '700', color: mode === m ? '#0B1220' : '#64748B' }}>{m === 'signup' ? 'Create account' : 'Log in'}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+
+            {mode === 'signup' && (
+              <>
+                <Text style={{ fontSize: 24, fontWeight: '800', color: '#0B1220' }}>Start your free trial</Text>
+                <Text style={{ fontSize: 14, color: '#5C6B7A', marginTop: 4 }}>14 days free. No card needed.</Text>
+                {label('Full name')}
+                {input({ value: fullName, onChangeText: setFullName, placeholder: 'e.g. Ada Okafor', autoComplete: 'name', maxLength: 80 }, 'person-outline')}
+                {label('Email')}
+                {input({ value: email, onChangeText: setEmail, placeholder: 'you@business.com', autoComplete: 'email', keyboardType: 'email-address', autoCapitalize: 'none' }, 'mail-outline')}
+                {label('Password')}
+                {input({ value: password, onChangeText: setPassword, placeholder: 'At least 8 characters', secureTextEntry: !showPassword, autoComplete: 'new-password', autoCapitalize: 'none' }, 'lock-closed-outline', eye(showPassword, () => setShowPassword(v => !v)))}
+                <Pressable onPress={handleGeneratePassword} style={{ alignSelf: 'flex-start', marginTop: 6 }}><Text style={{ color: '#1E56A0', fontSize: 12, fontWeight: '600' }}>Suggest a strong password</Text></Pressable>
+                {showPasswordSuggestion && !!suggestedPassword && (
+                  <View style={{ marginTop: 8, padding: 10, borderRadius: 10, backgroundColor: '#F2F8FD', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <Text selectable style={{ flex: 1, fontFamily: Platform.OS === 'web' ? 'monospace' : undefined, color: '#0B1220' }}>{suggestedPassword}</Text>
+                    <Pressable onPress={acceptSuggestedPassword}><Text style={{ color: '#1E56A0', fontWeight: '700' }}>Use it</Text></Pressable>
+                    <Pressable onPress={dismissSuggestedPassword} hitSlop={6}><Ionicons name="close" size={16} color="#8A97A6" /></Pressable>
+                  </View>
+                )}
+                {label('Confirm password')}
+                {input({ value: confirmPassword, onChangeText: setConfirmPassword, placeholder: 'Type it again', secureTextEntry: !showConfirmPassword, autoComplete: 'new-password', autoCapitalize: 'none', onSubmitEditing: handleSignUp }, 'lock-closed-outline', eye(showConfirmPassword, () => setShowConfirmPassword(v => !v)))}
+                <Pressable onPress={() => setTermsAccepted(v => !v)} style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginTop: 16 }} accessibilityRole="checkbox" accessibilityState={{ checked: termsAccepted }}>
+                  <View style={{ width: 20, height: 20, borderRadius: 6, borderWidth: 1.5, borderColor: termsAccepted ? '#1E56A0' : '#B8C4D2', backgroundColor: termsAccepted ? '#1E56A0' : '#FFF', alignItems: 'center', justifyContent: 'center', marginTop: 1 }}>
+                    {termsAccepted && <Ionicons name="checkmark" size={14} color="#FFF" />}
+                  </View>
+                  <Text style={{ flex: 1, fontSize: 13, color: '#475569', lineHeight: 19 }}>
+                    I'm 18 or older and I agree to the <Text style={{ color: '#1E56A0', fontWeight: '600' }} onPress={() => Linking.openURL(TERMS_URL)}>Terms of use</Text> and <Text style={{ color: '#1E56A0', fontWeight: '600' }} onPress={() => Linking.openURL(PRIVACY_POLICY_URL)}>Privacy policy</Text>
+                  </Text>
+                </Pressable>
+                {message()}
+                {primary('Create my account', handleSignUp, signupEnabled)}
+                <Text style={{ fontSize: 13, color: '#64748B', textAlign: 'center', marginTop: 16 }}>Already have an account? <Text style={{ color: '#1E56A0', fontWeight: '700' }} onPress={() => switchTo('login')}>Log in</Text></Text>
+              </>
+            )}
+
+            {mode === 'login' && (
+              <>
+                <Text style={{ fontSize: 24, fontWeight: '800', color: '#0B1220' }}>Welcome back</Text>
+                <Text style={{ fontSize: 14, color: '#5C6B7A', marginTop: 4 }}>Log in to your Nexora workspace.</Text>
+                {label('Email')}
+                {input({ value: loginEmail, onChangeText: (t: string) => { setLoginEmail(t); setLoginError(false); }, placeholder: 'you@business.com', autoComplete: 'email', keyboardType: 'email-address', autoCapitalize: 'none' }, 'mail-outline')}
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                  {label('Password')}
+                  <Pressable onPress={handleForgotPassword} style={{ marginTop: 14 }}><Text style={{ color: '#1E56A0', fontSize: 13, fontWeight: '600' }}>Forgot password?</Text></Pressable>
+                </View>
+                {input({ value: loginPassword, onChangeText: (t: string) => { setLoginPassword(t); setLoginError(false); }, placeholder: 'Your password', secureTextEntry: !showLoginPassword, autoComplete: 'current-password', autoCapitalize: 'none', onSubmitEditing: handleLogin }, 'lock-closed-outline', eye(showLoginPassword, () => setShowLoginPassword(v => !v)))}
+                {message()}
+                {primary('Log in', handleLogin, loginEnabled)}
+                <Text style={{ fontSize: 13, color: '#64748B', textAlign: 'center', marginTop: 16 }}>New to Nexora? <Text style={{ color: '#1E56A0', fontWeight: '700' }} onPress={() => switchTo('signup')}>Create an account</Text></Text>
+              </>
+            )}
+
+            {mode === 'forgot' && (
+              <>
+                <Pressable onPress={() => { setResetError(''); setScreen('login'); }} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 14 }}>
+                  <Ionicons name="chevron-back" size={16} color="#1E56A0" /><Text style={{ color: '#1E56A0', fontWeight: '600' }}>Back to log in</Text>
+                </Pressable>
+                <Text style={{ fontSize: 24, fontWeight: '800', color: '#0B1220' }}>{resetStep === 'success' ? 'Password updated' : 'Reset your password'}</Text>
+                {resetStep === 'email' && (
+                  <>
+                    <Text style={{ fontSize: 14, color: '#5C6B7A', marginTop: 4 }}>We'll email you a 4-digit code.</Text>
+                    {label('Email')}
+                    {input({ value: resetEmail, onChangeText: setResetEmail, placeholder: 'you@business.com', keyboardType: 'email-address', autoCapitalize: 'none', autoComplete: 'email', onSubmitEditing: handleSendResetOtp }, 'mail-outline')}
+                    {!!resetError && <Text style={{ color: '#B42318', fontSize: 13, marginTop: 10 }}>{resetError}</Text>}
+                    {primary('Send code', handleSendResetOtp, resetEmail.trim().length > 3)}
+                  </>
+                )}
+                {resetStep === 'otp' && (
+                  <>
+                    <Text style={{ fontSize: 14, color: '#5C6B7A', marginTop: 4 }}>Enter the code we sent to {resetEmail}.</Text>
+                    <TextInput value={resetOtp} onChangeText={t => { const v = t.replace(/\D/g, '').slice(0, 4); setResetOtp(v); setResetOtpDigits(v.padEnd(4, ' ').split('').map(c => c.trim())); }} onSubmitEditing={handleVerifyResetOtp}
+                      keyboardType="number-pad" maxLength={4} autoFocus placeholder="••••" placeholderTextColor="#C7D2DE" textContentType="oneTimeCode"
+                      style={{ marginTop: 16, height: 60, borderRadius: 14, borderWidth: 1.5, borderColor: '#D5DEE8', textAlign: 'center', fontSize: 28, fontWeight: '800', letterSpacing: 16, color: '#0B1220' }} />
+                    {!!resetError && <Text style={{ color: '#B42318', fontSize: 13, marginTop: 10 }}>{resetError}</Text>}
+                    {!!infoMessage && !resetError && <Text style={{ color: '#15803D', fontSize: 13, marginTop: 10 }}>{infoMessage}</Text>}
+                    {primary('Verify code', handleVerifyResetOtp, resetOtp.length === 4)}
+                    <Pressable disabled={resetOtpTimer > 0} onPress={handleResendOtp} style={{ alignSelf: 'center', marginTop: 14 }}>
+                      <Text style={{ color: resetOtpTimer > 0 ? '#8A97A6' : '#1E56A0', fontWeight: '600' }}>{resetOtpTimer > 0 ? `Send a new code in ${resetOtpTimer}s` : 'Send a new code'}</Text>
+                    </Pressable>
+                  </>
+                )}
+                {resetStep === 'password' && (
+                  <>
+                    <Text style={{ fontSize: 14, color: '#5C6B7A', marginTop: 4 }}>Choose a new password.</Text>
+                    {label('New password')}
+                    {input({ value: resetPassword, onChangeText: setResetPassword, secureTextEntry: !showResetPassword, autoComplete: 'new-password', autoCapitalize: 'none' }, 'lock-closed-outline', eye(showResetPassword, () => setShowResetPassword(v => !v)))}
+                    {label('Confirm new password')}
+                    {input({ value: resetConfirmPassword, onChangeText: setResetConfirmPassword, secureTextEntry: !showResetConfirmPassword, autoComplete: 'new-password', autoCapitalize: 'none', onSubmitEditing: handleUpdateResetPassword }, 'lock-closed-outline', eye(showResetConfirmPassword, () => setShowResetConfirmPassword(v => !v)))}
+                    {!!resetError && <Text style={{ color: '#B42318', fontSize: 13, marginTop: 10 }}>{resetError}</Text>}
+                    {primary('Update password', handleUpdateResetPassword, resetPassword.length > 0 && resetConfirmPassword.length > 0)}
+                  </>
+                )}
+                {resetStep === 'success' && (
+                  <>
+                    <Text style={{ fontSize: 14, color: '#5C6B7A', marginTop: 6 }}>You can now log in with your new password.</Text>
+                    {primary('Back to log in', () => { setScreen('login'); }, true)}
+                  </>
+                )}
+              </>
+            )}
+          </View>
+          <View style={{ flexDirection: 'row', gap: 18, marginTop: 18 }}>
+            <Text style={{ color: '#64748B', fontSize: 12 }} onPress={() => Linking.openURL(PRIVACY_POLICY_URL)}>Privacy</Text>
+            <Text style={{ color: '#64748B', fontSize: 12 }} onPress={() => Linking.openURL(TERMS_URL)}>Terms</Text>
+            <Text style={{ color: '#64748B', fontSize: 12 }} onPress={() => Linking.openURL(`mailto:${SUPPORT_EMAIL}`)}>Support</Text>
+          </View>
+        </ScrollView>
+      </View>
+    );
+  };
+  // ---- Web (computer): the launch and onboarding screens are the Figma truth frames themselves (stored in
+  // Supabase), shown at true phone proportions inside a web page, with the same tap areas as on phones
+  // (Skip, Continue / Get Started, the interest tiles) plus web controls: step dots, Back, arrow keys.
+  // Web onboarding (wide windows): the Figma onboarding screens (section 244:919, re-exported 20 Oct 2026) laid out as
+  // web pages: the same illustrations, words, colours, Continue / Skip buttons, step dots and interest tiles.
+  const renderWebTruthOnboarding = () => {
+    const step = screen === 'launch' ? 0 : onboardingIndex;
+    const go = (i: number) => { if (screen === 'launch') setScreen('onboarding'); setOnboardingIndex(i); };
+    const onNext = () => { if (screen === 'launch') { setScreen('onboarding'); setOnboardingIndex(1); return; } next(); };
+    const wide = hookWidth >= 1100;
+    const compact = hookWidth < 600;   // phone browser
+    const BLUE = '#1E56A0';
+    const STEPS: [string, string, string][] = [
+      ['Take Control Of', 'Your Business', 'From startups to enterprises, Nexora helps you grow, adapt, and scale with ease.'],
+      ['Make Smarter', 'Business Decisions', 'Turn your business data into clear insights and actionable decisions.'],
+      ['Work Smarter', 'With Nexora AI', 'Automate routine tasks, uncover insights, and keep your business moving forward'],
+    ];
+    const illus = (i: number) => `${SUPABASE_URL}/storage/v1/object/public/assets/onboarding/illustration-${i + 1}.png?v=${ASSET_VERSION}`;
+    const dots = (
+      <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+        {[0, 1, 2, 3].map(i => (
+          <Pressable key={i} onPress={() => go(i)} accessibilityRole="button" accessibilityLabel={`Step ${i + 1}`}
+            style={{ width: i === step ? 28 : 8, height: 8, borderRadius: 4, backgroundColor: i === step ? BLUE : '#D9D9D9', cursor: 'pointer' } as any} />
+        ))}
+      </View>
+    );
+    const primary = (label: string) => (
+      <Pressable onPress={onNext} accessibilityRole="button" style={(st: any) => ({ height: 52, borderRadius: 26, backgroundColor: st.hovered ? '#184A8B' : BLUE, alignItems: 'center', justifyContent: 'center', width: '100%', maxWidth: 400, cursor: 'pointer' } as any)}>
+        <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '600' }}>{label}</Text>
+      </Pressable>
+    );
+    const bottom = (label: string) => (
+      <View style={{ alignItems: wide ? 'flex-start' : 'center', gap: compact ? 16 : 22, marginTop: compact ? 22 : 34, width: '100%' }}>
+        {dots}
+        {primary(label)}
+        <Text style={{ color: '#6B7280', fontSize: 14 }}>Already have an account? <Text style={{ color: BLUE, fontWeight: '700' }} onPress={() => { setAuthError(''); setInfoMessage(''); setScreen('login'); }}>Log in</Text></Text>
+      </View>
+    );
+    return (
+      <View style={{ flex: 1, backgroundColor: step === 3 ? '#F5F6F8' : '#FFFFFF' }}>
+        <StatusBar style="dark" />
+        <View style={{ height: compact ? 60 : 72, flexDirection: 'row', alignItems: 'center', paddingHorizontal: compact ? 20 : 40 }}>
+          <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: BLUE, alignItems: 'center', justifyContent: 'center' }}><Ionicons name="sparkles" size={17} color="#FFFFFF" /></View>
+          <Text style={{ marginLeft: 10, fontSize: 18, fontWeight: '800', color: '#0B1220' }}>Nexora AI</Text>
+          {step < 3 && (
+            <Pressable onPress={skip} accessibilityRole="button" style={{ marginLeft: 'auto', paddingHorizontal: 12, paddingVertical: 8, cursor: 'pointer' } as any}>
+              <Text style={{ fontSize: 15, color: '#0B1220', fontWeight: '500' }}>Skip</Text>
+            </Pressable>
+          )}
+        </View>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ flexGrow: 1, justifyContent: compact ? 'flex-start' : 'center', paddingHorizontal: compact ? 20 : 40, paddingTop: compact ? 8 : 24,
+          // Phone browsers can draw their own toolbar over the bottom of the page: keep clear room below the button so it can always be scrolled into view.
+          paddingBottom: compact ? 120 : 24 }}>
+          {step === 3 ? (
+            <View style={{ width: '100%', maxWidth: 760, alignSelf: 'center' }}>
+              <Text style={{ fontSize: wide ? 44 : compact ? 28 : 36, lineHeight: wide ? 52 : compact ? 36 : 44, fontWeight: '600', color: '#0B1220' }}>What do you want NEXORA to help with?</Text>
+              <Text style={{ fontSize: 15, color: '#6B7280', marginTop: 12, marginBottom: 28 }}>Select all that apply.</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 16 }}>
+                {INTEREST_TILES.map(t => {
+                  const on = interestPicks.includes(t.key);
+                  return (
+                    <Pressable key={t.key} accessibilityRole="checkbox" accessibilityState={{ checked: on }} accessibilityLabel={t.label}
+                      onPress={() => { const nx = on ? interestPicks.filter(k => k !== t.key) : [...interestPicks, t.key]; setInterestPicks(nx); savePendingFeature(nx[0] ?? null); }}
+                      style={(st: any) => ({ flexBasis: wide ? '23%' : '47%', flexGrow: 1, height: compact ? 84 : 96, borderRadius: 8, backgroundColor: st.hovered ? '#7C8A9B' : '#6E7C8C', borderWidth: on ? 3 : 1.5, borderColor: on ? BLUE : '#FFFFFF', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' } as any)}>
+                      <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: on ? '700' : '500' }}>{t.label}</Text>
+                      {on && <View style={{ position: 'absolute', top: 8, right: 8, width: 22, height: 22, borderRadius: 11, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="checkmark" size={15} color={BLUE} /></View>}
+                    </Pressable>
+                  );
+                })}
+              </View>
+              {interestPicks.length > 0 && <Text style={{ color: BLUE, fontSize: 13.5, fontWeight: '600', marginTop: 16 }}>{`${interestPicks.length} selected \u00b7 Nexora opens ${FEATURE_LABELS[interestPicks[0]]} first`}</Text>}
+              <View style={{ alignItems: 'center' }}>{bottom('Get Started')}</View>
+            </View>
+          ) : (
+            <View style={{ width: '100%', maxWidth: 1120, alignSelf: 'center', flexDirection: wide ? 'row' : 'column', alignItems: 'center', gap: wide ? 72 : compact ? 18 : 28 }}>
+              <View style={{ flex: wide ? 1.05 : undefined, width: wide ? undefined : '100%', maxWidth: compact ? Math.min(380, Math.max(200, (hookHeight - 430) * 1.05)) : 560, aspectRatio: 1.05, alignItems: 'center', justifyContent: 'center' }}>
+                <Image source={{ uri: illus(step) }} style={{ width: '100%', height: '100%' }} resizeMode="contain" accessibilityLabel="" />
+              </View>
+              <View style={{ flex: wide ? 1 : undefined, maxWidth: 480, alignItems: wide ? 'flex-start' : 'center' }}>
+                <Text style={{ fontSize: wide ? 46 : compact ? 30 : 36, lineHeight: wide ? 54 : compact ? 38 : 44, fontWeight: '600', color: '#0B1220', textAlign: wide ? 'left' : 'center' }}>
+                  {STEPS[step][0]}{'\n'}<Text style={{ color: BLUE }}>{STEPS[step][1]}</Text>
+                </Text>
+                <Text style={{ fontSize: compact ? 15 : 16, lineHeight: compact ? 22 : 24, color: '#6B7280', marginTop: compact ? 10 : 16, textAlign: wide ? 'left' : 'center' }}>{STEPS[step][2]}</Text>
+                {bottom('Continue')}
+              </View>
+            </View>
+          )}
+        </ScrollView>
+      </View>
+    );
+  };
+  if (IS_WEB && hookWidth >= WEB_AUTH_PAGE_MIN && (screen === 'launch' || screen === 'onboarding')) return renderWebTruthOnboarding();
+  if (IS_WEB && hookWidth >= WEB_AUTH_PAGE_MIN && ['signup', 'login', 'forgotPassword'].includes(screen)) return renderWebAuthPage();
+
   if(screen==='launch'){
     return(
       <View style={styles.fullScreen} onLayout={onRootLayout}>
@@ -1625,24 +7400,95 @@ export default function HomeScreen(){
     );
   }
 
+  const headerSafe = { paddingTop: (insets.top || 24) + 8 };
+
+  // Which Home state to show, from the business's real data. The frame image
+  // never changes its look; only the card's title and description are live.
+  //   Current business state (the "Now" side of the card's toggle):
+  //     revenue this week >= 5% below last week -> Home-1b "Your sales dropped X%"
+  //     a product sold 3+ units, 30%+ more        -> Home-1c "<product> is trending"
+  //     otherwise                                  -> Home-1  "doing well" / "up X%"
+  //   Away summary (the "Away" side): Home-1d "While you were away".
+  //   The card opens on Away while Away mode is on or was switched off in the
+  //   last 12h; the chip on the card flips between the two.
+  const homeInsight = (() => {
+    type Ins = { state: HomeSegmentKey; title: string; desc: string; dropPct?: number; trending?: string };
+    const now = Date.now(), WEEK = 7 * 86400_000;
+    const valid = orders.filter(o => o.status !== 'cancelled');
+    const age = (o: OrderRow) => now - new Date(o.created_at).getTime();
+    const thisWeek = valid.filter(o => age(o) < WEEK);
+    const lastWeek = valid.filter(o => age(o) >= WEEK && age(o) < 2 * WEEK);
+    const sum = (l: OrderRow[]) => l.reduce((n, o) => n + Number(o.total || 0), 0);
+    const tw = sum(thisWeek), lw = sum(lastWeek);
+    const units = (l: OrderRow[]) => {
+      const m: Record<string, number> = {};
+      l.forEach(o => String(o.items || '').split(',').forEach(part => {
+        const mm = /^\s*(.*?)\s*(?:x\s*(\d+))?\s*$/i.exec(part);
+        if (mm && mm[1]) m[mm[1]] = (m[mm[1]] || 0) + Number(mm[2] || 1);
+      }));
+      return m;
+    };
+    const uTw = units(thisWeek), uLw = units(lastWeek);
+    const short = (t: string, n = 22) => (t.length > n ? `${t.slice(0, n - 1).trim()}…` : t);
+    let current: Ins;
+    const hot = Object.entries(uTw).filter(([n, q]) => q >= 3 && q >= 1.3 * (uLw[n] || 0)).sort((x, y) => y[1] - x[1])[0];
+    if (lw > 0 && tw < lw * 0.95) {
+      const pct = Math.max(1, Math.round((1 - tw / lw) * 100));
+      const topLast = Object.entries(uLw).sort((x, y) => y[1] - x[1]).slice(0, 3);
+      const fewer = topLast.filter(([n, q]) => (uTw[n] || 0) < q).length;
+      current = { state: 'home1b', dropPct: pct, title: `Your sales dropped ${pct}% this week`,
+        desc: fewer > 0 ? `${fewer} of your top products had fewer sales compared to last week` : `Revenue is $${Math.round(tw).toLocaleString()} vs $${Math.round(lw).toLocaleString()} last week` };
+    } else if (hot) {
+      current = { state: 'home1c', trending: hot[0], title: `${short(hot[0])} is trending`,
+        desc: `Demand is up to ${hot[1]} this week. You may want to increase your stock` };
+    } else {
+      const top = Object.entries(uTw).sort((x, y) => y[1] - x[1]);
+      const upPct = lw > 0 && tw > lw ? Math.round((tw / lw - 1) * 100) : 0;
+      current = { state: 'home1',
+        title: thisWeek.length === 0 ? "Let's grow your sales this week" : upPct >= 1 ? `Sales are up ${upPct}% this week` : 'Your business is doing well this week',
+        desc: thisWeek.length === 0 ? 'No orders yet this week. Tap to get ideas for winning new customers'
+          : top.length ? `Consider promoting your top ${Math.min(3, top.length)} product${top.length === 1 ? '' : 's'} to boost sales this week`
+          : `${thisWeek.length} order${thisWeek.length === 1 ? '' : 's'} this week. Keep the momentum going` };
+    }
+    const a = awayStats?.actions ?? 0, o = awayStats?.opportunities ?? 0;
+    const away: Ins = { state: 'home1d', title: awayMode ? "While you're away" : 'While you were away',
+      desc: awayStats ? `NEXORA handled ${a} action${a === 1 ? '' : 's'} and found ${o} opportunit${o === 1 ? 'y' : 'ies'} for your business`
+        : 'Turn on Away mode and NEXORA will answer customers for you while you are busy' };
+    const awayActive = awayMode || (awayEndedAt !== null && Date.now() - awayEndedAt < 12 * 3600_000);
+    const showAway = homeView === 'away' || (homeView === 'auto' && awayActive);
+    return { ...(showAway ? away : current), showingAway: showAway };
+  })();
+
   const renderTopBar = (dark: boolean = false) => (
-    <View style={[styles.topBar, dark && styles.topBarDark]}>
-      <Ionicons name="menu-outline" size={26} color={dark ? '#FFF' : '#0B1220'} />
-      <View style={styles.topBarTitleWrap}>
-        <Text style={[styles.topBarTitle, dark && styles.topBarTitleDark]}>Nexora AI</Text>
-        <Text style={[styles.topBarSubtitle, dark && styles.topBarSubtitleDark]}>AI Business Manager</Text>
-      </View>
+    <View style={[styles.topBar, headerSafe, dark && styles.topBarDark]}>
+      {/* Web with the sidebar: the sidebar already carries the menu and the Nexora name, so the bar only keeps the bell and profile. */}
+      {!(IS_WEB && userId && hookWidth >= 1000) && (
+        <>
+          <Pressable onPress={() => drawerOpenFn()} hitSlop={10} accessibilityRole="button" accessibilityLabel="Open menu">
+            <Ionicons name="menu-outline" size={26} color={dark ? '#FFF' : '#0B1220'} />
+          </Pressable>
+          <NexoraLogo size={32} />
+          <View style={styles.topBarTitleWrap}>
+            <Text style={[styles.topBarTitle, dark && styles.topBarTitleDark]}>Nexora AI</Text>
+            <Text style={[styles.topBarSubtitle, dark && styles.topBarSubtitleDark]}>AI Business Manager</Text>
+          </View>
+        </>
+      )}
       <View style={styles.topBarRight}>
-        <View style={[styles.bellWrap, dark && styles.bellWrapDark]}>
+        <Pressable onPress={() => setMainTab('inbox')} hitSlop={8} accessibilityRole="button" accessibilityLabel="Notifications" style={[styles.bellWrap, dark && styles.bellWrapDark]}>
           <Ionicons name="notifications-outline" size={22} color={dark ? '#FFF' : '#0B1220'} />
           <View style={styles.bellDot} />
-        </View>
-        <ExpoImage source={{ uri: INBOX_AVATAR_URL }} style={styles.topBarAvatar} contentFit="cover" cachePolicy="memory-disk" />
+        </Pressable>
+        {/* FIX: this showed a stock photo of a stranger as the signed-in user's avatar. */}
+        <Pressable onPress={() => goTab('profile')} accessibilityRole="button" accessibilityLabel="Profile" style={[styles.topBarAvatar, { backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }]}>
+          <Text style={{ color: '#FFF', fontWeight: '700', fontSize: 13 }}>{(fullName || userEmail || '?').trim().split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase()}</Text>
+        </Pressable>
       </View>
     </View>
   );
 
   const renderBottomNav = () => {
+    if (IS_WEB && userId && hookWidth >= 1000) return null;   // the desktop sidebar replaces the phone tab bar
     const renderTab = (tab: MainTab, icon: string, label: string, activeColor: string = '#0B1220') => {
       const active = mainTab === tab;
       return (
@@ -1657,11 +7503,16 @@ export default function HomeScreen(){
       );
     };
     return (
-      <View style={styles.bottomNav}>
+      <View style={[styles.bottomNav, { paddingBottom: 10 + insets.bottom }]}>
         {renderTab('home', 'home-outline', 'Home')}
         {renderTab('inbox', 'chatbubble-ellipses-outline', 'Inbox', '#1E9E6D')}
         {renderTab('brain', 'sparkles', 'Brain')}
-        <Pressable style={styles.navItem}>
+        <Pressable
+          style={styles.navItem}
+          onPress={openLeads}
+          accessibilityRole="button"
+          accessibilityLabel="Lead"
+        >
           <Ionicons name="storefront-outline" size={20} color="#8A97A6" />
         </Pressable>
         {renderTab('profile', 'person-outline', 'Profile')}
@@ -1671,24 +7522,127 @@ export default function HomeScreen(){
 
   if (screen === 'main') {
     if (mainTab === 'profile') {
+      const twoCol = IS_WEB && hookWidth >= 1100;
+      const planName = workspace ? (plans.find(p => p.key === workspace.plan)?.name ?? workspace.plan) : '';
+      const planSub = workspace ? `${planName} \u00b7 ${workspace.subscription_status === 'trialing' ? 'free trial' : workspace.subscription_status.replace('_', ' ')}` : 'Set up your company';
+      const row = (o: { icon: string; label: string; sub?: string; onPress: () => void; color?: string }, last = false) => (
+        <Pressable key={o.label} onPress={o.onPress} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 13, borderBottomWidth: last ? 0 : 1, borderBottomColor: '#EEF1F4' }}>
+          <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}>
+            <Ionicons name={o.icon as any} size={18} color={o.color || '#1E56A0'} />
+          </View>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.attentionTitle}>{o.label}</Text>
+            {!!o.sub && <Text style={styles.attentionSubtitle} numberOfLines={1}>{o.sub}</Text>}
+          </View>
+          <Ionicons name="chevron-forward" size={16} color="#8A97A6" />
+        </Pressable>
+      );
+      const section = (title: string, children: React.ReactNode) => (
+        <View style={{ flexBasis: twoCol ? '48%' : '100%', flexGrow: 1, minWidth: 0 }}>
+          <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>{title}</Text>
+          <View style={[styles.detailCard, { paddingVertical: 6 }]}>{children}</View>
+        </View>
+      );
+      const nexoraLinks = [
+        { icon: 'card-outline', label: 'Plans & billing', sub: planSub, onPress: () => openBilling() },
+        { icon: 'link-outline', label: 'Connected channels', sub: `${LIVE_CHANNELS.filter(k => connectedChannels[k]).length} of ${LIVE_CHANNELS.length} connected`, onPress: openConnectChannels },
+        { icon: 'storefront-outline', label: 'AI shop link', sub: 'Your public page where customers chat with Nexora', onPress: () => { openStorefront().catch(() => {}); } },
+        { icon: 'bulb-outline', label: 'What Nexora learned', sub: 'Confirm facts picked up from your chats', onPress: openLearned },
+        { icon: 'git-branch-outline', label: 'What Nexora decides for you', sub: autonomy && !autonomy.notSetUp ? `${autonomy.rules_on || 0} rule${autonomy.rules_on === 1 ? '' : 's'} on${autonomy.rate !== null ? ` \u00b7 ${autonomy.rate}% handled without you` : ''}` : 'Decisions you taught Nexora', onPress: () => openRules() },
+        { icon: 'call-outline', label: 'When Nexora needs you', sub: alertCfg?.phone_verified && alertCfg?.call_enabled && alertCfg?.call_when !== 'never' ? `Calls ${alertCfg.phone}${alertCfg.call_when === 'all' ? ' about anything' : ' when it\'s urgent'}` : 'Let Nexora call you about things it can\'t handle', onPress: () => openOwnerAlerts() },
+      ];
+      const communityLinks = [
+        { icon: 'chatbubbles-outline', label: 'Community', sub: commMe ? `${commMe.level} \u00b7 ${commMe.points} pts` : 'Ask other business owners, share wins', onPress: openCommunity },
+        { icon: 'people-outline', label: 'Partner profile', sub: 'What you offer and what you need', onPress: () => { openNetwork().catch(() => {}); } },
+      ];
+      const helpLinks = [
+        { icon: 'shield-checkmark-outline', label: 'Privacy policy', onPress: () => openInApp(PRIVACY_POLICY_URL, 'Privacy policy') },
+        { icon: 'document-text-outline', label: 'Terms of use', onPress: openTerms },
+        { icon: 'help-buoy-outline', label: 'Contact support', sub: SUPPORT_EMAIL, onPress: () => { Linking.openURL(`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('Nexora AI support')}`).catch(() => flash(`Email us at ${SUPPORT_EMAIL}`)); } },
+      ];
       return (
         <View style={styles.mainScreen}>
           <StatusBar style="dark" />
           {renderTopBar()}
-          <View style={styles.mainContent}>
-            <Text style={styles.welcomeText}>Welcome{fullName ? `, ${fullName}` : ''}</Text>
-            <Pressable onPress={handleLogout} style={styles.logoutButton}>
-              <Text style={styles.logoutText}>Log out</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => { setBrainGalleryIndex(0); setScreen('brainGallery'); }}
-              style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 16, width: '80%' }]}>
-              <Text style={styles.resetButtonText}>View All Screens (30)</Text>
-            </Pressable>
-            <Pressable onPress={() => { setSocialMediaIndex(0); setScreen('socialMedia'); }} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 12, width: '80%' }]}>
-              <Text style={styles.resetButtonText}>View Social Media (21)</Text>
-            </Pressable>
-          </View>
+          <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 12, paddingBottom: 32, width: '100%', maxWidth: 1000, alignSelf: 'center' }} keyboardShouldPersistTaps="handled">
+            <View style={{ borderRadius: 20, padding: 18, backgroundColor: '#0B1220', flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+              <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}>
+                <Text style={{ color: '#FFFFFF', fontSize: 22, fontWeight: '800' }}>{(fullName || userEmail || '?').charAt(0).toUpperCase()}</Text>
+              </View>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '800' }} numberOfLines={1}>{fullName || 'Your profile'}</Text>
+                {!!userEmail && <Text style={{ color: '#9FB0C6', fontSize: 13, marginTop: 2 }} numberOfLines={1}>{userEmail}</Text>}
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                  {!!workspace && <Text style={{ color: '#0B1220', backgroundColor: '#7FB2FF', fontSize: 11, fontWeight: '800', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8, overflow: 'hidden' }}>{planName.toUpperCase()}</Text>}
+                  {!!workspace && <Text style={{ color: '#D7E2F0', backgroundColor: 'rgba(255,255,255,0.1)', fontSize: 11, fontWeight: '700', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8, overflow: 'hidden' }}>{workspace.role === 'owner' ? 'Owner' : 'Staff'}</Text>}
+                  {awayMode && <Text style={{ color: '#0B1220', backgroundColor: '#FFD27A', fontSize: 11, fontWeight: '800', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8, overflow: 'hidden' }}>AWAY MODE ON</Text>}
+                </View>
+              </View>
+            </View>
+
+            <View style={{ flexDirection: twoCol ? 'row' : 'column', flexWrap: 'wrap', columnGap: 20 }}>
+              {section('Your business', (
+                <View style={{ paddingVertical: 8 }}>
+                  <Text style={styles.detailFieldLabel}>Business name</Text>
+                  <TextInput
+                    value={businessName}
+                    onChangeText={setBusinessName}
+                    onEndEditing={async () => {
+                      if (!userId) return;
+                      const { error } = await supabase.from('profiles').update({ business_name: businessName.trim() }).eq('id', userId);
+                      if (error) flash("Couldn't save your business name."); else flash('Business name saved');
+                    }}
+                    onBlur={IS_WEB ? async () => {
+                      if (!userId) return;
+                      const { error } = await supabase.from('profiles').update({ business_name: businessName.trim() }).eq('id', userId);
+                      if (!error) flash('Business name saved');
+                    } : undefined}
+                    placeholder="Used when Nexora replies to customers"
+                    placeholderTextColor="#A5AFBB"
+                    style={styles.editInput}
+                    maxLength={120}
+                  />
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 16 }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.attentionTitle}>Away mode</Text>
+                      <Text style={styles.attentionSubtitle}>Let Nexora answer customers for you</Text>
+                    </View>
+                    <Switch value={awayMode} onValueChange={setAway} accessibilityLabel="Away mode" trackColor={{ true: '#5381BB', false: '#D5DEE8' }} thumbColor="#FFFFFF" />
+                  </View>
+                  <Pressable onPress={() => openOwnerAlerts()} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10, padding: 10, borderRadius: 10, backgroundColor: alertCfg?.phone_verified ? '#E9F8EE' : '#FFF4E5' }}>
+                    <Ionicons name={alertCfg?.phone_verified ? 'call' : 'call-outline'} size={16} color={alertCfg?.phone_verified ? '#1E9E6D' : '#C2760C'} />
+                    <Text style={{ flex: 1, fontSize: 13, color: '#0B1220' }}>{alertCfg?.phone_verified && alertCfg?.call_enabled && alertCfg?.call_when !== 'never' ? `If a customer needs you, Nexora calls ${alertCfg.phone}.` : 'Add your phone so Nexora can call you about things it can\'t handle alone.'}</Text>
+                    <Ionicons name="chevron-forward" size={14} color="#8A97A6" />
+                  </Pressable>
+                </View>
+              ))}
+              {section('Your Nexora', nexoraLinks.map((o, i) => row(o, i === nexoraLinks.length - 1)))}
+              {section('Community', communityLinks.map((o, i) => row(o, i === communityLinks.length - 1)))}
+              {section('Help & legal', helpLinks.map((o, i) => row(o, i === helpLinks.length - 1)))}
+            </View>
+
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 22, alignItems: 'center' }}>
+              <Pressable onPress={handleLogout} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 18, height: 44, borderRadius: 12, borderWidth: 1, borderColor: '#D5DEE8', backgroundColor: '#FFFFFF' }}>
+                <Ionicons name="log-out-outline" size={18} color="#0B1220" />
+                <Text style={{ fontSize: 14, fontWeight: '700', color: '#0B1220' }}>Log out</Text>
+              </Pressable>
+              <Pressable onPress={deleteMyAccount} accessibilityRole="button" style={{ paddingHorizontal: 12, height: 44, justifyContent: 'center' }}>
+                <Text style={{ color: '#D64545', fontSize: 13, fontWeight: '600' }}>Delete account</Text>
+              </Pressable>
+            </View>
+            {__DEV__ && (
+              <>
+                <Pressable
+                  onPress={() => { setBrainGalleryIndex(0); setScreen('brainGallery'); }}
+                  style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 16, alignSelf: 'flex-start', paddingHorizontal: 16 }]}>
+                  <Text style={styles.resetButtonText}>[dev] Brain gallery</Text>
+                </Pressable>
+                <Pressable onPress={() => { setSocialMediaIndex(0); setScreen('socialMedia'); }} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 12, alignSelf: 'flex-start', paddingHorizontal: 16 }]}>
+                  <Text style={styles.resetButtonText}>[dev] Social media gallery</Text>
+                </Pressable>
+              </>
+            )}
+          </ScrollView>
           {renderBottomNav()}
         </View>
       );
@@ -1700,13 +7654,16 @@ export default function HomeScreen(){
         Unread: conversations.filter(c => c.unread > 0).length,
         'Need attention': conversations.filter(c => c.status === 'Needs Information' || c.status === 'Human attention').length,
       };
+      const q = inboxSearch.trim().toLowerCase();
       const filtered = conversations
         .filter(c => inboxListFilter === 'All' ? true : inboxListFilter === 'Unread' ? c.unread > 0 : (c.status === 'Needs Information' || c.status === 'Human attention'))
-        .filter(c => inboxPlatformFilter === 'All' ? true : c.platform === inboxPlatformFilter);
+        .filter(c => inboxPlatformFilter === 'All' ? true : c.platform === inboxPlatformFilter)
+        .filter(c => !q || c.name.toLowerCase().includes(q) || c.lastMessage.toLowerCase().includes(q) || (c.handle ?? '').toLowerCase().includes(q));
+      const anyConnected = LIVE_CHANNELS.some(k => connectedChannels[k]);
       return (
         <View style={styles.mainScreen}>
           <StatusBar style="dark" />
-          <View style={styles.knowledgeHeader}>
+          <View style={[styles.knowledgeHeader, headerSafe]}>
             <View style={{ flex: 1 }}>
               <Text style={styles.knowledgeHeaderTitle}>Inbox</Text>
             </View>
@@ -1716,17 +7673,43 @@ export default function HomeScreen(){
                 Processing, Brain Chat Share, File UI). Previously only
                 reachable from the Profile tab, buried away from the Inbox
                 screen these screens actually belong to. */}
-            <Pressable onPress={() => { setSocialMediaIndex(0); setScreen('socialMedia'); }} hitSlop={8} style={{ marginRight: 16 }}>
-              <Ionicons name="images-outline" size={22} color="#0B1220" />
+            {__DEV__ && (
+              <Pressable onPress={() => { setSocialMediaIndex(0); setScreen('socialMedia'); }} hitSlop={8} style={{ marginRight: 16 }}>
+                <Ionicons name="images-outline" size={22} color="#0B1220" />
+              </Pressable>
+            )}
+            {/* NEW: entry point into the Customers CRM (Customers/Customer
+                Profile/Add Customer/Interaction History truth screens). */}
+            {/* NEW: send one message to every connected channel. */}
+            <Pressable onPress={() => openBroadcast()} hitSlop={8} style={{ marginRight: 16 }} accessibilityLabel="Send to all channels">
+              <Ionicons name="megaphone-outline" size={22} color="#0B1220" />
             </Pressable>
-            <Pressable onPress={() => setScreen('connectChannels')} hitSlop={8}>
+            <Pressable onPress={() => { openCustomers(() => goTab('inbox')); }} hitSlop={8} style={{ marginRight: 16 }}>
+              <Ionicons name="people-outline" size={22} color="#0B1220" />
+            </Pressable>
+            <Pressable onPress={() => openConnectChannels()} hitSlop={8}>
               <Ionicons name="settings-outline" size={22} color="#0B1220" />
             </Pressable>
           </View>
           <Text style={styles.inboxSubtitle}>All your customers conversations in one place</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: 16, marginBottom: 12, padding: 12, borderRadius: 14, backgroundColor: awayMode ? '#EAF1FB' : '#F5F6F8' }}>
+            <Ionicons name={awayMode ? 'moon' : 'sunny-outline'} size={20} color={awayMode ? '#1E56A0' : '#5C6B7A'} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.attentionTitle}>{awayMode ? 'Away mode is on' : "I'm available"}</Text>
+              <Text style={styles.attentionSubtitle}>{awayMode ? 'Nexora answers customers for you using your knowledge base' : 'Turn on to let Nexora handle customers while you are away'}</Text>
+            </View>
+            <Switch value={awayMode} onValueChange={setAway} accessibilityLabel="Away mode" />
+          </View>
           <View style={[styles.searchBarPlain, { marginHorizontal: 16 }]}>
             <Ionicons name="search-outline" size={16} color="#8A97A6" />
-            <Text style={styles.homeSearchPlaceholder}>Search conversations...</Text>
+            <TextInput
+              value={inboxSearch}
+              onChangeText={setInboxSearch}
+              placeholder="Search conversations..."
+              placeholderTextColor="#8A97A6"
+              style={[styles.homeSearchPlaceholder, { flex: 1, paddingVertical: 0 }]}
+              returnKeyType="search"
+            />
           </View>
           <View style={[styles.filterRow, { paddingHorizontal: 16 }]}>
             {(['All', 'Unread', 'Need attention'] as const).map(f => (
@@ -1746,24 +7729,38 @@ export default function HomeScreen(){
               // pressed/selected. Selection is now shown with a dark ring
               // around the circle and a bold label instead of stripping
               // the color from everything else.
-              const chipColor = p === 'All' ? '#0B1220' : PLATFORM_COLOR[p];
               return (
-                <Pressable key={p} onPress={() => setInboxPlatformFilter(p)} style={styles.platformChipItem}>
-                  <View style={[styles.platformChipCircle, { backgroundColor: chipColor }, active && styles.platformChipCircleSelected]}>
-                    <Ionicons name={p === 'All' ? 'apps' : (PLATFORM_ICON[p] as any)} size={16} color="#FFF" />
-                  </View>
+                <Pressable key={p} onPress={() => setInboxPlatformFilter(p)} style={styles.platformChipItem} accessibilityRole="button" accessibilityLabel={`Show ${p}`} accessibilityState={{ selected: active }}>
+                  <BrandIcon platform={p} size={36} ring={active} />
                   <Text style={[styles.platformChipLabel, active && styles.platformChipLabelActive]}>{p}</Text>
                 </Pressable>
               );
             })}
           </View>
           <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingTop: 8 }]}>
+            {!!inboxError && <Text style={[styles.attentionSubtitle, { color: '#D64545', marginBottom: 8 }]}>{inboxError}</Text>}
+            {filtered.length === 0 && (
+              <View style={{ alignItems: 'center', paddingVertical: 36, paddingHorizontal: 12 }}>
+                <Ionicons name="chatbubbles-outline" size={40} color="#A5AFBB" />
+                <Text style={[styles.attentionTitle, { marginTop: 10, textAlign: 'center' }]}>
+                  {conversations.length > 0 ? 'No conversations match' : anyConnected ? 'No messages yet' : 'Connect a channel to get started'}
+                </Text>
+                <Text style={[styles.attentionSubtitle, { marginTop: 4, textAlign: 'center' }]}>
+                  {conversations.length > 0 ? 'Try another filter or search.' : anyConnected ? 'When customers message your connected accounts, their chats appear here.' : 'Link your WhatsApp Business, Facebook Page or Instagram account so customer messages arrive here.'}
+                </Text>
+                {conversations.length === 0 && !anyConnected && (
+                  <Pressable onPress={openConnectChannels} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 16, paddingHorizontal: 24 }]}>
+                    <Text style={styles.resetButtonText}>Connect apps</Text>
+                  </Pressable>
+                )}
+              </View>
+            )}
             {filtered.map(c => (
-              <Pressable key={c.id} onPress={() => { setActiveConversationId(c.id); setConversations(prev => prev.map(x => x.id === c.id ? { ...x, unread: 0 } : x)); setScreen('inboxChat'); }} style={styles.conversationRow}>
+              <Pressable key={c.id} onPress={() => openConversation(c)} style={styles.conversationRow} accessibilityRole="button" accessibilityLabel={`Conversation with ${c.name} on ${c.platform}`}>
                 <View style={styles.conversationAvatarWrap}>
-                  <View style={styles.conversationAvatar}><Text style={styles.conversationAvatarText}>{c.name.split(' ').map(n => n[0]).join('')}</Text></View>
-                  <View style={[styles.conversationPlatformBadge, { backgroundColor: PLATFORM_COLOR[c.platform] }]}>
-                    <Ionicons name={PLATFORM_ICON[c.platform] as any} size={9} color="#FFF" />
+                  <View style={styles.conversationAvatar}><Text style={styles.conversationAvatarText}>{c.name.split(' ').filter(Boolean).slice(0, 2).map(n => n[0]).join('').toUpperCase() || '?'}</Text></View>
+                  <View style={{ position: 'absolute', right: -2, bottom: -2, borderRadius: 10, borderWidth: 1.5, borderColor: '#FFF', backgroundColor: '#FFF' }}>
+                    <BrandIcon platform={c.platform} size={17} />
                   </View>
                 </View>
                 <View style={styles.attentionTextWrap}>
@@ -1776,6 +7773,8 @@ export default function HomeScreen(){
                     <View style={[styles.conversationStatusPill, { backgroundColor: STATUS_BADGE_STYLE[c.status].bg }]}>
                       <Text style={[styles.conversationStatusPillText, { color: STATUS_BADGE_STYLE[c.status].color }]}>{c.status}</Text>
                     </View>
+                    {c.blocked && <Text style={{ fontSize: 11, color: '#D64545', fontWeight: '600' }}>Blocked</Text>}
+                    {!!c.aiSuggestion && !c.blocked && <Text style={{ fontSize: 11, color: '#1E56A0', fontWeight: '600' }}>Reply ready</Text>}
                     {c.unread > 0 && <View style={styles.conversationUnreadBadge}><Text style={styles.conversationUnreadBadgeText}>{c.unread}</Text></View>}
                   </View>
                 </View>
@@ -1819,6 +7818,25 @@ export default function HomeScreen(){
                   <Text style={styles.brainHeroTitle}>Hi, {fullName || 'there'}</Text>
                   <Text style={styles.brainHeroSubtitle}>What would you like to do today?</Text>
                 </View>
+                {renderBriefingCard()}
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 18 }}>
+                  {[
+                    { icon: 'stats-chart', title: 'Business Insights', sub: 'Charts of your business + profitable ideas', onPress: () => openInsights() },
+                    { icon: 'trending-up', title: 'Trending for you', sub: 'What’s hot online for your business', onPress: openTrends },
+                    { icon: 'globe-outline', title: 'Find online', sub: 'Suppliers, services, anything you need', onPress: () => openExplore() },
+                    { icon: 'people-outline', title: 'Find partners', sub: 'Businesses that fit what you offer and need', onPress: () => { openNetwork().catch(() => {}); } },
+                    { icon: 'bulb-outline', title: 'What Nexora learned', sub: 'Confirm facts picked up from your chats', onPress: openLearned },
+                    { icon: 'chatbubbles-outline', title: 'Community', sub: commUnread ? `${commUnread} new ${commUnread === 1 ? 'alert' : 'alerts'} for you` : 'Ask other business owners, share wins', onPress: openCommunity, badge: commUnread },
+                    { icon: 'storefront-outline', title: 'AI shop link', sub: 'A page where customers chat with your Nexora 24/7', onPress: () => { openStorefront().catch(() => {}); } },
+                  ].map(c => (
+                    <Pressable key={c.title} onPress={c.onPress} accessibilityRole="button" style={{ flexBasis: '47%', flexGrow: 1, padding: 14, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' }}>
+                      {!!(c as any).badge && <View style={{ position: 'absolute', top: 10, right: 10, minWidth: 20, height: 20, borderRadius: 10, paddingHorizontal: 5, backgroundColor: '#EF4444', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#FFF', fontSize: 11, fontWeight: '800' }}>{(c as any).badge > 9 ? '9+' : (c as any).badge}</Text></View>}
+                      <Ionicons name={c.icon as any} size={20} color="#7FB2FF" />
+                      <Text style={{ color: '#FFF', fontWeight: '700', fontSize: 14, marginTop: 8 }}>{c.title}</Text>
+                      <Text style={{ color: '#9FB0C6', fontSize: 12, marginTop: 2 }}>{c.sub}</Text>
+                    </Pressable>
+                  ))}
+                </View>
                 <Text style={styles.popularLabel}>Popular Questions</Text>
                 {popularQuestions.map(q => (
                   <Pressable key={q} onPress={() => sendChatMessage(q)} style={styles.popularItem}>
@@ -1829,8 +7847,8 @@ export default function HomeScreen(){
                 ))}
               </>
             ) : (
-              chatMessages.map(m => (
-                <View key={m.id} style={[styles.bubbleRow, m.role === 'user' ? styles.bubbleRowUser : styles.bubbleRowAi]}>
+              chatMessages.map((m, mi) => (
+                <View key={m.id} style={[styles.bubbleRow, m.role === 'user' ? styles.bubbleRowUser : [styles.bubbleRowAi, { flexDirection: 'column', alignItems: 'flex-start' }]]}>
                   <View style={[styles.bubble, m.role === 'user' ? styles.bubbleUser : styles.bubbleAi]}>
                     {m.imageUri && (
                       <ExpoImage
@@ -1856,6 +7874,25 @@ export default function HomeScreen(){
                         : <Text style={[styles.bubbleText, styles.bubbleTextUser, m.imageUri ? { marginTop: 8 } : null]}>{m.text}</Text>
                     )}
                   </View>
+                  {m.role === 'ai' && renderSources(m.sources)}
+                  {/* Google Play's AI-generated content policy: users must be able to flag offensive AI output in-app. */}
+                  {m.role === 'ai' && !!m.text && (() => {
+                    const asked = chatMessages.slice(0, mi).reverse().find(x => x.role === 'user' && !!x.text)?.text ?? '';
+                    return (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, marginTop: 4, marginLeft: 4 }}>
+                        {asked.trim().length >= 3 && (
+                          <Pressable onPress={() => askCommunity(asked)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Ask the community" style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                            <Ionicons name="chatbubbles-outline" size={12} color="#7FB2FF" />
+                            <Text style={{ fontSize: 11, color: '#7FB2FF', fontWeight: '600' }}>Ask the community</Text>
+                          </Pressable>
+                        )}
+                        <Pressable onPress={() => openReport({ kind: 'ai', text: m.text })} hitSlop={8} accessibilityRole="button" accessibilityLabel="Report this answer" style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                          <Ionicons name="flag-outline" size={12} color="#8A97A6" />
+                          <Text style={{ fontSize: 11, color: '#8A97A6' }}>Report</Text>
+                        </Pressable>
+                      </View>
+                    );
+                  })()}
                 </View>
               ))
             )}
@@ -1874,19 +7911,22 @@ export default function HomeScreen(){
               all 30 files in the Supabase 'brain-gallery' bucket). This was
               previously a dead button with no onPress, which is why there
               was no way to reach these screens from the Brain tab. */}
-          <Pressable
-            style={styles.brainFloatingBtn}
-            onPress={() => { setBrainGalleryIndex(0); setScreen('brainGallery'); }}
-            accessibilityLabel="View brain-gallery reference screens"
-            hitSlop={8}
-          >
-            <Ionicons name="sparkles" size={16} color="#FFF" />
-          </Pressable>
+          {__DEV__ && (
+            <Pressable
+              style={styles.brainFloatingBtn}
+              onPress={() => { setBrainGalleryIndex(0); setScreen('brainGallery'); }}
+              accessibilityLabel="View brain-gallery reference screens"
+              hitSlop={8}
+            >
+              <Ionicons name="sparkles" size={16} color="#FFF" />
+            </Pressable>
+          )}
 
           {showAttachMenu && (
             <View style={styles.attachMenu}>
               {[
                 { icon: 'camera-outline', label: 'Camera' },
+                { icon: 'image-outline', label: 'Photo Library' },
                 { icon: 'document-attach-outline', label: 'Add Files' },
                 { icon: 'extension-puzzle-outline', label: 'Connect Apps' },
                 { icon: 'hardware-chip-outline', label: 'Train Your AI' },
@@ -1924,7 +7964,7 @@ export default function HomeScreen(){
                   placeholderTextColor="#8A97A6"
                   style={styles.chatTextInput}
                 />
-                <Pressable onPress={() => setIsRecording(true)} hitSlop={8}>
+                <Pressable onPress={() => flash('Voice input is coming soon.')} hitSlop={8} accessibilityLabel="Voice input">
                   <Ionicons name="mic-outline" size={20} color="#5C6B7A" />
                 </Pressable>
               </>
@@ -1938,174 +7978,725 @@ export default function HomeScreen(){
             </Pressable>
           </View>
 
+          {renderReportModal()}
+          {renderSourceSheet()}
           {renderBottomNav()}
         </View>
       );
     }
 
     // mainTab === 'home'
-    // The block below (search bar through "Review orders") used to be
-    // hand-built from Ionicons + Views, which is why it drifted from the
-    // Figma frame (wrong icon set, missing robot illustration, slightly
-    // different spacing). It's now the actual Home-1.png truth file from
-    // the 'brain-gallery' bucket, cropped to just that section and scaled
-    // the same width-based way every other truth screen in this file is
-    // (see LaunchSVG/OnboardingSVG usage above: width=width, height=
-    // FIGMA_HEIGHT*scale). Invisible Pressables sit on top at the same
-    // Figma-space coordinates to keep every existing tap handler working.
-    // "More" toggles to the Home-2.png truth file (the real 8-item expanded
-    // grid, measured the same way) instead of falling through to a generic
-    // chat handler. Both states crop out right before "Need Your Attention"
-    // and hand off to a real, always-tappable rendering of that section
-    // (same styles as the Knowledge Health dashboard) rather than pixel
-    // overlays on the image — Home-2's truth frame doesn't even show that
-    // section in full (it's pushed down/truncated by the taller grid), so
-    // there's no image content to overlay there anyway.
-    const homeTruthUrl = homeCommandExpanded ? HOME2_TRUTH_URL : HOME1_TRUTH_URL;
-    // FIX: HOME1_BOTTOM_Y (526) was being reused for BOTH the collapsed
-    // and expanded states, but Home-2's truth layout is taller — it has a
-    // second icon row, so "Need Your Attention" doesn't start until
-    // y≈655 in Figma space (checked directly against Home-2.svg), not
-    // y≈540 like Home-1. Reusing 526 as the crop bottom for both meant the
-    // expanded view's crop window never grew to fit the second row, so
-    // row 2 (Policies/Inbox/Schedule/FAQs) — and even "More" itself once
-    // tapped — sat below the visible, touchable area entirely, clipped by
-    // this container's overflow:'hidden'. Each state now gets its own
-    // measured bottom bound.
-    const HOME1_TOP_Y = 102;
-    const HOME1_BOTTOM_Y = homeCommandExpanded ? 645 : 526; // crop window bottom, in 393x852 Figma space
-    const home1FullHeight = FIGMA_HEIGHT * scale;
-    const home1VisibleHeight = (HOME1_BOTTOM_Y - HOME1_TOP_Y) * scale;
-    const y = (figmaY: number) => (figmaY - HOME1_TOP_Y) * scale; // figma-space Y -> position inside the crop window
-    const x = (figmaX: number) => figmaX * scale; // figma-space X -> on-screen X
-    const commandItems = homeCommandExpanded
-      ? ['Train AI', 'Connect Apps', 'Create Post', 'AI Employees', 'Policies', 'Inbox', 'Schedule', 'FAQs']
-      : ['Train AI', 'Connect Apps', 'Create Post', 'More'];
+    // Home-1 (collapsed) / Home-2 (expanded via "More") are the real Figma
+    // frames from the 'brain-gallery' bucket, drawn full-bleed at their exact
+    // 394x852 size. The latest exports include the top bar, search bar,
+    // attention list and bottom nav, so nothing is rebuilt natively on top
+    // any more -- only invisible tap areas sit over the image.
+    const hs = width / HOME_FRAME_W;
+    const homeFrameHeight = HOME_FRAME_H * hs;
+    const homeUri = HOME2_TRUTH_URL;
+    const askChat = (q: string) => { setMainTab('brain'); sendChatMessage(q); };
+    const topSpots: Hotspot[] = [
+      { x: 10, y: 52, w: 56, h: 44, label: 'menu', onPress: () => drawerOpenFn() },
+      { x: 298, y: 52, w: 38, h: 44, label: 'bell', onPress: () => setMainTab('inbox') },
+      { x: 343, y: 52, w: 38, h: 42, label: 'avatar', onPress: () => setMainTab('profile') },
+      { x: 16, y: 103, w: 361, h: 48, label: 'search', onPress: () => setMainTab('brain') },
+      { x: 28, y: 310, w: 112, h: 28, label: 'view-analysis', onPress: () => setMainTab('brain') },
+    ];
+    const cmdSpot = (label: string, cx: number, top: number): Hotspot => ({ x: cx - 39, y: top, w: 78, h: 100, label, onPress: () => handleCommandCenterPress(label) });
+    const homeNav = (dx: number): Hotspot[] => [
+      // Tapping Home while already on the expanded Home-2 folds it back to Home-1.
+      { x: 30 + dx, y: 782, w: 130, h: 54, label: 'nav-home', onPress: () => { if (homeCommandExpanded) setHomeCommandExpanded(false); } },
+      { x: 160 + dx, y: 782, w: 43, h: 54, label: 'nav-inbox', onPress: () => setMainTab('inbox') },
+      { x: 203 + dx, y: 782, w: 49, h: 54, label: 'nav-brain', onPress: () => setMainTab('brain') },
+      { x: 252 + dx, y: 782, w: 49, h: 54, label: 'nav-lead', onPress: () => openLeads() },
+      { x: 301 + dx, y: 782, w: 62, h: 54, label: 'nav-profile', onPress: () => setMainTab('profile') },
+    ];
+    const renderSpots = (spots: Hotspot[], k: number, offsetX = 0, offsetY = 0) => spots.map((sp, i) => (
+      <Pressable
+        key={`${sp.label}-${k}-${i}`}
+        onPress={sp.onPress}
+        accessibilityRole="button"
+        accessibilityLabel={sp.label}
+        style={[
+          { position: 'absolute', left: offsetX + sp.x * k, top: offsetY + sp.y * k, width: sp.w * k, height: sp.h * k, zIndex: 20 },
+          TRUTH_DEBUG_HOTSPOTS ? { backgroundColor: sp.estimated ? 'rgba(255,140,0,0.25)' : 'rgba(255,0,0,0.2)', borderWidth: 1, borderColor: sp.estimated ? '#FF8C00' : '#FF0000' } : null,
+        ]}
+      />
+    ));
+
+    // ---- Home-2 (expanded command center via "More"): one full frame ----
+    if (homeCommandExpanded) {
+      const home2Spots: Hotspot[] = [
+        ...topSpots,
+        // Home-2 command center: two rows of four.
+        cmdSpot('Train AI', 68, 417), cmdSpot('Connect Apps', 158.5, 417), cmdSpot('Leads', 241.5, 417), cmdSpot('AI Employees', 324.5, 417),
+        cmdSpot('Policies', 65.5, 532), cmdSpot('Create Post', 155.5, 532), cmdSpot('Schedule', 245.5, 532), cmdSpot('FAQs', 327.5, 532),
+        { x: 300, y: 652, w: 80, h: 32, label: 'attention-view-all', onPress: () => { refreshEscalations().catch(() => {}); setScreen('agendaPriority'); } },
+        { x: 16, y: 712, w: 361, h: 62, label: 'attention-call', onPress: () => setScreen('callSummary') },
+        ...homeNav(-2),
+      ];
+      return (
+        <View style={[styles.fullScreen, { backgroundColor: '#F5F6F8' }]} onLayout={onRootLayout}>
+          <StatusBar hidden />
+          <ScrollView scrollEnabled={homeFrameHeight > height + 1} showsVerticalScrollIndicator={false} contentContainerStyle={{ width }}>
+            <View style={{ width, height: homeFrameHeight }}>
+              <ExpoImage source={{ uri: homeUri }} style={{ width, height: homeFrameHeight }} contentFit="fill" cachePolicy="memory-disk" recyclingKey={homeUri} onError={() => console.warn('[home] failed to load', homeUri)} />
+              {renderSpots(home2Spots, hs)}
+            </View>
+          </ScrollView>
+        </View>
+      );
+    }
+
+    // ---- Home-1 / 1b / 1c / 1d: one frame, chosen from the live business state ----
+    const ins = homeInsight;
+    const insightAction = () => {
+      switch (ins.state) {
+        case 'home1b': askChat(`My sales are down ${ins.dropPct ? `about ${ins.dropPct}% ` : ''}this week compared with last week. Look at my orders and products, explain what changed, and recommend what I should do this week to recover.`); break;
+        case 'home1c': askChat(`${ins.trending ? `${ins.trending} is selling more this week than last week.` : 'One of my products is trending this week.'} Show me the numbers and tell me whether I should restock or promote it.`); break;
+        case 'home1d': goTab('inbox'); break;
+        default: askChat('Give me an analysis of how my business did this week compared with last week: orders, revenue, best-selling products, and what to focus on next.');
+      }
+    };
+    // Web on a computer: a full dashboard built from live data (the phone keeps the Figma design below).
+    if (IS_WEB && hookWidth >= WEB_DESKTOP_HOME_MIN) {
+      const WEEK = 7 * 86400_000, nowMs = Date.now();
+      const valid = orders.filter(o => o.status !== 'cancelled');
+      const ageMs = (o: OrderRow) => nowMs - new Date(o.created_at).getTime();
+      const tw = valid.filter(o => ageMs(o) < WEEK).reduce((n, o) => n + Number(o.total || 0), 0);
+      const lw = valid.filter(o => ageMs(o) >= WEEK && ageMs(o) < 2 * WEEK).reduce((n, o) => n + Number(o.total || 0), 0);
+      const pct = lw > 0 ? Math.round(((tw - lw) / lw) * 100) : null;
+      const openOrders = orders.filter(o => o.status === 'pending' || o.status === 'processing');
+      const unread = conversations.filter(c => c.unread > 0);
+      const kpis: { label: string; value: string; sub: string; icon: string; color: string; onPress: () => void }[] = [
+        { label: 'Sales this week', value: Math.round(tw).toLocaleString(), sub: pct === null ? (tw ? 'First week of data' : 'No orders yet') : `${pct >= 0 ? '▲' : '▼'} ${Math.abs(pct)}% vs last week`, icon: 'trending-up', color: pct !== null && pct < 0 ? '#D64545' : '#1E9E6D', onPress: () => askChat('Give me an analysis of how my business did this week compared with last week.') },
+        { label: 'Open orders', value: String(openOrders.length), sub: openOrders.length ? 'Waiting to be shipped' : 'All shipped', icon: 'cube-outline', color: '#1E56A0', onPress: () => openOrders('Unshipped') },
+        { label: 'Unread chats', value: String(unread.length), sub: unread.length ? 'Customers waiting' : 'Inbox clear', icon: 'chatbubbles-outline', color: '#7C3AED', onPress: () => goTab('inbox') },
+        { label: 'Needs your decision', value: String(escalations.length), sub: escalations.length ? 'Nexora needs you' : 'Nothing urgent', icon: 'hand-left-outline', color: escalations.length ? '#C2760C' : '#5C6B7A', onPress: () => { refreshEscalations().catch(() => {}); setScreen('agendaPriority'); } },
+      ];
+      const actions: { label: string; icon: string; onPress: () => void }[] = [
+        { label: 'Ask Nexora', icon: 'sparkles', onPress: () => goTab('brain') },
+        { label: 'Business Insights', icon: 'stats-chart-outline', onPress: () => openInsights() },
+        { label: 'Train AI', icon: 'school-outline', onPress: () => openFeature('operations') },
+        { label: 'Leads', icon: 'person-add-outline', onPress: () => openLeads() },
+        { label: 'Smart follow-ups', icon: 'paper-plane-outline', onPress: () => { openFollowups().catch(() => {}); } },
+        { label: 'Schedule', icon: 'calendar-outline', onPress: () => openSchedule() },
+        { label: 'Connect channels', icon: 'link-outline', onPress: () => openConnectChannels() },
+        { label: 'AI shop link', icon: 'storefront-outline', onPress: () => { openStorefront().catch(() => {}); } },
+        { label: 'Community', icon: 'chatbubbles-outline', onPress: openCommunity },
+        { label: 'Trending', icon: 'trending-up-outline', onPress: openTrends },
+        { label: 'Find partners', icon: 'people-circle-outline', onPress: () => { openNetwork().catch(() => {}); } },
+      ];
+      const panel = { backgroundColor: '#FFFFFF', borderRadius: 18, padding: 18, borderWidth: 1, borderColor: '#E6ECF3' } as const;
+      const hour = new Date().getHours();
+      return (
+        <View style={styles.mainScreen}>
+          <StatusBar style="dark" />
+          {renderTopBar()}
+          <ScrollView style={{ flex: 1, backgroundColor: '#F4F7FB' }} contentContainerStyle={{ padding: 24, paddingBottom: 40, width: '100%', maxWidth: 1080, alignSelf: 'center', gap: 18 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+              <View style={{ flex: 1, minWidth: 260 }}>
+                <Text style={{ fontSize: 26, fontWeight: '800', color: '#0B1220' }}>{hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'}{fullName ? `, ${fullName.split(' ')[0]}` : ''}</Text>
+                <Text style={{ fontSize: 14, color: '#5C6B7A', marginTop: 2 }}>{businessName || workspace?.name || 'Your business'} · {new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}</Text>
+              </View>
+              <Pressable onPress={() => goTab('brain')} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 10, minWidth: 320, flexGrow: 1, maxWidth: 480, height: 48, borderRadius: 24, paddingHorizontal: 18, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#D5DEE8' }}>
+                <Ionicons name="sparkles" size={18} color="#1E56A0" />
+                <Text style={{ color: '#8A97A6', fontSize: 14 }}>Ask Nexora anything about your business…</Text>
+              </Pressable>
+            </View>
+
+            {awayMode && (
+              <Pressable onPress={() => goTab('profile')} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, padding: 14, borderRadius: 14, backgroundColor: '#FFF6E5' }}>
+                <Ionicons name="moon" size={18} color="#B7791F" />
+                <Text style={{ flex: 1, color: '#7A4A00', fontSize: 14 }}><Text style={{ fontWeight: '800' }}>Away mode is on.</Text> Nexora is answering customers for you{awayStats ? ` · ${awayStats.actions} replies, ${awayStats.opportunities} opportunities so far` : ''}.</Text>
+              </Pressable>
+            )}
+
+            <View style={{ flexDirection: 'row', gap: 14, flexWrap: 'wrap' }}>
+              {kpis.map(k => (
+                <Pressable key={k.label} onPress={k.onPress} accessibilityRole="button" style={[panel, { flexBasis: '22%', flexGrow: 1, minWidth: 180 }]}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <Text style={{ fontSize: 13, color: '#5C6B7A', fontWeight: '600' }}>{k.label}</Text>
+                    <Ionicons name={k.icon as any} size={18} color={k.color} />
+                  </View>
+                  <Text style={{ fontSize: 28, fontWeight: '800', color: '#0B1220', marginTop: 8 }}>{k.value}</Text>
+                  <Text style={{ fontSize: 12, color: k.color, marginTop: 2, fontWeight: '600' }}>{k.sub}</Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <View style={{ flexDirection: 'row', gap: 18, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+              <View style={{ flexBasis: '58%', flexGrow: 1, minWidth: 340, gap: 18 }}>
+                <View style={{ backgroundColor: '#0B1220', borderRadius: 18, padding: 10, paddingBottom: 0 }}>{renderBriefingCard()}</View>
+                {homeOverview && (() => {
+                  const ov = homeOverview.overview;
+                  const tiles = [
+                    { icon: 'cash-outline', label: 'Revenue', value: ov.revenue.value.toLocaleString(), change: ov.revenue.change, onPress: () => openOrders('All') },
+                    { icon: 'bag-handle-outline', label: 'Orders', value: ov.orders.value.toLocaleString(), change: ov.orders.change, onPress: () => openOrders('All') },
+                    { icon: 'people-outline', label: 'Customers', value: ov.customers.value.toLocaleString(), change: ov.customers.change, onPress: () => openCustomers(() => goTab('home')) },
+                    { icon: 'person-add-outline', label: 'Leads', value: ov.leads.value.toLocaleString(), change: ov.leads.change, onPress: () => openLeads() },
+                  ];
+                  return (
+                    <View style={panel}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                        <Text style={{ fontSize: 16, fontWeight: '800', color: '#0B1220' }}>Business overview</Text>
+                        <Text style={{ fontSize: 12, color: '#5C6B7A', backgroundColor: '#F1F5F9', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, overflow: 'hidden' }}>Last 30 days</Text>
+                      </View>
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+                        {tiles.map(t => (
+                          <Pressable key={t.label} onPress={t.onPress} accessibilityRole="button" style={{ flexBasis: '47%', flexGrow: 1, padding: 14, borderRadius: 14, backgroundColor: '#F7F9FC', borderWidth: 1, borderColor: '#EEF2F7' }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                              <View style={{ width: 28, height: 28, borderRadius: 8, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}><Ionicons name={t.icon as any} size={15} color="#1E56A0" /></View>
+                              <Ionicons name="arrow-forward" size={14} color="#8A97A6" style={{ transform: [{ rotate: '-45deg' }] }} />
+                            </View>
+                            <Text style={{ fontSize: 22, fontWeight: '800', color: '#0B1220', marginTop: 10 }}>{t.value}</Text>
+                            <Text style={{ fontSize: 12, marginTop: 2, color: t.change === null ? '#8A97A6' : t.change >= 0 ? '#1E9E6D' : '#D64545', fontWeight: '600' }}>
+                              {t.change === null ? `${t.label}: no data for last month yet` : `${t.change >= 0 ? '+' : ''}${t.change}% ${t.label} vs last month`}
+                            </Text>
+                          </Pressable>
+                        ))}
+                      </View>
+                    </View>
+                  );
+                })()}
+                <View style={panel}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <Text style={{ fontSize: 16, fontWeight: '800', color: '#0B1220' }}>Latest conversations</Text>
+                    <Pressable onPress={() => goTab('inbox')}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>Open inbox ›</Text></Pressable>
+                  </View>
+                  {conversations.length === 0 && <Text style={[styles.attentionSubtitle, { marginTop: 10 }]}>No conversations yet. Connect WhatsApp, Instagram or Facebook so customer messages arrive here.</Text>}
+                  {conversations.slice(0, 5).map(c => (
+                    <Pressable key={c.id} onPress={() => openConversation(c)} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' }}>
+                      <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#1E56A0', fontWeight: '800' }}>{c.name.charAt(0).toUpperCase()}</Text></View>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={{ fontSize: 14, fontWeight: c.unread ? '800' : '600', color: '#0B1220' }} numberOfLines={1}>{c.name} <Text style={{ fontWeight: '400', color: '#8A97A6', fontSize: 12 }}>· {c.platform}</Text></Text>
+                        <Text style={{ fontSize: 13, color: '#5C6B7A' }} numberOfLines={1}>{c.lastMessage}</Text>
+                      </View>
+                      <Text style={{ fontSize: 12, color: '#8A97A6' }}>{c.lastTime}</Text>
+                      {c.unread > 0 && <View style={{ minWidth: 20, height: 20, borderRadius: 10, paddingHorizontal: 5, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#FFF', fontSize: 11, fontWeight: '800' }}>{c.unread}</Text></View>}
+                    </Pressable>
+                  ))}
+                </View>
+                {homeOverview && (
+                  <View style={panel}>
+                    <Text style={{ fontSize: 16, fontWeight: '800', color: '#0B1220', marginBottom: 4 }}>Recent activity</Text>
+                    {homeOverview.activity.length === 0 && <Text style={[styles.attentionSubtitle, { marginTop: 6 }]}>Nothing yet. Replies Nexora sends, new orders, leads and community answers will show here.</Text>}
+                    {homeOverview.activity.map((a, i) => {
+                      const tagColor = a.tag === 'Needs you' ? ['#FDECEC', '#B42318'] : a.tag === 'AI Handled' || a.tag === 'Done' ? ['#E9F8EE', '#15803D'] : a.tag === 'Opportunity' ? ['#FFF6E5', '#B7791F'] : ['#EAF1FB', '#1E56A0'];
+                      const icon = a.kind === 'reply' ? 'checkmark-circle' : a.kind === 'escalation' ? 'hand-left' : a.kind === 'order' ? 'bag-handle' : a.kind === 'lead' ? 'person-add' : a.kind === 'learned' ? 'bulb' : 'chatbubbles';
+                      return (
+                        <Pressable key={`${a.kind}-${i}`} onPress={() => (a.action === 'community' && a.post_id ? openCommPostById(a.post_id) : runBriefingAction(a.action))} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 11, borderBottomWidth: i === homeOverview.activity.length - 1 ? 0 : 1, borderBottomColor: '#F1F5F9' }}>
+                          <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center' }}><Ionicons name={icon as any} size={17} color="#1E56A0" /></View>
+                          <View style={{ flex: 1, minWidth: 0 }}>
+                            <Text style={{ fontSize: 14, fontWeight: '700', color: '#0B1220' }} numberOfLines={1}>{a.title}</Text>
+                            <Text style={{ fontSize: 12, color: '#5C6B7A' }} numberOfLines={1}>{a.subtitle}{a.subtitle ? ' · ' : ''}{commAgo(a.at)}</Text>
+                          </View>
+                          <Text style={{ fontSize: 11, fontWeight: '700', color: tagColor[1], backgroundColor: tagColor[0], paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, overflow: 'hidden' }}>{a.tag}</Text>
+                          <Ionicons name="chevron-forward" size={14} color="#8A97A6" />
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                )}
+              </View>
+              <View style={{ flexBasis: '36%', flexGrow: 1, minWidth: 280, gap: 18 }}>
+                {/* The Home-1 / 1b / 1c / 1d insight card straight from the Figma frame (artwork included), chosen from the
+                    live business state, with the live title and description drawn over the baked text. */}
+                <View onLayout={e => setHomeCardW(Math.round(e.nativeEvent.layout.width))} style={{ borderRadius: 16, overflow: 'hidden', backgroundColor: '#FFFFFF', shadowColor: '#0B1220', shadowOpacity: 0.06, shadowRadius: 10, shadowOffset: { width: 0, height: 2 } }}>
+                  {homeCardW > 0 && (() => {
+                    const C = HOME_CARD_CROP;
+                    const k = homeCardW / C.w;
+                    const stateKey: HomeSegmentKey = homeSegFailed[homeInsight.state] ? 'home1' : homeInsight.state;
+                    const uri = HOME_SEGMENT_URLS[stateKey];
+                    const t = HOME_CARD_TEXT[stateKey];
+                    const patch = (b: { x: number; y: number; w: number; h: number }) => ({ position: 'absolute' as const, left: (b.x - C.x) * k, top: (b.y - C.y) * k, width: b.w * k, height: b.h * k, backgroundColor: t.bg, zIndex: 10 });
+                    return (
+                      <Pressable onPress={insightAction} accessibilityRole="button" accessibilityLabel={`${homeInsight.title}. ${homeInsight.desc}`} style={{ width: homeCardW, height: Math.round(C.h * k) }}>
+                        <ExpoImage source={{ uri }} style={{ position: 'absolute', left: -C.x * k, top: -C.y * k, width: HOME_FRAME_W * k, height: HOME_FRAME_H * k }}
+                          contentFit="fill" cachePolicy="memory-disk" recyclingKey={uri} transition={150}
+                          onError={() => { if (stateKey !== 'home1') setHomeSegFailed(p => ({ ...p, [stateKey]: true })); }} />
+                        <View pointerEvents="none" style={patch(t.title)}>
+                          <Text numberOfLines={t.title.lines} adjustsFontSizeToFit minimumFontScale={0.75} style={{ fontSize: (t.title.lines === 1 ? 17.5 : 18.5) * k, lineHeight: 22 * k, fontWeight: '700', color: '#0E1726' }}>{homeInsight.title}</Text>
+                        </View>
+                        <View pointerEvents="none" style={patch(t.desc)}>
+                          <Text numberOfLines={t.desc.lines} adjustsFontSizeToFit minimumFontScale={0.8} style={{ fontSize: 12 * k, lineHeight: 15 * k, color: '#4B5563' }}>{homeInsight.desc}</Text>
+                        </View>
+                        <Pressable onPress={() => setHomeView(homeInsight.showingAway ? 'now' : 'away')} hitSlop={8} accessibilityRole="button"
+                          accessibilityLabel={homeInsight.showingAway ? 'Show current business state' : 'Show what Nexora did while you were away'}
+                          style={{ position: 'absolute', left: (t.chipX - C.x) * k, top: (186 - C.y) * k, height: 20 * k, paddingHorizontal: 8 * k, borderRadius: 10 * k, backgroundColor: '#EAF1FB', flexDirection: 'row', alignItems: 'center', gap: 4 * k, zIndex: 30 }}>
+                          <Ionicons name="swap-horizontal" size={11 * k} color="#1E56A0" />
+                          <Text style={{ fontSize: 10 * k, fontWeight: '700', color: '#1E56A0' }}>{homeInsight.showingAway ? 'Now' : 'While away'}</Text>
+                        </Pressable>
+                      </Pressable>
+                    );
+                  })()}
+                </View>
+                <View style={panel}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <Text style={{ fontSize: 16, fontWeight: '800', color: '#0B1220' }}>Needs your decision</Text>
+                    {escalations.length > 0 && <Pressable onPress={() => { refreshEscalations().catch(() => {}); setScreen('agendaPriority'); }}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>View all ›</Text></Pressable>}
+                  </View>
+                  {escalations.length === 0 && <Text style={[styles.attentionSubtitle, { marginTop: 10 }]}>Nothing needs you right now. Nexora will flag customers who need a human.</Text>}
+                  {escalations.slice(0, 4).map(e => (
+                    <Pressable key={e.id} onPress={() => { refreshEscalations().catch(() => {}); setScreen('agendaPriority'); }} style={{ flexDirection: 'row', gap: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' }}>
+                      <View style={{ width: 8, height: 8, borderRadius: 4, marginTop: 6, backgroundColor: e.urgency === 'high' ? '#D64545' : e.urgency === 'normal' ? '#C2760C' : '#8A97A6' }} />
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={{ fontSize: 14, fontWeight: '700', color: '#0B1220' }} numberOfLines={1}>{e.customer_name || 'Customer'}</Text>
+                        <Text style={{ fontSize: 12, color: '#5C6B7A' }} numberOfLines={2}>{e.reason}</Text>
+                      </View>
+                    </Pressable>
+                  ))}
+                </View>
+                <View style={panel}>
+                  <Text style={{ fontSize: 16, fontWeight: '800', color: '#0B1220', marginBottom: 10 }}>Quick actions</Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                    {actions.map(a => (
+                      <Pressable key={a.label} onPress={a.onPress} accessibilityRole="button" style={{ flexBasis: '47%', flexGrow: 1, flexDirection: 'row', alignItems: 'center', gap: 8, padding: 10, borderRadius: 12, backgroundColor: '#F4F7FB' }}>
+                        <Ionicons name={a.icon as any} size={16} color="#1E56A0" />
+                        <Text style={{ fontSize: 13, fontWeight: '600', color: '#0B1220' }} numberOfLines={1}>{a.label}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
+              </View>
+            </View>
+          </ScrollView>
+        </View>
+      );
+    }
+    const home1Spots: Hotspot[] = [
+      ...topSpots.filter(sp => sp.label !== 'view-analysis'),
+      // The whole insight card (title, text and its "View ..." link) opens the matching detail.
+      { x: 16, y: 170, w: 361, h: 178, label: `insight-${ins.state}`, onPress: insightAction },
+      // Command center: Train AI, Connect Apps, Leads, More.
+      cmdSpot('Train AI', 67, 405), cmdSpot('Connect Apps', 157.5, 405), cmdSpot('Leads', 248, 405),
+      { x: 287, y: 405, w: 78, h: 100, label: 'More', onPress: () => setHomeCommandExpanded(true) },
+      { x: 300, y: 522, w: 80, h: 30, label: 'attention-view-all', onPress: () => { refreshEscalations().catch(() => {}); setScreen('agendaPriority'); } },
+      { x: 16, y: 575, w: 361, h: 60, label: 'attention-call', onPress: () => setScreen('callSummary') },
+      { x: 16, y: 636, w: 361, h: 60, label: 'attention-images', onPress: () => openMissingImages() },
+      { x: 16, y: 697, w: 361, h: 60, label: 'attention-orders', onPress: () => openOrders('Unshipped') },
+      ...homeNav(0),
+    ];
+    const stateKey: HomeSegmentKey = homeSegFailed[ins.state] ? 'home1' : ins.state;
+    const stateUri = HOME_SEGMENT_URLS[stateKey];
+    return (
+      <View style={[styles.fullScreen, { backgroundColor: '#F5F6F8' }]} onLayout={onRootLayout}>
+        <StatusBar hidden />
+        <ScrollView scrollEnabled={homeFrameHeight > height + 1} showsVerticalScrollIndicator={false} contentContainerStyle={{ width }}>
+          <View style={{ width, height: homeFrameHeight }}>
+            <ExpoImage
+              source={{ uri: stateUri }}
+              style={{ width, height: homeFrameHeight }}
+              contentFit="fill"
+              cachePolicy="memory-disk"
+              recyclingKey={stateUri}
+              transition={150}
+              onError={() => { console.warn('[home] failed to load', stateUri); if (stateKey !== 'home1') setHomeSegFailed(p => ({ ...p, [stateKey]: true })); }}
+            />
+            {(() => {
+              const t = HOME_CARD_TEXT[stateKey];
+              const patch = (b: { x: number; y: number; w: number; h: number }) => ({ position: 'absolute' as const, left: b.x * hs, top: b.y * hs, width: b.w * hs, height: b.h * hs, backgroundColor: t.bg, zIndex: 10 });
+              return (
+                <>
+                  <View pointerEvents="none" style={patch(t.title)}>
+                    <Text numberOfLines={t.title.lines} adjustsFontSizeToFit minimumFontScale={0.75} style={{ fontSize: (t.title.lines === 1 ? 17.5 : 18.5) * hs, lineHeight: 22 * hs, fontWeight: '700', color: '#0E1726' }}>{ins.title}</Text>
+                  </View>
+                  <View pointerEvents="none" style={patch(t.desc)}>
+                    <Text numberOfLines={t.desc.lines} adjustsFontSizeToFit minimumFontScale={0.8} style={{ fontSize: 12 * hs, lineHeight: 15 * hs, color: '#4B5563' }}>{ins.desc}</Text>
+                  </View>
+                  {/* Now / Away toggle for the insight card. */}
+                  <Pressable
+                    onPress={() => setHomeView(ins.showingAway ? 'now' : 'away')}
+                    accessibilityRole="button"
+                    accessibilityLabel={ins.showingAway ? 'Show current business state' : 'Show what Nexora did while you were away'}
+                    hitSlop={8}
+                    style={{ position: 'absolute', left: t.chipX * hs, top: 186 * hs, height: 20 * hs, paddingHorizontal: 8 * hs, borderRadius: 10 * hs, backgroundColor: '#EAF1FB', flexDirection: 'row', alignItems: 'center', gap: 4 * hs, zIndex: 30 }}>
+                    <Ionicons name="swap-horizontal" size={11 * hs} color="#1E56A0" />
+                    <Text style={{ fontSize: 10 * hs, fontWeight: '700', color: '#1E56A0' }}>{ins.showingAway ? 'Now' : 'While away'}</Text>
+                  </Pressable>
+                </>
+              );
+            })()}
+            {renderSpots(home1Spots, hs)}
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
+
+  if (screen === 'orders') {
+    const isUnshipped = (o: OrderRow) => o.status === 'pending' || o.status === 'processing';
+    const isDone = (o: OrderRow) => o.status === 'shipped' || o.status === 'delivered';
+    const unshippedN = orders.filter(isUnshipped).length;
+    const shown = orders.filter(o => (ordersFilter === 'All' ? true : ordersFilter === 'Unshipped' ? isUnshipped(o) : isDone(o)));
+    const pill = (st: OrderRow['status']) => st === 'pending' ? { bg: '#FDF3E1', fg: '#B7791F', label: 'Pending' } : st === 'processing' ? { bg: '#EAF1FB', fg: '#1E56A0', label: 'Processing' } : st === 'shipped' ? { bg: '#E3F6EE', fg: '#1E9E6D', label: 'Shipped' } : st === 'delivered' ? { bg: '#E3F6EE', fg: '#1E9E6D', label: 'Delivered' } : { bg: '#EEF1F4', fg: '#5C6B7A', label: 'Cancelled' };
     return (
       <View style={styles.mainScreen}>
         <StatusBar style="dark" />
-        {renderTopBar()}
-
+        <View style={[styles.knowledgeHeader, headerSafe]}>
+          <Pressable onPress={() => { setMainTab('home'); setScreen('main'); }} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={styles.knowledgeHeaderTitle}>Orders</Text>
+          <Pressable onPress={() => refreshOrders().then(() => flash('Orders refreshed')).catch(() => flash("Couldn't refresh orders."))} hitSlop={8} accessibilityLabel="Refresh"><Ionicons name="refresh-outline" size={22} color="#0B1220" /></Pressable>
+        </View>
         <ScrollView style={styles.homeScroll} contentContainerStyle={styles.homeScrollContent}>
-          <View style={{ width, height: home1VisibleHeight, overflow: 'hidden' }}>
-            <ExpoImage
-              source={{ uri: homeTruthUrl }}
-              style={{ width, height: home1FullHeight, marginTop: -HOME1_TOP_Y * scale }}
-              contentFit="cover"
-              cachePolicy="memory-disk"
-            />
+          <Text style={[styles.attentionSubtitle, { marginBottom: 12 }]}>{unshippedN === 0 ? 'All orders have shipped.' : `${unshippedN} order${unshippedN === 1 ? '' : 's'} haven't shipped yet.`}</Text>
+          <View style={styles.filterRow}>
+            {(['Unshipped', 'Shipped', 'All'] as const).map(f => (
+              <Pressable key={f} onPress={() => setOrdersFilter(f)} style={[styles.filterChip, ordersFilter === f && styles.filterChipActive]}>
+                <Text style={[styles.filterChipText, ordersFilter === f && styles.filterChipTextActive]}>{f} ({f === 'Unshipped' ? unshippedN : f === 'Shipped' ? orders.filter(isDone).length : orders.length})</Text>
+              </Pressable>
+            ))}
+          </View>
+          {shown.length === 0 && <Text style={[styles.attentionSubtitle, { textAlign: 'center', marginTop: 24 }]}>Nothing here.</Text>}
+          {shown.map(o => {
+            const pl = pill(o.status);
+            return (
+              <View key={o.id} style={styles.detailCard}>
+                <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
+                  <View style={styles.attentionTextWrap}>
+                    <Text style={styles.attentionTitle}>{o.customer_name}</Text>
+                    <Text style={styles.attentionSubtitle}>{o.items}</Text>
+                    <Text style={[styles.attentionSubtitle, { marginTop: 2 }]}>${Number(o.total).toFixed(2)}  {'\u00b7'}  {timeAgo(o.created_at)}</Text>
+                  </View>
+                  <View style={{ backgroundColor: pl.bg, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 4 }}><Text style={{ color: pl.fg, fontSize: 11, fontWeight: '700' }}>{pl.label}</Text></View>
+                </View>
+                {(o.status === 'pending' || o.status === 'processing' || o.status === 'shipped') && (
+                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                    {o.status === 'pending' && (
+                      <Pressable onPress={() => setOrderStatus(o, 'processing')} style={[styles.resetButton, { flex: 1, minHeight: 38, borderWidth: 1, borderColor: '#5381BB' }]}><Text style={[styles.resetButtonText, { color: '#1E56A0', fontSize: 13 }]}>Start processing</Text></Pressable>
+                    )}
+                    {(o.status === 'pending' || o.status === 'processing') && (
+                      <Pressable onPress={() => setOrderStatus(o, 'shipped')} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1, minHeight: 38 }]}><Text style={[styles.resetButtonText, { fontSize: 13 }]}>Mark shipped</Text></Pressable>
+                    )}
+                    {o.status === 'shipped' && (
+                      <Pressable onPress={() => setOrderStatus(o, 'delivered')} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1, minHeight: 38 }]}><Text style={[styles.resetButtonText, { fontSize: 13 }]}>Mark delivered</Text></Pressable>
+                    )}
+                  </View>
+                )}
+              </View>
+            );
+          })}
+          <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); sendChatMessage("Which orders haven't shipped yet? Summarise them and tell me which to prioritise."); }} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 8, flexDirection: 'row', gap: 8 }]}>
+            <Ionicons name="sparkles" size={16} color="#FFF" /><Text style={styles.resetButtonText}>Ask Nexora about these orders</Text>
+          </Pressable>
+        </ScrollView>
+      </View>
+    );
+  }
 
-            {/* search bar */}
-            <Pressable
-              onPress={() => setMainTab('brain')}
-              style={{ position: 'absolute', left: x(16), top: y(102), width: x(361), height: y(149) - y(102) }}
-            />
+  if (screen === 'missingImages') {
+    const missing = KNOWLEDGE_CATEGORIES.filter(k => k === 'products' || k === 'services').flatMap(k => knowledgeData[k].items.filter(i => !i.image).map(i => ({ cat: k, item: i })));
+    return (
+      <View style={styles.mainScreen}>
+        <StatusBar style="dark" />
+        <View style={[styles.knowledgeHeader, headerSafe]}>
+          <Pressable onPress={() => { setMainTab('home'); setScreen('main'); }} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={styles.knowledgeHeaderTitle}>Images required</Text>
+          <View style={{ width: 24 }} />
+        </View>
+        <ScrollView style={styles.homeScroll} contentContainerStyle={styles.homeScrollContent}>
+          <Text style={[styles.attentionSubtitle, { marginBottom: 12 }]}>{missing.length === 0 ? 'Every product and service has an image.' : `${missing.length} item${missing.length === 1 ? '' : 's'} need an image. Photos help Nexora show the right thing to customers.`}</Text>
+          {missing.map(({ cat, item }) => (
+            <Pressable key={item.id} onPress={() => openItemDetail(cat, item.id)} style={styles.knowledgeRow}>
+              <View style={[styles.knowledgeRowIcon, { backgroundColor: item.iconBg }]}><KnowledgeIcon name={item.icon} size={18} color={item.iconColor} /></View>
+              <View style={styles.attentionTextWrap}>
+                <Text style={styles.attentionTitle}>{item.name}</Text>
+                <Text style={styles.attentionSubtitle} numberOfLines={1}>{item.subtitle || (cat === 'products' ? 'Product' : 'Service')}</Text>
+              </View>
+              <Pressable disabled={busyItemId === item.id} onPress={() => addImageToItem(item)} style={styles.attentionButton} accessibilityLabel={`Add image for ${item.name}`}>
+                {busyItemId === item.id ? <ActivityIndicator size="small" color="#1E56A0" /> : <Text style={styles.attentionButtonText}>Add image</Text>}
+              </Pressable>
+            </Pressable>
+          ))}
+          <Pressable onPress={() => setScreen('knowledgeHealth')} style={[styles.resetButton, { marginTop: 16, borderWidth: 1, borderColor: '#5381BB' }]}><Text style={[styles.resetButtonText, { color: '#1E56A0' }]}>Back to Train AI</Text></Pressable>
+        </ScrollView>
+      </View>
+    );
+  }
 
-            {/* "View recommendations" link */}
-            <Pressable
-              onPress={() => setMainTab('brain')}
-              style={{ position: 'absolute', left: x(16), top: y(302), width: x(184), height: y(345) - y(302) }}
-            />
-
-            {/* AI Command Center — 4 columns, 1 row collapsed / 2 rows expanded */}
-            {commandItems.map((label, i) => {
-              const row = Math.floor(i / 4), col = i % 4;
-              const rowTop = row === 0 ? 422 : 537, rowBottom = row === 0 ? 511 : 626;
+  if (screen === 'agenda') {
+    const dow = (new Date(`${agendaDate}T12:00:00`).getDay() + 6) % 7;
+    const weekStart = addDaysIso(agendaDate, -dow);
+    const days = Array.from({ length: 7 }, (_, i) => addDaysIso(weekStart, i));
+    const live = agendaEvents.filter(e => e.status !== 'cancelled');
+    const dayEvents = live.filter(e => e.event_date === agendaDate).sort((a, b) => (toMinutes(a.start_time) ?? 0) - (toMinutes(b.start_time) ?? 0));
+    const monthLabel = new Date(`${agendaDate}T12:00:00`).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    const priorityN = getPriorityActions().length + escalations.length;
+    const today = localIsoDate();
+    return (
+      <View style={styles.mainScreen}>
+        <StatusBar style="dark" />
+        <View style={[styles.knowledgeHeader, headerSafe]}>
+          <Pressable onPress={() => { setMainTab('home'); setScreen('main'); }} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={styles.knowledgeHeaderTitle}>Schedule</Text>
+          <Pressable onPress={() => openAgendaCreate()} hitSlop={8} accessibilityLabel="Create schedule" style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: '#0B1220', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="add" size={20} color="#FFF" /></Pressable>
+        </View>
+        <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40 }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <Pressable onPress={() => setAgendaDate(addDaysIso(agendaDate, -7))} hitSlop={10} accessibilityLabel="Previous week"><Ionicons name="chevron-back" size={20} color="#0B1220" /></Pressable>
+            <Pressable onPress={() => setAgendaDate(today)}><Text style={styles.attentionTitle}>{monthLabel}</Text></Pressable>
+            <Pressable onPress={() => setAgendaDate(addDaysIso(agendaDate, 7))} hitSlop={10} accessibilityLabel="Next week"><Ionicons name="chevron-forward" size={20} color="#0B1220" /></Pressable>
+          </View>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 16 }}>
+            {days.map(d => {
+              const sel = d === agendaDate;
+              const n = live.filter(e => e.event_date === d).length;
               return (
-                <Pressable
-                  key={label}
-                  onPress={() => label === 'More' ? setHomeCommandExpanded(true) : handleCommandCenterPress(label)}
-                  style={{
-                    position: 'absolute',
-                    left: x(16 + col * 90.25),
-                    top: y(rowTop),
-                    width: x(90.25),
-                    height: y(rowBottom) - y(rowTop),
-                  }}
-                />
+                <Pressable key={d} onPress={() => setAgendaDate(d)} style={{ alignItems: 'center', width: 44, paddingVertical: 8, borderRadius: 14, backgroundColor: sel ? '#0B1220' : '#FFF', borderWidth: 1, borderColor: d === today && !sel ? '#1E56A0' : '#E7EAEC' }}>
+                  <Text style={{ fontSize: 11, color: sel ? '#C9D3E0' : '#8A97A6' }}>{new Date(`${d}T12:00:00`).toLocaleDateString('en-US', { weekday: 'short' })}</Text>
+                  <Text style={{ fontSize: 16, fontWeight: '700', color: sel ? '#FFF' : '#0B1220', marginTop: 2 }}>{Number(d.slice(8))}</Text>
+                  <View style={{ width: 5, height: 5, borderRadius: 3, marginTop: 4, backgroundColor: n > 0 ? (sel ? '#FFF' : '#1E56A0') : 'transparent' }} />
+                </Pressable>
               );
             })}
           </View>
-
-          <View style={styles.sectionHeaderRow}>
-            <Text style={styles.sectionLabel}>Need Your Attention</Text>
-            <Text style={styles.sectionViewAll}>View All ›</Text>
-          </View>
-          <View style={styles.attentionCard}>
-            {/* NEW: truth screen (Home-1) shows this as the first "Need
-                Your Attention" item — it was missing entirely from the
-                Home screen's own attention list (a different item already
-                covers the phone-icon slot on the AI Brain Train dashboard's
-                version of this section, but Home's own list never had it). */}
-            <View style={styles.attentionItem}>
-              <View style={styles.attentionIconWrap}>
-                <View style={[styles.attentionCountBadge, { backgroundColor: '#D64545' }]}><Text style={styles.attentionCountBadgeText}>8</Text></View>
-                <View style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: '#FBE7E7', alignItems: 'center', justifyContent: 'center' }}>
-                  <Ionicons name="call" size={16} color="#D64545" />
+          <Pressable onPress={() => setScreen('agendaPriority')} style={[styles.detailCard, { flexDirection: 'row', alignItems: 'center', gap: 12 }]} accessibilityRole="button">
+            <View style={[styles.knowledgeRowIcon, { backgroundColor: priorityN ? '#FDF3E1' : '#E3F6EE' }]}><Ionicons name={priorityN ? 'flash-outline' : 'checkmark-circle-outline'} size={18} color={priorityN ? '#B7791F' : '#1E9E6D'} /></View>
+            <View style={styles.attentionTextWrap}>
+              <Text style={styles.attentionTitle}>{priorityN ? `${priorityN} priority action${priorityN === 1 ? '' : 's'}` : 'No priority actions'}</Text>
+              <Text style={styles.attentionSubtitle}>{priorityN ? 'Conflicts, overdue items and things Nexora flagged' : "You're all caught up"}</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color="#8A97A6" />
+          </Pressable>
+          <Text style={[styles.sectionLabel, { marginTop: 8 }]}>{agendaDate === today ? 'Today' : niceDate(agendaDate)}</Text>
+          {dayEvents.length === 0 && (
+            <View style={[styles.detailCard, { alignItems: 'center' }]}>
+              <Text style={styles.attentionSubtitle}>Nothing scheduled.</Text>
+              <Pressable onPress={() => openAgendaCreate()} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 12, paddingHorizontal: 24 }]}><Text style={styles.resetButtonText}>Add event</Text></Pressable>
+            </View>
+          )}
+          {dayEvents.map(e => {
+            const done = e.status === 'completed';
+            return (
+              <View key={e.id} style={styles.detailCard}>
+                <View style={{ flexDirection: 'row', gap: 12 }}>
+                  <View style={{ width: 64 }}>
+                    <Text style={{ fontSize: 13, fontWeight: '700', color: '#0B1220' }}>{e.start_time}</Text>
+                    <Text style={{ fontSize: 11, color: '#8A97A6' }}>{e.end_time}</Text>
+                  </View>
+                  <View style={styles.attentionTextWrap}>
+                    <Text style={[styles.attentionTitle, done && { textDecorationLine: 'line-through', color: '#8A97A6' }]}>{e.title}</Text>
+                    {!!e.with_whom && <Text style={styles.attentionSubtitle}>{e.with_whom}</Text>}
+                    <View style={{ flexDirection: 'row', gap: 6, marginTop: 6 }}>
+                      <View style={{ backgroundColor: '#EAF1FB', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 2 }}><Text style={{ fontSize: 10, color: '#1E56A0', fontWeight: '700' }}>{e.event_type === 'follow_up' ? 'Follow-up' : e.event_type === 'task' ? 'Task' : 'Meeting'}</Text></View>
+                      {e.created_by === 'ai' && <View style={{ backgroundColor: '#F1EAFB', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 2 }}><Text style={{ fontSize: 10, color: '#6B3FA0', fontWeight: '700' }}>Booked by Nexora</Text></View>}
+                    </View>
+                    {!!e.notes && <Text style={[styles.attentionSubtitle, { marginTop: 6 }]}>{e.notes}</Text>}
+                  </View>
+                </View>
+                <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 18, marginTop: 10 }}>
+                  <Pressable onPress={() => setEventStatus(e, done ? 'scheduled' : 'completed')} hitSlop={8} accessibilityLabel={done ? 'Mark not done' : 'Mark done'}><Ionicons name={done ? 'checkmark-circle' : 'checkmark-circle-outline'} size={22} color={done ? '#1E9E6D' : '#5C6B7A'} /></Pressable>
+                  <Pressable onPress={() => openAgendaEdit(e)} hitSlop={8} accessibilityLabel="Edit event"><Ionicons name="create-outline" size={22} color="#5C6B7A" /></Pressable>
+                  <Pressable onPress={() => deleteAgendaEvent(e)} hitSlop={8} accessibilityLabel="Delete event"><Ionicons name="trash-outline" size={22} color="#D64545" /></Pressable>
                 </View>
               </View>
+            );
+          })}
+          <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); sendChatMessage(`What is on my schedule for ${agendaDate === today ? 'today' : niceDate(agendaDate)}, and what should I prioritise?`); }} style={[styles.resetButton, { marginTop: 8, flexDirection: 'row', gap: 8, borderWidth: 1, borderColor: '#5381BB' }]}>
+            <Ionicons name="sparkles" size={16} color="#1E56A0" /><Text style={[styles.resetButtonText, { color: '#1E56A0' }]}>Ask Nexora to plan this day</Text>
+          </Pressable>
+        </ScrollView>
+      </View>
+    );
+  }
+
+  if (screen === 'agendaPriority') {
+    const actions = getPriorityActions();
+    return (
+      <View style={styles.mainScreen}>
+        <StatusBar style="dark" />
+        <View style={[styles.knowledgeHeader, headerSafe]}>
+          <Pressable onPress={() => (NATIVE_SCHEDULE ? setScreen('agenda') : goTab('home'))} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={styles.knowledgeHeaderTitle}>Priority actions</Text>
+          <Pressable onPress={() => (NATIVE_SCHEDULE ? openAgendaCreate() : openCreateSchedule())} hitSlop={8} accessibilityLabel="Create schedule"><Ionicons name="add-circle-outline" size={24} color="#0B1220" /></Pressable>
+        </View>
+        <ScrollView style={styles.homeScroll} contentContainerStyle={styles.homeScrollContent}>
+          {renderAutonomyCard()}
+          {!alertCfg?.phone_verified && (
+            <Pressable onPress={() => openOwnerAlerts(() => setScreen('agendaPriority'))} accessibilityRole="button" style={[styles.detailCard, { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#EAF1FB' }]}>
+              <Ionicons name="call-outline" size={22} color="#1E56A0" />
               <View style={styles.attentionTextWrap}>
-                <Text style={styles.attentionTitle}>Nexora AI called you</Text>
-                <Text style={styles.attentionSubtitle}>Blue variant of headphone requested</Text>
+                <Text style={styles.attentionTitle}>Let Nexora call you</Text>
+                <Text style={styles.attentionSubtitle}>When something here needs you and you haven't seen it, Nexora phones you. Press 1 on the call and it stops.</Text>
               </View>
-              <Pressable onPress={() => { setMainTab('brain'); sendChatMessage('Tell me about the call regarding the blue headphone variant'); }} style={[styles.attentionButton, { backgroundColor: '#FBE7E7' }]}>
-                <Text style={[styles.attentionButtonText, { color: '#D64545' }]}>Review orders</Text>
-              </Pressable>
+              <Ionicons name="chevron-forward" size={16} color="#8A97A6" />
+            </Pressable>
+          )}
+          {escalations.length > 0 && <Text style={styles.sectionLabel}>Needs your decision</Text>}
+          {escalations.map(x => (
+            <View key={x.id} style={styles.detailCard}>
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <Ionicons name="hand-left-outline" size={20} color={x.urgency === 'high' ? '#D64545' : '#E5A63A'} />
+                <View style={styles.attentionTextWrap}>
+                  <Text style={styles.attentionTitle}>{x.customer_name || 'Nexora needs you'}{x.channel ? ` \u00b7 ${x.channel}` : ''}</Text>
+                  <Text style={styles.attentionSubtitle}>{x.reason}</Text>
+                  <Text style={[styles.attentionSubtitle, { marginTop: 2 }]}>{timeAgo(x.created_at)}</Text>
+                  {!!escAlerts[x.id] && !!alertStatusText(escAlerts[x.id]) && (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6 }}>
+                      <Ionicons name={escAlerts[x.id].acknowledged_at ? 'checkmark-circle' : escAlerts[x.id].last_channel === 'call' ? 'call' : escAlerts[x.id].last_channel === 'sms' ? 'chatbox-ellipses' : 'mail'} size={13} color={escAlerts[x.id].acknowledged_at ? '#1E9E6D' : '#5C6B7A'} />
+                      <Text style={{ fontSize: 12, color: '#5C6B7A', flex: 1 }}>{alertStatusText(escAlerts[x.id])}</Text>
+                    </View>
+                  )}
+                  {!!escAlerts[x.id]?.response && !/^On it|^Remind|^Marked/.test(escAlerts[x.id].response) && (
+                    <Pressable onPress={() => openDecide(x, escAlerts[x.id].response)} accessibilityRole="button" style={{ marginTop: 6, backgroundColor: '#F3F6FA', borderRadius: 8, padding: 8 }}>
+                      <Text style={{ fontSize: 13, color: '#0B1220' }}>{`You said on the phone: \u201c${escAlerts[x.id].response}\u201d`}</Text>
+                      <Text style={{ fontSize: 12, color: '#1E56A0', fontWeight: '700', marginTop: 4 }}>Let Nexora carry it out \u203a</Text>
+                    </Pressable>
+                  )}
+                </View>
+              </View>
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
+                <Pressable onPress={() => startLiveCall(x)} accessibilityLabel="Hear it from Nexora" style={[styles.resetButton, { minHeight: 36, width: 44, borderWidth: 1, borderColor: '#5381BB' }]}><Ionicons name="call" size={16} color="#1E56A0" /></Pressable>
+                {!escAlerts[x.id]?.acknowledged_at && <Pressable onPress={() => ackEscalation(x.id)} style={[styles.resetButton, { flex: 1, minHeight: 36, borderWidth: 1, borderColor: '#D5DEE8' }]}><Text style={[styles.resetButtonText, { color: '#0B1220', fontSize: 13 }]}>I'm on it</Text></Pressable>}
+                {!!x.customer_name && <Pressable onPress={() => { const c = conversations.find(cv => cv.name === x.customer_name); if (c) { setActiveConversationId(c.id); setScreen('inboxChat'); } else { setMainTab('inbox'); setScreen('main'); } }} style={[styles.resetButton, { flex: 1, minHeight: 36, borderWidth: 1, borderColor: '#5381BB' }]}><Text style={[styles.resetButtonText, { color: '#1E56A0', fontSize: 13 }]}>Open chat</Text></Pressable>}
+                <Pressable onPress={() => openDecide(x)} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1, minHeight: 36 }]}><Text style={[styles.resetButtonText, { fontSize: 13 }]}>Decide</Text></Pressable>
+              </View>
             </View>
-            <View style={styles.attentionItem}>
-              <View style={styles.attentionIconWrap}>
-                <View style={styles.attentionCountBadge}><Text style={styles.attentionCountBadgeText}>5</Text></View>
-                {/* FIX: truth uses the filled "image" glyph, not the
-                    thin-line outline variant. */}
-                <Ionicons name="image" size={18} color="#1E56A0" />
-              </View>
+          ))}
+          {actions.length > 0 && <Text style={[styles.sectionLabel, { marginTop: 8 }]}>Schedule</Text>}
+          {actions.map(a => (
+            <View key={a.id} style={[styles.detailCard, { flexDirection: 'row', alignItems: 'center', gap: 12 }]}>
+              <Ionicons name={a.icon as any} size={22} color={a.color} />
               <View style={styles.attentionTextWrap}>
-                <Text style={styles.attentionTitle}>Images required for 5 items</Text>
-                <Text style={styles.attentionSubtitle}>Add images to improve products discovery</Text>
+                <Text style={styles.attentionTitle}>{a.title}</Text>
+                <Text style={styles.attentionSubtitle}>{a.subtitle}</Text>
               </View>
-              <Pressable onPress={() => { setMainTab('brain'); sendChatMessage('Which 5 items need images?'); }} style={styles.attentionButton}>
-                <Text style={styles.attentionButtonText}>Fix now</Text>
-              </Pressable>
+              <Pressable onPress={a.onPress} style={styles.attentionButton}><Text style={styles.attentionButtonText}>{a.cta}</Text></Pressable>
             </View>
-            <View style={styles.attentionItem}>
-              {/* FIX: truth themes this whole item orange, not blue — the
-                  icon color was already orange, but the box background and
-                  the count badge were both left on the shared blue style,
-                  and the icon itself was a plain cube instead of the
-                  truck+clock illustration truth actually shows (extracted
-                  as its own asset — see 'orders-shipping-icon' above,
-                  a separately-colored export of the same illustration used
-                  for the blue "delivery-icon" elsewhere). */}
-              <View style={[styles.attentionIconWrap, { backgroundColor: '#FBE7D6' }]}>
-                <View style={[styles.attentionCountBadge, { backgroundColor: '#C2760C' }]}><Text style={styles.attentionCountBadgeText}>8</Text></View>
-                <KnowledgeIcon name="img:orders-shipping-icon" size={18} color="#C2760C" />
-              </View>
-              <View style={styles.attentionTextWrap}>
-                <Text style={styles.attentionTitle}>8 Orders hasn't shipped</Text>
-                <Text style={styles.attentionSubtitle}>Some orders are pending shipment</Text>
-              </View>
-              <Pressable onPress={() => { setMainTab('brain'); sendChatMessage('Show me the 8 orders that haven\'t shipped'); }} style={styles.attentionButton}>
-                <Text style={styles.attentionButtonText}>Review orders</Text>
+          ))}
+          {actions.length === 0 && escalations.length === 0 && (
+            <View style={[styles.detailCard, { alignItems: 'center' }]}>
+              <Ionicons name="checkmark-circle" size={32} color="#1E9E6D" />
+              <Text style={[styles.attentionTitle, { marginTop: 8 }]}>You're all caught up</Text>
+              <Text style={styles.attentionSubtitle}>No conflicts, overdue items or flagged customers.</Text>
+            </View>
+          )}
+        </ScrollView>
+        {renderDecideSheet()}
+      </View>
+    );
+  }
+
+  if (screen === 'agendaCreate') {
+    const f = agendaForm;
+    const setF = (patch: Partial<typeof f>) => { setAgendaConflict(null); setAgendaForm(prev => ({ ...prev, ...patch })); };
+    const startMin = toMinutes(f.time) ?? 600;
+    const busy = (slot: string) => { const m = toMinutes(slot) ?? 0; return agendaEvents.some(x => x.id !== f.id && x.event_date === f.date && x.status !== 'cancelled' && m < eventEnd(x) && m + f.duration > (toMinutes(x.start_time) ?? 0)); };
+    const today = localIsoDate();
+    const types: { k: AgendaEvent['event_type']; label: string; icon: string }[] = [
+      { k: 'follow_up', label: 'Follow-up', icon: 'chatbubble-outline' },
+      { k: 'meeting', label: 'Meeting', icon: 'people-outline' },
+      { k: 'task', label: 'Task', icon: 'checkbox-outline' },
+    ];
+    return (
+      <View style={styles.mainScreen}>
+        <StatusBar style="dark" />
+        <View style={[styles.knowledgeHeader, headerSafe]}>
+          <Pressable onPress={() => { setAgendaConflict(null); setScreen('agenda'); }} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={styles.knowledgeHeaderTitle}>{f.id ? 'Edit event' : 'Create schedule'}</Text>
+          <View style={{ width: 24 }} />
+        </View>
+        <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40 }]} keyboardShouldPersistTaps="handled">
+          <View style={{ flexDirection: 'row', gap: 10, marginBottom: 16 }}>
+            {types.map(t => (
+              <Pressable key={t.k} onPress={() => setF({ type: t.k })} style={{ flex: 1, alignItems: 'center', paddingVertical: 12, borderRadius: 14, borderWidth: 1, borderColor: f.type === t.k ? '#1E56A0' : '#E7EAEC', backgroundColor: f.type === t.k ? '#EAF1FB' : '#FFF' }}>
+                <Ionicons name={t.icon as any} size={20} color={f.type === t.k ? '#1E56A0' : '#5C6B7A'} />
+                <Text style={{ marginTop: 4, fontSize: 12, fontWeight: '700', color: f.type === t.k ? '#1E56A0' : '#5C6B7A' }}>{t.label}</Text>
               </Pressable>
+            ))}
+          </View>
+          <View style={styles.detailCard}>
+            <Text style={styles.detailFieldLabel}>Title</Text>
+            <TextInput value={f.title} onChangeText={v => setF({ title: v })} placeholder="e.g. Product demo" placeholderTextColor="#A5AFBB" style={[styles.editInput, { marginBottom: 14 }]} />
+            <Text style={styles.detailFieldLabel}>Customer / with</Text>
+            <TextInput value={f.withWhom} onChangeText={v => setF({ withWhom: v })} placeholder="Customer or team member" placeholderTextColor="#A5AFBB" autoCapitalize="words" style={styles.editInput} />
+          </View>
+          <View style={styles.detailCard}>
+            <Text style={styles.detailFieldLabel}>Date</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginVertical: 8 }}>
+              <Pressable onPress={() => setF({ date: addDaysIso(f.date, -1) })} hitSlop={10} accessibilityLabel="Previous day"><Ionicons name="chevron-back-circle-outline" size={26} color="#1E56A0" /></Pressable>
+              <Text style={styles.attentionTitle}>{niceDate(f.date)}</Text>
+              <Pressable onPress={() => setF({ date: addDaysIso(f.date, 1) })} hitSlop={10} accessibilityLabel="Next day"><Ionicons name="chevron-forward-circle-outline" size={26} color="#1E56A0" /></Pressable>
+            </View>
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              {[{ l: 'Today', d: today }, { l: 'Tomorrow', d: addDaysIso(today, 1) }, { l: 'Next week', d: addDaysIso(today, 7) }].map(q => (
+                <Pressable key={q.l} onPress={() => setF({ date: q.d })} style={[styles.filterChip, f.date === q.d && styles.filterChipActive]}><Text style={[styles.filterChipText, f.date === q.d && styles.filterChipTextActive]}>{q.l}</Text></Pressable>
+              ))}
             </View>
           </View>
-
-          <View style={styles.sectionHeaderRow}>
-            <Text style={styles.sectionLabel}>Business Overview</Text>
-            <View style={styles.monthChip}>
-              <Text style={styles.monthChipText}>This month</Text>
-              <Ionicons name="chevron-down" size={14} color="#5C6B7A" />
+          <View style={styles.detailCard}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Text style={styles.detailFieldLabel}>Time</Text>
+              <Pressable onPress={() => { const sl = freeSlotsFor(f.date, f.duration, f.id); if (sl.length) { setF({ time: sl[0] }); flash(`Best free time: ${sl[0]}`); } else flash('No free slots between 9 AM and 5 PM that day.'); }} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }} accessibilityLabel="Suggest best time">
+                <Ionicons name="sparkles" size={14} color="#1E56A0" /><Text style={styles.insightLink}>Suggest best time</Text>
+              </Pressable>
             </View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginVertical: 10 }} contentContainerStyle={{ gap: 8 }}>
+              {TIME_SLOTS.map(slot => {
+                const sel = slot === fmtMinutes(startMin);
+                const isBusy = busy(slot);
+                return (
+                  <Pressable key={slot} onPress={() => setF({ time: slot })} style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: sel ? '#0B1220' : '#E7EAEC', backgroundColor: sel ? '#0B1220' : isBusy ? '#F3F4F6' : '#FFF' }}>
+                    <Text style={{ fontSize: 12, fontWeight: '600', color: sel ? '#FFF' : isBusy ? '#A5AFBB' : '#0B1220' }}>{slot}</Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+            <Text style={styles.detailFieldLabel}>Duration</Text>
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+              {[30, 60, 90, 120].map(m => (
+                <Pressable key={m} onPress={() => setF({ duration: m })} style={[styles.filterChip, f.duration === m && styles.filterChipActive]}><Text style={[styles.filterChipText, f.duration === m && styles.filterChipTextActive]}>{m < 60 ? `${m} min` : m === 60 ? '1 hr' : m === 90 ? '1.5 hr' : '2 hr'}</Text></Pressable>
+              ))}
+            </View>
+            <Text style={[styles.attentionSubtitle, { marginTop: 10 }]}>{fmtMinutes(startMin)} - {fmtMinutes(startMin + f.duration)}</Text>
+          </View>
+          <View style={styles.detailCard}>
+            <Text style={styles.detailFieldLabel}>Notes</Text>
+            <TextInput value={f.notes} onChangeText={v => setF({ notes: v })} placeholder="Add details (optional)" placeholderTextColor="#A5AFBB" multiline style={[styles.editInput, { height: 90, paddingTop: 12, textAlignVertical: 'top' }]} />
+          </View>
+          {agendaConflict && (
+            <View style={[styles.detailCard, { borderWidth: 1, borderColor: '#F0C36D', backgroundColor: '#FFF9EC' }]}>
+              <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                <Ionicons name="warning" size={20} color="#E5A63A" />
+                <Text style={styles.attentionTitle}>Time conflict</Text>
+              </View>
+              <Text style={[styles.attentionSubtitle, { marginTop: 6 }]}>{fmtMinutes(startMin)} overlaps with {agendaConflict.titles.join(', ')}.</Text>
+              {agendaConflict.suggested.length > 0 && <Text style={[styles.attentionSubtitle, { marginTop: 6 }]}>Free that day: {agendaConflict.suggested.join(', ')}</Text>}
+              <View style={{ gap: 10, marginTop: 12 }}>
+                {agendaConflict.suggested.length > 0 && (
+                  <Pressable disabled={savingAgenda} onPress={() => saveAgendaEvent({ time: agendaConflict.suggested[0] })} style={[styles.resetButton, styles.resetButtonEnabled]}><Text style={styles.resetButtonText}>Reschedule to {agendaConflict.suggested[0]}</Text></Pressable>
+                )}
+                <Pressable disabled={savingAgenda} onPress={() => saveAgendaEvent({ force: true })} style={[styles.resetButton, { borderWidth: 1, borderColor: '#5381BB' }]}><Text style={[styles.resetButtonText, { color: '#1E56A0' }]}>Keep original time</Text></Pressable>
+                <Pressable onPress={() => { setAgendaDate(f.date); setAgendaConflict(null); setScreen('agenda'); }} style={[styles.resetButton, { borderWidth: 1, borderColor: '#D8DCE1' }]}><Text style={[styles.resetButtonText, { color: '#5C6B7A' }]}>View calendar</Text></Pressable>
+              </View>
+            </View>
+          )}
+          <View style={{ flexDirection: 'row', gap: 12, marginTop: 4 }}>
+            <Pressable onPress={() => { setAgendaConflict(null); setScreen('agenda'); }} style={[styles.resetButton, { flex: 1, borderWidth: 1, borderColor: '#5381BB' }]}><Text style={[styles.resetButtonText, { color: '#1E56A0' }]}>Cancel</Text></Pressable>
+            <Pressable disabled={savingAgenda} onPress={() => saveAgendaEvent()} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1 }]}>
+              {savingAgenda ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>{f.id ? 'Save' : 'Schedule'}</Text>}
+            </Pressable>
           </View>
         </ScrollView>
-
-        {renderBottomNav()}
       </View>
     );
   }
 
   if (screen === 'knowledgeHealth') {
-    const cat = KNOWLEDGE_DATA;
+    const cat = knowledgeData;
+    const allItems = KNOWLEDGE_CATEGORIES.flatMap(k => cat[k].items);
+    const totalItems = allItems.length;
+    const verifiedN = allItems.filter(i => i.status === 'Verified').length;
+    const reviewN = allItems.filter(i => i.status === 'Need review').length;
+    const draftN = totalItems - verifiedN - reviewN;
+    const vShare = totalItems ? verifiedN / totalItems : 0;
+    const rShare = totalItems ? reviewN / totalItems : 0;
+    const sharePct = (n: number) => (totalItems ? Math.round((n / totalItems) * 100) : 0);
+    const healthPct = sharePct(verifiedN);
+    const imagesMissing = [...cat.products.items, ...cat.services.items].filter(i => !i.image).length;
+    const healthLabel = !totalItems ? 'No data' : healthPct >= 80 ? 'Healthy' : healthPct >= 50 ? 'Fair' : 'Needs work';
+    const healthColor = !totalItems ? '#8A97A6' : healthPct >= 80 ? GAUGE_GREEN : healthPct >= 50 ? GAUGE_ORANGE : GAUGE_RED;
+    const healthIcon = !totalItems ? 'shield-outline' : healthPct >= 80 ? 'shield-checkmark' : healthPct >= 50 ? 'shield-half' : 'alert-circle';
     // Figma's dashboard only surfaces 4 categories in this grid (no FAQs
     // tile) — FAQs is still a real category, just reached via "View All"
     // rather than the main grid, same as the truth screen.
@@ -2127,33 +8718,22 @@ export default function HomeScreen(){
 
           <View style={styles.gaugeCard}>
             <View style={styles.gaugeTitleRow}>
-              <View style={styles.gaugeShieldIcon}>
-                <Ionicons name="shield-checkmark" size={14} color="#1E9E6D" />
+              {/* Live symbol: tick when healthy, warning when fair, alert when it needs work. */}
+              <View style={[styles.gaugeShieldIcon, { backgroundColor: `${healthColor}1F` }]}>
+                <Ionicons name={healthIcon as any} size={14} color={healthColor} />
               </View>
               <Text style={styles.gaugeTitleText}>Knowledge Health</Text>
             </View>
             <View style={styles.gaugeRow}>
-              {gaugeImageFailed ? (
-                <View style={styles.gaugeArcWrap}>
-                  {Array.from({ length: 18 }).map((_, i) => {
-                    const t = i / 17;
-                    const angle = -90 + t * 180;
-                    const color = t < 0.72 ? '#1E9E6D' : t < 0.85 ? '#E5A63A' : '#D64545';
-                    return (
-                      <View
-                        key={i}
-                        style={[
-                          styles.gaugeTick,
-                          { backgroundColor: color, transform: [{ rotate: `${angle}deg` }, { translateY: -54 }] },
-                        ]}
-                      />
-                    );
-                  })}
-                  <View style={styles.gaugeCenterText}>
-                    <Text style={styles.gaugePercent}>80%</Text>
-                    <Text style={styles.gaugeLabel}>Healthy</Text>
-                  </View>
-                </View>
+              {(gaugeImageFailed || !USE_STATIC_GAUGE_IMAGE) ? (
+                <HealthGauge
+                  verified={vShare}
+                  review={rShare}
+                  empty={totalItems === 0}
+                  pct={totalItems ? `${healthPct}%` : '\u2014'}
+                  label={healthLabel}
+                  labelColor={healthColor}
+                />
               ) : (
                 <ExpoImage
                   source={{ uri: KNOWLEDGE_HEALTH_GAUGE_URL }}
@@ -2167,9 +8747,9 @@ export default function HomeScreen(){
                 />
               )}
               <View style={styles.gaugeLegend}>
-                <View style={styles.gaugeLegendRow}><View style={[styles.gaugeDot, { backgroundColor: '#1E9E6D' }]} /><Text style={styles.gaugeLegendText}>80%</Text></View>
-                <View style={styles.gaugeLegendRow}><View style={[styles.gaugeDot, { backgroundColor: '#E5A63A' }]} /><Text style={styles.gaugeLegendText}>15%</Text></View>
-                <View style={styles.gaugeLegendRow}><View style={[styles.gaugeDot, { backgroundColor: '#D64545' }]} /><Text style={styles.gaugeLegendText}>5%</Text></View>
+                <View style={styles.gaugeLegendRow}><View style={[styles.gaugeDot, { backgroundColor: GAUGE_GREEN }]} /><Text style={styles.gaugeLegendText}>{sharePct(verifiedN)}%</Text></View>
+                <View style={styles.gaugeLegendRow}><View style={[styles.gaugeDot, { backgroundColor: GAUGE_ORANGE }]} /><Text style={styles.gaugeLegendText}>{sharePct(reviewN)}%</Text></View>
+                <View style={styles.gaugeLegendRow}><View style={[styles.gaugeDot, { backgroundColor: GAUGE_RED }]} /><Text style={styles.gaugeLegendText}>{sharePct(draftN)}%</Text></View>
               </View>
             </View>
             <View style={styles.statsRow}>
@@ -2185,18 +8765,133 @@ export default function HomeScreen(){
                   <Ionicons name="document-text-outline" size={16} color="#1E56A0" />
                 </View>
                 <Text style={styles.statLabel}>Documents</Text>
-                <Text style={styles.statValue}>1,223</Text>
-                <View style={styles.statDeltaPill}><Ionicons name="arrow-up" size={10} color="#1E9E6D" /><Text style={styles.statDeltaText}>19% vs Last month</Text></View>
+                <Text style={styles.statValue}>{docStats.count}</Text>
               </View>
               <View style={styles.statBoxCard}>
                 <View style={styles.statIconCirclePurple}>
                   <KnowledgeIcon name="mci:database-outline" size={16} color="#7C3AED" />
                 </View>
                 <Text style={styles.statLabel}>Storage</Text>
-                <Text style={styles.statValue}>13.34 GB</Text>
-                <View style={styles.statDeltaPill}><Ionicons name="arrow-up" size={10} color="#1E9E6D" /><Text style={styles.statDeltaText}>32% vs Last month</Text></View>
+                <Text style={styles.statValue}>{docStats.bytes ? formatBytes(docStats.bytes) : '0 KB'}</Text>
               </View>
             </View>
+          </View>
+
+          {/* ---- Learning & online research ---- */}
+          {isOwnerUser && (
+            <View style={styles.knowledgeCard}>
+              <View style={styles.sectionHeaderRow}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Ionicons name="bulb-outline" size={16} color="#1E56A0" />
+                  <Text style={styles.sectionLabel}>Nexora learns your business</Text>
+                </View>
+                {learnStatus && <Switch value={learnStatus.enabled} onValueChange={toggleLearning} trackColor={{ true: '#5381BB', false: '#D5DEE8' }} thumbColor="#FFFFFF" />}
+              </View>
+              <Text style={[styles.attentionSubtitle, { marginTop: 2 }]}>Nexora picks up facts you mention in Brain and in your replies to customers, notices questions customers keep asking, and researches your industry online. You confirm what it learned.</Text>
+              {learnSetupNeeded && <Text style={[styles.attentionSubtitle, { marginTop: 8, color: '#C2760C' }]}>Learning needs its one-time database setup (nexora-learning-network.sql).</Text>}
+              {learnStatus && (
+                <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+                  {[
+                    { label: 'Learned', value: String(learnStatus.learned_total) },
+                    { label: 'To review', value: String(learnStatus.waiting_review) },
+                    { label: 'From the web', value: String(learnStatus.web_passages) },
+                  ].map(t => (
+                    <View key={t.label} style={{ flex: 1, padding: 10, borderRadius: 12, backgroundColor: '#F5F6F8' }}>
+                      <Text style={{ fontSize: 16, fontWeight: '700', color: '#0B1220' }}>{t.value}</Text>
+                      <Text style={styles.attentionSubtitle}>{t.label}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+              {!!learnStatus?.last_run_at && <Text style={[styles.attentionSubtitle, { marginTop: 8, fontSize: 12 }]}>Last learned {relTime(learnStatus.last_run_at)}{learnStatus.researched_at ? ` · researched online ${relTime(learnStatus.researched_at)}` : ''}</Text>}
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+                <Pressable onPress={openLearned} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1, minHeight: 40 }]}>
+                  <Text style={styles.resetButtonText}>Review{learnStatus?.waiting_review ? ` (${learnStatus.waiting_review})` : ''}</Text>
+                </Pressable>
+                <Pressable disabled={!!learnBusy} onPress={() => runLearning(true)} style={[styles.resetButton, { flex: 1, minHeight: 40, backgroundColor: '#EAF1FB' }]}>
+                  {learnBusy === 'run' ? <ActivityIndicator color="#1E56A0" /> : <Text style={[styles.resetButtonText, { color: '#1E56A0' }]}>Learn now</Text>}
+                </Pressable>
+              </View>
+              <Pressable disabled={!!learnBusy} onPress={researchBusiness} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: '#D5DEE8' }}>
+                {learnBusy === 'research' ? <ActivityIndicator size="small" color="#1E56A0" /> : <Ionicons name="globe-outline" size={18} color="#1E56A0" />}
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.attentionTitle}>{learnBusy === 'research' ? 'Researching your business online…' : 'Research my business online'}</Text>
+                  <Text style={styles.attentionSubtitle}>Industry concepts, typical prices, rules and what's said about you, kept for 14 days</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color="#8A97A6" />
+              </Pressable>
+              {researchFacts.slice(0, 4).map((f, i) => (
+                <Pressable key={i} onPress={() => (f.url ? openInApp(f.url, f.title) : undefined)} style={{ marginTop: 8, padding: 10, borderRadius: 12, backgroundColor: '#F2F8FD' }}>
+                  <Text style={[styles.attentionTitle, { fontSize: 13 }]}>{f.title}</Text>
+                  <Text style={[styles.attentionSubtitle, { marginTop: 2 }]} numberOfLines={3}>{f.content}</Text>
+                  {!!f.url && <Text style={{ fontSize: 11, color: '#1E56A0', marginTop: 4 }}>{hostOf(f.url)} ↗</Text>}
+                </Pressable>
+              ))}
+            </View>
+          )}
+
+          {/* ---- Knowledge Search (RAG) ---- */}
+          <View style={styles.knowledgeCard}>
+            <View style={styles.sectionHeaderRow}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="git-network-outline" size={16} color="#1E56A0" />
+                <Text style={styles.sectionLabel}>Knowledge Search (RAG)</Text>
+              </View>
+              <Pressable onPress={() => syncRag(false)} disabled={ragSyncing} hitSlop={8} accessibilityRole="button" accessibilityLabel="Update knowledge search">
+                {ragSyncing ? <ActivityIndicator size="small" color="#1E56A0" /> : <Text style={styles.sectionViewAll}>Sync now</Text>}
+              </Pressable>
+            </View>
+            <Text style={[styles.attentionSubtitle, { marginTop: 2 }]}>Nexora answers by first finding the most relevant passages in your products, policies, FAQs and uploaded files, then writing the reply from them, with numbered sources.</Text>
+            {ragStatus ? (
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+                {[
+                  { label: 'Items', value: `${Math.min(ragStatus.items, ragStatus.passages - ragStatus.document_passages)}/${ragStatus.items}` },
+                  { label: 'Doc passages', value: String(ragStatus.document_passages) },
+                  { label: 'Searchable', value: ragStatus.passages ? `${Math.round(((ragStatus.passages - ragStatus.pending) / ragStatus.passages) * 100)}%` : '\u2014' },
+                ].map(t => (
+                  <View key={t.label} style={{ flex: 1, padding: 10, borderRadius: 12, backgroundColor: '#F5F6F8' }}>
+                    <Text style={{ fontSize: 16, fontWeight: '700', color: '#0B1220' }}>{t.value}</Text>
+                    <Text style={styles.attentionSubtitle}>{t.label}</Text>
+                  </View>
+                ))}
+              </View>
+            ) : (
+              <Pressable onPress={() => loadRagStatus()} style={{ marginTop: 10 }}>
+                <Text style={[styles.attentionSubtitle, { color: ragError ? '#C2760C' : '#5C6B7A' }]}>{ragError || 'Tap to check the knowledge index.'}</Text>
+              </Pressable>
+            )}
+            {!!ragStatus?.pending && (
+              <View style={{ marginTop: 8 }}>
+                <View style={{ height: 6, borderRadius: 3, backgroundColor: '#E7EAEC', overflow: 'hidden' }}>
+                  <View style={{ height: 6, borderRadius: 3, backgroundColor: '#1E56A0', width: `${ragStatus.passages ? Math.round(((ragStatus.passages - ragStatus.pending) / ragStatus.passages) * 100) : 0}%` }} />
+                </View>
+                <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}>
+                  {ragSyncing ? `Indexing\u2026 ${ragStatus.passages - ragStatus.pending} of ${ragStatus.passages} passages ready. You can keep using the app.` : `${ragStatus.pending} passage${ragStatus.pending === 1 ? '' : 's'} still waiting. Tap Sync now to finish.`}
+                </Text>
+              </View>
+            )}
+            <View style={[styles.searchBarPlain, { marginTop: 12 }]}>
+              <Ionicons name="search-outline" size={16} color="#8A97A6" />
+              <TextInput value={ragQuery} onChangeText={setRagQuery} onSubmitEditing={testRagSearch} returnKeyType="search" placeholder="Test: what would Nexora find for…" placeholderTextColor="#8A97A6" style={[styles.homeSearchPlaceholder, { flex: 1, paddingVertical: 0 }]} />
+              {ragSearching ? <ActivityIndicator size="small" color="#1E56A0" /> : (
+                <Pressable onPress={testRagSearch} hitSlop={8} accessibilityLabel="Search knowledge"><Ionicons name="arrow-forward-circle" size={22} color="#1E56A0" /></Pressable>
+              )}
+            </View>
+            {ragResults && ragResults.length === 0 && <Text style={[styles.attentionSubtitle, { marginTop: 8 }]}>Nothing in your knowledge matches. Add it with the + button so Nexora can answer this.</Text>}
+            {(ragResults ?? []).map((r, i) => {
+              const pct = Math.round(Math.max(0, Math.min(1, r.similarity)) * 100);
+              return (
+                <Pressable key={r.id} onPress={() => openSource(r)} style={{ marginTop: 10, padding: 10, borderRadius: 12, borderWidth: 1, borderColor: '#E7EAEC' }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text style={{ fontSize: 12, fontWeight: '700', color: '#1E56A0' }}>[{i + 1}]</Text>
+                    <Ionicons name={r.source_type === 'document' ? 'document-text-outline' : r.source_type === 'web' ? 'globe-outline' : 'cube-outline'} size={14} color="#5C6B7A" />
+                    <Text style={[styles.attentionTitle, { flex: 1, fontSize: 13 }]} numberOfLines={1}>{r.title}</Text>
+                    <Text style={{ fontSize: 11, fontWeight: '700', color: pct >= 81 || r.keyword ? GAUGE_GREEN : GAUGE_ORANGE }}>{r.keyword && pct < 81 ? 'keyword' : `${pct}% match`}</Text>
+                  </View>
+                  <Text style={[styles.attentionSubtitle, { marginTop: 4 }]} numberOfLines={3}>{r.content}</Text>
+                </Pressable>
+              );
+            })}
           </View>
 
           <View style={styles.knowledgeCard}>
@@ -2225,79 +8920,231 @@ export default function HomeScreen(){
 
           <View style={styles.sectionHeaderRow}>
             <Text style={styles.sectionLabel}>Need Your Attention</Text>
-            <Text style={styles.sectionViewAll}>View All ›</Text>
           </View>
           <View style={styles.attentionCard}>
-            <View style={styles.attentionItem}>
-              <View style={styles.attentionIconWrap}>
-                <View style={styles.attentionCountBadge}><Text style={styles.attentionCountBadgeText}>5</Text></View>
-                <Ionicons name="image-outline" size={18} color="#1E56A0" />
+            {imagesMissing > 0 && (
+              <View style={styles.attentionItem}>
+                <View style={styles.attentionIconWrap}>
+                  <View style={styles.attentionCountBadge}><Text style={styles.attentionCountBadgeText}>{imagesMissing}</Text></View>
+                  <Ionicons name="image-outline" size={18} color="#1E56A0" />
+                </View>
+                <View style={styles.attentionTextWrap}>
+                  <Text style={styles.attentionTitle}>Images required for {imagesMissing} item{imagesMissing === 1 ? '' : 's'}</Text>
+                  <Text style={styles.attentionSubtitle}>Add images to improve products discovery</Text>
+                </View>
+                <Pressable onPress={() => openMissingImages()} style={styles.attentionButton}>
+                  <Text style={styles.attentionButtonText}>Fix now</Text>
+                </Pressable>
               </View>
-              <View style={styles.attentionTextWrap}>
-                <Text style={styles.attentionTitle}>Images required for 5 items</Text>
-                <Text style={styles.attentionSubtitle}>Add images to improve products discovery</Text>
+            )}
+            {reviewN > 0 && (
+              <View style={styles.attentionItem}>
+                <View style={styles.attentionIconWrap}>
+                  <View style={styles.attentionCountBadge}><Text style={styles.attentionCountBadgeText}>{reviewN}</Text></View>
+                  <Ionicons name="alert-circle-outline" size={18} color="#C2760C" />
+                </View>
+                <View style={styles.attentionTextWrap}>
+                  <Text style={styles.attentionTitle}>{reviewN} item{reviewN === 1 ? '' : 's'} need review</Text>
+                  <Text style={styles.attentionSubtitle}>Confirm the details so Nexora answers correctly.</Text>
+                </View>
+                <Pressable
+                  onPress={() => {
+                    const first = KNOWLEDGE_CATEGORIES.find(k => cat[k].items.some(i => i.status === 'Need review')) ?? 'products';
+                    openKnowledgeList(first);
+                    setListStatusFilter('Need review');
+                  }}
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                  <Text style={styles.attentionButtonTextOnly}>Review</Text>
+                  <Ionicons name="chevron-forward" size={14} color="#8A97A6" />
+                </Pressable>
               </View>
-              <Pressable onPress={openAddKnowledge} style={styles.attentionButton}>
-                <Text style={styles.attentionButtonText}>Fix now</Text>
-              </Pressable>
-              <Pressable onPress={openAddKnowledge} style={styles.attentionAddCircle}>
-                <Ionicons name="add" size={16} color="#FFF" />
-              </Pressable>
-            </View>
-            <View style={styles.attentionItem}>
-              <View style={styles.attentionIconWrap}>
-                <View style={styles.attentionCountBadge}><Text style={styles.attentionCountBadgeText}>8</Text></View>
-                <Ionicons name="cube-outline" size={18} color="#C2760C" />
+            )}
+            {draftN > 0 && (
+              <View style={styles.attentionItem}>
+                <View style={styles.attentionIconWrap}>
+                  <View style={styles.attentionCountBadge}><Text style={styles.attentionCountBadgeText}>{draftN}</Text></View>
+                  <Ionicons name="create-outline" size={18} color="#1E56A0" />
+                </View>
+                <View style={styles.attentionTextWrap}>
+                  <Text style={styles.attentionTitle}>{draftN} draft{draftN === 1 ? '' : 's'} to finish</Text>
+                  <Text style={styles.attentionSubtitle}>Drafts are not used by Nexora until you verify them.</Text>
+                </View>
+                <Pressable
+                  onPress={() => {
+                    const first = KNOWLEDGE_CATEGORIES.find(k => cat[k].items.some(i => i.status === 'Draft')) ?? 'products';
+                    openKnowledgeList(first);
+                    setListStatusFilter('Drafts');
+                  }}
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                  <Text style={styles.attentionButtonTextOnly}>Finish</Text>
+                  <Ionicons name="chevron-forward" size={14} color="#8A97A6" />
+                </Pressable>
               </View>
-              <View style={styles.attentionTextWrap}>
-                <Text style={styles.attentionTitle}>8 Orders hasn't shipped</Text>
-                <Text style={styles.attentionSubtitle}>Some orders are pending shipment.</Text>
+            )}
+            {imagesMissing === 0 && reviewN === 0 && draftN === 0 && (
+              <View style={styles.attentionItem}>
+                <Ionicons name="checkmark-circle" size={20} color="#1E9E6D" />
+                <View style={styles.attentionTextWrap}>
+                  <Text style={styles.attentionTitle}>{totalItems ? "You're all caught up" : 'Nothing here yet'}</Text>
+                  <Text style={styles.attentionSubtitle}>{totalItems ? 'Everything in your knowledge base is verified.' : 'Tap + to add your first product, service or policy.'}</Text>
+                </View>
               </View>
-              <Pressable onPress={() => { setMainTab('brain'); sendChatMessage('Show me the 8 orders that haven\'t shipped'); }} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                <Text style={styles.attentionButtonTextOnly}>Review orders</Text>
-                <Ionicons name="chevron-forward" size={14} color="#8A97A6" />
-              </Pressable>
-            </View>
-            <View style={styles.attentionItem}>
-              <View style={styles.attentionIconWrap}>
-                <View style={styles.attentionCountBadge}><Text style={styles.attentionCountBadgeText}>1</Text></View>
-                <Ionicons name="document-lock-outline" size={18} color="#1E56A0" />
-              </View>
-              <View style={styles.attentionTextWrap}>
-                <Text style={styles.attentionTitle}>Update delivery policy</Text>
-                <Text style={styles.attentionSubtitle}>Your delivery policy hasn't been updated in 90 days</Text>
-              </View>
-              <Pressable onPress={() => openItemDetail('policies', 'pol2')} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                <Text style={styles.attentionButtonTextOnly}>Update now</Text>
-                <Ionicons name="chevron-forward" size={14} color="#8A97A6" />
-              </Pressable>
-            </View>
+            )}
           </View>
 
           <View style={styles.sectionHeaderRow}>
             <Text style={styles.sectionLabel}>Recent Knowledge</Text>
-            <Text style={styles.sectionViewAll}>View All ›</Text>
           </View>
           <View style={styles.attentionCard}>
-            {RECENT_KNOWLEDGE_DOCS.map(doc => (
-              <View key={doc.name} style={styles.recentDocRow}>
-                <Ionicons name="checkmark-circle" size={20} color="#1E9E6D" />
+            {knowledgeDocs.length === 0 && (
+              <Text style={styles.attentionSubtitle}>No documents yet. Tap + and upload a PDF, CSV or TXT file.</Text>
+            )}
+            {knowledgeDocs.map(doc => (
+              <View key={doc.id} style={styles.recentDocRow}>
+                <Ionicons
+                  name={doc.status === 'Failed' ? 'alert-circle' : doc.status === 'Processing' ? 'time-outline' : 'checkmark-circle'}
+                  size={20}
+                  color={doc.status === 'Failed' ? '#D64545' : doc.status === 'Processing' ? '#E5A63A' : '#1E9E6D'}
+                />
                 <View style={styles.attentionTextWrap}>
                   <Text style={styles.attentionTitle}>{doc.name}</Text>
-                  <Text style={styles.recentDocMeta}>{doc.status}  ·  {doc.time}</Text>
+                  <Text style={styles.recentDocMeta}>{doc.status}  {'\u00b7'}  {doc.time}</Text>
                 </View>
-                <Ionicons name="ellipsis-vertical" size={16} color="#8A97A6" />
+                <Pressable onPress={() => deleteKnowledgeDoc(doc)} hitSlop={10} accessibilityLabel={`Remove ${doc.name}`}>
+                  <Ionicons name="ellipsis-vertical" size={16} color="#8A97A6" />
+                </Pressable>
               </View>
             ))}
           </View>
         </ScrollView>
+        {renderSourceSheet()}
+        <Modal visible={tellOpen} transparent animationType="slide" onRequestClose={() => setTellOpen(false)} statusBarTranslucent>
+          <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+          <Pressable style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)' }} onPress={() => setTellOpen(false)} accessibilityLabel="Close" />
+          <View style={{ backgroundColor: '#FFF', borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 20, paddingBottom: 20 + insets.bottom }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <Ionicons name="sparkles" size={18} color="#1E56A0" />
+              <Text style={{ fontSize: 18, fontWeight: '700', color: '#0B1220' }}>Tell Nexora</Text>
+            </View>
+            <Text style={[styles.attentionSubtitle, { marginTop: 6 }]}>Describe your products, prices, services, opening hours, delivery or refund rules in your own words. Nexora turns it into knowledge you can review before it's saved.</Text>
+            <TextInput
+              value={tellText}
+              onChangeText={setTellText}
+              multiline
+              autoFocus
+              maxLength={5000}
+              placeholder={'e.g. We sell the ASX wireless headphone for $59 in black and blue. Delivery in Lagos takes 1-2 days and costs $3. Refunds within 7 days if unused.'}
+              placeholderTextColor="#A5AFBB"
+              style={[styles.editInput, { height: 150, paddingTop: 12, textAlignVertical: 'top', marginTop: 12 }]}
+            />
+            <Text style={[styles.attentionSubtitle, { textAlign: 'right', marginTop: 4 }]}>{tellText.length}/5000</Text>
+            <Pressable onPress={submitTellNexora} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 10 }]}>
+              <Text style={styles.resetButtonText}>Teach Nexora</Text>
+            </Pressable>
+          </View>
+          </KeyboardAvoidingView>
+        </Modal>
+        {/* Add a product / Add a service */}
+        <Modal visible={!!addItemForm} transparent animationType="slide" onRequestClose={() => setAddItemForm(null)} statusBarTranslucent>
+          <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+            <Pressable style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)' }} onPress={() => setAddItemForm(null)} accessibilityLabel="Close" />
+            {addItemForm && (() => {
+              const f = addItemForm;
+              const set = (k: keyof AddItemForm) => (t: string) => setAddItemForm(p => (p ? { ...p, [k]: t } : p));
+              const isProduct = f.kind === 'product';
+              return (
+                <View style={{ backgroundColor: '#FFF', borderTopLeftRadius: 22, borderTopRightRadius: 22, maxHeight: '88%' }}>
+                  <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 20 + insets.bottom }} keyboardShouldPersistTaps="handled">
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <Ionicons name={isProduct ? 'cube-outline' : 'construct-outline'} size={20} color="#1E56A0" />
+                      <Text style={{ flex: 1, fontSize: 18, fontWeight: '700', color: '#0B1220' }}>{isProduct ? 'Add a product' : 'Add a service'}</Text>
+                      <Pressable onPress={() => setAddItemForm(null)} hitSlop={10} accessibilityLabel="Close"><Ionicons name="close" size={22} color="#5C6B7A" /></Pressable>
+                    </View>
+                    <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}>Nexora uses this to answer customers and write posts.</Text>
+
+                    <Pressable
+                      onPress={async () => { const uri = await pickLibraryImage(); if (uri) setAddItemForm(p => (p ? { ...p, image: uri } : p)); }}
+                      style={{ marginTop: 14, height: 96, borderRadius: 14, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}
+                      accessibilityRole="button" accessibilityLabel={f.image ? 'Change photo' : 'Add photo'}>
+                      {f.image ? <Image source={{ uri: f.image }} style={{ width: '100%', height: '100%' }} resizeMode="cover" /> : (
+                        <>
+                          <Ionicons name="camera-outline" size={24} color="#1E56A0" />
+                          <Text style={{ color: '#1E56A0', fontWeight: '600', marginTop: 4 }}>Add {isProduct ? 'product' : 'service'} photo (optional)</Text>
+                        </>
+                      )}
+                    </Pressable>
+
+                    <Text style={[styles.detailFieldLabel, { marginTop: 14 }]}>{isProduct ? 'Product name*' : 'Service name*'}</Text>
+                    <TextInput value={f.name} onChangeText={set('name')} placeholder={isProduct ? 'e.g. Sony WH-1000XM5 Headphone' : 'e.g. Device installation'} placeholderTextColor="#A5AFBB" style={styles.editInput} autoCapitalize="words" maxLength={200} />
+
+                    {isProduct ? (
+                      <>
+                        <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Model</Text>
+                        <TextInput value={f.model} onChangeText={set('model')} placeholder="e.g. WH-1000XM5" placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={120} />
+                        <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Specifications</Text>
+                        <TextInput value={f.specs} onChangeText={set('specs')} placeholder="Colour, size, battery life, warranty…" placeholderTextColor="#A5AFBB" style={[styles.editInput, { height: 80, paddingTop: 10, textAlignVertical: 'top' }]} multiline maxLength={1500} />
+                      </>
+                    ) : (
+                      <>
+                        <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Service type</Text>
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
+                          {['Installation', 'Repair', 'Delivery', 'Consultation', 'Other'].map(t => (
+                            <Pressable key={t} onPress={() => setAddItemForm(p => (p ? { ...p, type: p.type === t ? '' : t } : p))} style={[styles.filterChip, f.type === t && styles.filterChipActive]}>
+                              <Text style={[styles.filterChipText, f.type === t && styles.filterChipTextActive]}>{t}</Text>
+                            </Pressable>
+                          ))}
+                        </View>
+                        <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Description</Text>
+                        <TextInput value={f.description} onChangeText={set('description')} placeholder="What's included, how long it takes, where you offer it…" placeholderTextColor="#A5AFBB" style={[styles.editInput, { height: 80, paddingTop: 10, textAlignVertical: 'top' }]} multiline maxLength={1500} />
+                      </>
+                    )}
+
+                    <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Price (optional)</Text>
+                    <TextInput value={f.price} onChangeText={set('price')} placeholder="e.g. 120" placeholderTextColor="#A5AFBB" style={styles.editInput} keyboardType="decimal-pad" maxLength={20} />
+
+                    <Pressable disabled={addItemSaving} onPress={saveAddItemForm} style={[styles.resetButton, f.name.trim() ? styles.resetButtonEnabled : styles.resetButtonDisabled, { marginTop: 18 }]}>
+                      {addItemSaving ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>Save {isProduct ? 'product' : 'service'}</Text>}
+                    </Pressable>
+                  </ScrollView>
+                </View>
+              );
+            })()}
+          </KeyboardAvoidingView>
+        </Modal>
+        {showAddMenu && <Pressable style={styles.fabBackdrop} onPress={() => setShowAddMenu(false)} accessibilityLabel="Close menu" />}
+        {showAddMenu && (
+          <View style={[styles.fabMenu, { bottom: 140 + insets.bottom }]}>
+            {([
+              // PDF / CSV / TXT -> uploaded, read by the extract-knowledge AI, then you review what it found.
+              { icon: 'cloud-upload-outline', label: 'Upload a file', onPress: async () => { setShowAddMenu(false); const f = await pickDocument(); if (f) startKnowledgeUpload(f); } },
+              // Product / service form -> saved to your knowledge base, then shown in its list.
+              { icon: 'cube-outline', label: 'Add a product', onPress: () => { setShowAddMenu(false); setAddItemForm({ kind: 'product', name: '', model: '', specs: '', price: '', type: '', description: '', image: '' }); } },
+              { icon: 'construct-outline', label: 'Add a service', onPress: () => { setShowAddMenu(false); setAddItemForm({ kind: 'service', name: '', model: '', specs: '', price: '', type: '', description: '', image: '' }); } },
+              // Type it in your own words -> Nexora turns it into knowledge items for you to review.
+              { icon: 'chatbubble-ellipses-outline', label: 'Tell Nexora', onPress: () => { setShowAddMenu(false); setTellText(''); setTellOpen(true); } },
+            ] as { icon: string; label: string; onPress: () => void }[]).map(opt => (
+              <Pressable key={opt.label} onPress={opt.onPress} style={({ pressed }) => [styles.fabMenuItem, pressed && { backgroundColor: '#F2F5F9' }]} accessibilityRole="button" accessibilityLabel={opt.label}>
+                <Ionicons name={opt.icon as any} size={18} color="#0B1220" />
+                <Text style={styles.fabMenuText}>{opt.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+        )}
+        <Pressable
+          onPress={() => setShowAddMenu(v => !v)}
+          accessibilityRole="button"
+          accessibilityLabel="Add knowledge"
+          style={[styles.knowledgeFab, { bottom: 76 + insets.bottom }]}
+        >
+          <Ionicons name={showAddMenu ? 'close' : 'add'} size={28} color="#FFF" />
+        </Pressable>
         {renderBottomNav()}
       </View>
     );
   }
 
   if (screen === 'knowledgeList') {
-    const data = KNOWLEDGE_DATA[activeCategory];
+    const data = knowledgeData[activeCategory];
     const isFaqs = activeCategory === 'faqs';
     const verified = data.items.filter(i => i.status === 'Verified').length;
     const drafts = data.items.filter(i => i.status === 'Draft').length;
@@ -2305,15 +9152,17 @@ export default function HomeScreen(){
     const filterCounts: Record<'All' | 'Verified' | 'Drafts' | 'Need review', number> = {
       All: data.items.length, Verified: verified, Drafts: drafts, 'Need review': needReview,
     };
+    const q = listSearch.trim().toLowerCase();
     const filtered = data.items.filter(i =>
-      listStatusFilter === 'All' ? true :
+      (listStatusFilter === 'All' ? true :
       listStatusFilter === 'Drafts' ? i.status === 'Draft' :
-      i.status === listStatusFilter
+      i.status === listStatusFilter) &&
+      (!q || i.name.toLowerCase().includes(q) || i.subtitle.toLowerCase().includes(q))
     );
     return (
       <View style={styles.mainScreen}>
         <StatusBar style="dark" />
-        <View style={styles.knowledgeHeader}>
+        <View style={[styles.knowledgeHeader, headerSafe]}>
           <Pressable onPress={() => setScreen('knowledgeHealth')} hitSlop={8}><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
           <Text style={styles.knowledgeHeaderTitle}>{KNOWLEDGE_LIST_TITLE[activeCategory]}</Text>
           <Pressable onPress={openAddKnowledge}><Text style={styles.knowledgeHeaderAction}>+ Add</Text></Pressable>
@@ -2324,14 +9173,31 @@ export default function HomeScreen(){
               <Text style={styles.listCountTitle}>{data.items.length} {data.title}</Text>
               <Text style={styles.listCountSubtitle}>{verified} verified  ·  {data.items.length - verified} drafts</Text>
             </View>
-            <Pressable style={styles.listFilterButton}>
+            <Pressable
+              style={styles.listFilterButton}
+              onPress={() => {
+                const order = ['All', 'Verified', 'Drafts', 'Need review'] as const;
+                const next = order[(order.indexOf(listStatusFilter) + 1) % order.length];
+                setListStatusFilter(next);
+                flash(`Showing: ${next}`);
+              }}
+              accessibilityLabel="Filter by status"
+            >
               <Ionicons name="options-outline" size={14} color="#5C6B7A" />
               <Text style={styles.listFilterButtonText}>Filter</Text>
             </Pressable>
           </View>
           <View style={styles.searchBarPlain}>
             <Ionicons name="search-outline" size={16} color="#8A97A6" />
-            <Text style={styles.homeSearchPlaceholder}>Search {data.title}...</Text>
+            <TextInput
+              value={listSearch}
+              onChangeText={setListSearch}
+              placeholder={`Search ${data.title}...`}
+              placeholderTextColor="#8A97A6"
+              style={[styles.homeSearchPlaceholder, { flex: 1, paddingVertical: 0 }]}
+              returnKeyType="search"
+              autoCorrect={false}
+            />
           </View>
           {/* The truth screen (FAQs list) has no status filter chips at all —
               just a "Popular Questions" label — unlike Products/Services/
@@ -2398,7 +9264,7 @@ export default function HomeScreen(){
   }
 
   if (screen === 'itemDetail') {
-    const item = KNOWLEDGE_DATA[activeCategory].items.find(i => i.id === activeItemId);
+    const item = knowledgeData[activeCategory].items.find(i => i.id === activeItemId);
     if (!item) { setScreen('knowledgeList'); return null; }
     // FIX: this card's heading isn't the same rule for every category —
     // confirmed against two different truth screens: Product details-6
@@ -2414,7 +9280,7 @@ export default function HomeScreen(){
     return (
       <View style={styles.mainScreen}>
         <StatusBar style="dark" />
-        <View style={styles.knowledgeHeader}>
+        <View style={[styles.knowledgeHeader, headerSafe]}>
           <Pressable onPress={() => setScreen('knowledgeList')} hitSlop={8}><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
           <Text style={styles.knowledgeHeaderTitle}>{item.name}</Text>
           <View style={{ width: 24 }} />
@@ -2460,20 +9326,13 @@ export default function HomeScreen(){
               ))}
             </View>
           )}
-          <View style={styles.detailCard}>
-            <Text style={styles.sectionLabel}>Source</Text>
-            <View style={styles.sourceRow}>
-              <PdfSourceBadge />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.attentionTitle}>Product catalogue.pdf</Text>
-                <Text style={styles.sourcePageText}>Page 12</Text>
-              </View>
-              <Text style={styles.insightLink}>View</Text>
-            </View>
-          </View>
           <Pressable onPress={openItemEdit} style={styles.editLink}>
             <Ionicons name="create-outline" size={16} color="#1E56A0" />
             <Text style={styles.insightLink}>Edit</Text>
+          </Pressable>
+          <Pressable onPress={deleteActiveItem} style={[styles.editLink, { marginTop: 4 }]} accessibilityRole="button">
+            <Ionicons name="trash-outline" size={16} color="#D64545" />
+            <Text style={[styles.insightLink, { color: '#D64545' }]}>Delete</Text>
           </Pressable>
         </ScrollView>
       </View>
@@ -2489,7 +9348,7 @@ export default function HomeScreen(){
     // detail card for the rest of the fields (Status shown as
     // read-only colored text, not an input), and a Source citation
     // card — all missing before.
-    const item = KNOWLEDGE_DATA[activeCategory].items.find(i => i.id === activeItemId);
+    const item = knowledgeData[activeCategory].items.find(i => i.id === activeItemId);
     const nameField = editDraft[0];
     const categoryField = editDraft.find(f => f.label === 'Category');
     const restFieldsRaw = editDraft.filter(f => f !== nameField && f.label !== 'Category');
@@ -2507,7 +9366,7 @@ export default function HomeScreen(){
     return (
       <View style={styles.mainScreen}>
         <StatusBar style="dark" />
-        <View style={styles.knowledgeHeader}>
+        <View style={[styles.knowledgeHeader, headerSafe]}>
           <Pressable onPress={() => setScreen('itemDetail')} hitSlop={8}><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
           <Text style={styles.knowledgeHeaderTitle}>{KNOWLEDGE_EDIT_TITLE[activeCategory]}</Text>
           <View style={{ width: 24 }} />
@@ -2531,7 +9390,7 @@ export default function HomeScreen(){
               </View>
               <View style={{ alignItems: 'center', gap: 8 }}>
                 {item ? <DetailOverviewIcon item={item} /> : null}
-                <Pressable style={styles.editChangeImageBox}>
+                <Pressable style={styles.editChangeImageBox} onPress={changeItemImage} accessibilityRole="button" accessibilityLabel="Change image">
                   <Ionicons name="image-outline" size={16} color="#1E56A0" />
                   <Text style={styles.editChangeImageText}>Change{'\n'}Image</Text>
                 </Pressable>
@@ -2562,24 +9421,13 @@ export default function HomeScreen(){
             ))}
           </View>
 
-          <View style={styles.detailCard}>
-            <Text style={styles.sectionLabel}>Source</Text>
-            <View style={styles.sourceRow}>
-              <PdfSourceBadge />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.attentionTitle}>Product catalogue.pdf</Text>
-                <Text style={styles.sourcePageText}>Page 12</Text>
-              </View>
-              <Text style={styles.insightLink}>View</Text>
-            </View>
-          </View>
 
           <View style={styles.editButtonRow}>
-            <Pressable onPress={() => setScreen('itemDetail')} style={[styles.resetButton, { flex: 1, borderWidth: 1, borderColor: '#5381BB' }]}>
+            <Pressable disabled={savingKnowledge} onPress={() => saveItemEdit(true)} style={[styles.resetButton, { flex: 1, borderWidth: 1, borderColor: '#5381BB' }]}>
               <Text style={[styles.resetButtonText, { color: '#1E56A0' }]}>Save As Draft</Text>
             </Pressable>
-            <Pressable onPress={() => setScreen('itemDetail')} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1 }]}>
-              <Text style={styles.resetButtonText}>Save Changes</Text>
+            <Pressable disabled={savingKnowledge} onPress={() => saveItemEdit(false)} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1 }]}>
+              {savingKnowledge ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>Save Changes</Text>}
             </Pressable>
           </View>
         </ScrollView>
@@ -2604,17 +9452,17 @@ export default function HomeScreen(){
     };
     const header = headerByStep[addKnowledgeStep];
     const reviewCounts = {
-      All: EXTRACTED_REVIEW_ITEMS.length,
-      'Pricing Item': EXTRACTED_REVIEW_ITEMS.filter(i => i.type === 'Pricing Item').length,
-      FAQs: EXTRACTED_REVIEW_ITEMS.filter(i => i.type === 'FAQs').length,
-      'Discount rules': EXTRACTED_REVIEW_ITEMS.filter(i => i.type === 'Discount rules').length,
+      All: extractedItems.length,
+      'Pricing Item': extractedItems.filter(i => i.type === 'Pricing Item').length,
+      FAQs: extractedItems.filter(i => i.type === 'FAQs').length,
+      'Discount rules': extractedItems.filter(i => i.type === 'Discount rules').length,
     };
-    const reviewFiltered = EXTRACTED_REVIEW_ITEMS.filter(i => reviewFilter === 'All' ? true : i.type === reviewFilter);
-    const matchTargetItem = EXTRACTED_REVIEW_ITEMS.find(i => i.id === imageMatchTarget);
+    const reviewFiltered = extractedItems.filter(i => reviewFilter === 'All' ? true : i.type === reviewFilter);
+    const matchTargetItem = extractedItems.find(i => i.id === imageMatchTarget);
     return (
       <View style={styles.mainScreen}>
         <StatusBar style="dark" />
-        <View style={styles.knowledgeHeader}>
+        <View style={[styles.knowledgeHeader, headerSafe]}>
           <Pressable onPress={header.onBack} hitSlop={8}><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
           <Text style={styles.knowledgeHeaderTitle}>{header.title}</Text>
           {header.showAdd ? (
@@ -2630,15 +9478,26 @@ export default function HomeScreen(){
               {/* FIX: both icons had no background tint at all — truth
                   gives each its own colored square (light blue-gray for
                   Upload Files, light cyan for Tell Nexora). */}
-              <Pressable onPress={() => setAddKnowledgeStep('upload')} style={styles.choiceCard}>
+              {/* FIX: "Upload Files" used to just open an in-app mock dropzone
+                  screen (whose own tap handler didn't even open a file
+                  picker — it just advanced straight to processing without
+                  ever asking for a file). It now opens the real device file
+                  explorer directly via pickDocument(); if a file is chosen
+                  it proceeds into the same processing → summary → review
+                  flow, and if the picker is canceled it stays here. */}
+              <Pressable onPress={async () => { const file = await pickDocument(); if (file) startKnowledgeUpload(file); }} style={styles.choiceCard}>
                 <View style={[styles.knowledgeRowIcon, { backgroundColor: '#EAF1FB' }]}><Ionicons name="cloud-upload-outline" size={20} color="#1E56A0" /></View>
                 <View style={styles.attentionTextWrap}>
                   <Text style={styles.attentionTitle}>Upload Files</Text>
-                  <Text style={styles.attentionSubtitle}>Upload PDF, CSV, TXT or DOCX files</Text>
+                  <Text style={styles.attentionSubtitle}>Upload PDF, CSV or TXT files</Text>
                 </View>
                 <Ionicons name="chevron-forward" size={18} color="#8A97A6" />
               </Pressable>
-              <Pressable onPress={() => { setScreen('main'); setMainTab('brain'); sendChatMessage('I want to describe my business or idea'); }} style={styles.choiceCard}>
+              {/* FIX: what "Upload Files" used to open (the in-app dropzone
+                  screen, addKnowledgeStep 'upload') is now what "Tell Nexora"
+                  opens, per request. This replaces its previous behavior of
+                  jumping to the Brain chat with a canned message. */}
+              <Pressable onPress={() => setAddKnowledgeStep('upload')} style={styles.choiceCard}>
                 <View style={[styles.knowledgeRowIcon, { backgroundColor: '#E3F6FB' }]}><Ionicons name="chatbubble-ellipses-outline" size={20} color="#1E9ED0" /></View>
                 <View style={styles.attentionTextWrap}>
                   <Text style={styles.attentionTitle}>Tell Nexora</Text>
@@ -2655,10 +9514,16 @@ export default function HomeScreen(){
 
           {addKnowledgeStep === 'upload' && (
             <>
-              <Pressable onPress={runKnowledgeProcessing} style={styles.dropZone}>
+              {!!extractError && (
+                <View style={[styles.privacyBanner, { backgroundColor: '#FDECEC', marginBottom: 12 }]}>
+                  <Ionicons name="alert-circle" size={16} color="#D64545" />
+                  <Text style={[styles.privacyBannerText, { color: '#B42318' }]}>{extractError}</Text>
+                </View>
+              )}
+              <Pressable onPress={async () => { const file = await pickDocument(); if (file) startKnowledgeUpload(file); }} style={styles.dropZone}>
                 <Ionicons name="cloud-upload-outline" size={36} color="#1E56A0" />
                 <Text style={styles.attentionTitle}>Drag and drop files here or tap to browse</Text>
-                <Text style={styles.attentionSubtitle}>Supported files: PDF, CSV, TXT or DOCX (Max file size 20MB)</Text>
+                <Text style={styles.attentionSubtitle}>Supported files: PDF, CSV or TXT (Max file size 20MB)</Text>
               </Pressable>
               <View style={styles.privacyBanner}>
                 <Ionicons name="lock-closed" size={16} color="#1E56A0" />
@@ -2707,8 +9572,8 @@ export default function HomeScreen(){
                 <View style={styles.sourceRow}>
                   <PdfSourceBadge />
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.attentionTitle}>Product catalogue.pdf</Text>
-                    <Text style={styles.sourcePageText}>Uploaded on May 27, 2024</Text>
+                    <Text style={styles.attentionTitle}>{uploadedFileName || 'Your file'}</Text>
+                    <Text style={styles.sourcePageText}>Uploaded on {shortDate(new Date().toISOString())}</Text>
                   </View>
                 </View>
                 <View style={styles.extractedOkBanner}>
@@ -2716,7 +9581,7 @@ export default function HomeScreen(){
                   <Text style={styles.extractedOkText}>NEXORA has extracted and organized information from your file</Text>
                 </View>
               </View>
-              <Text style={[styles.sectionLabel, { marginTop: 12 }]}>124 Items found in this file</Text>
+              <Text style={[styles.sectionLabel, { marginTop: 12 }]}>{extractedItems.length} Items found in this file</Text>
               {/* FIX: re-checked every icon/color here directly against the
                   truth screen — Discount Rules used a second price-tag
                   glyph instead of a percent/discount badge; FAQs' icon was
@@ -2725,11 +9590,10 @@ export default function HomeScreen(){
                   every row's background was a flat gray box instead of a
                   tinted circle matching its icon color. */}
               {[
-                ['Pricing Items', 72, 'pricetag-outline', CAT_ORANGE.iconColor, CAT_ORANGE.iconBg],
-                ['Discount Rules', 20, 'mci:sale-outline', '#D64545', '#FBE7E7'],
-                ['FAQs', 12, 'mci:comment-question-outline', CAT_ORANGE.iconColor, CAT_ORANGE.iconBg],
-                ['Policies/Rules', 10, 'shield-outline', CAT_BLUE.iconColor, CAT_BLUE.iconBg],
-                ['Brands', 2, 'mci:check-decagram-outline', '#5C6B7A', '#EEF0F2'],
+                ['Pricing Items', extractedItems.filter(i => i.type === 'Pricing Item').length, 'pricetag-outline', CAT_ORANGE.iconColor, CAT_ORANGE.iconBg],
+                ['Discount Rules', extractedItems.filter(i => i.type === 'Discount rules').length, 'mci:sale-outline', '#D64545', '#FBE7E7'],
+                ['FAQs', extractedItems.filter(i => i.type === 'FAQs').length, 'mci:comment-question-outline', CAT_ORANGE.iconColor, CAT_ORANGE.iconBg],
+                ['Policies/Rules', extractedItems.filter(i => i.type === 'Policy').length, 'shield-outline', CAT_BLUE.iconColor, CAT_BLUE.iconBg],
               ].map(([label, count, icon, color, bg]) => (
                 <View key={label as string} style={styles.knowledgeRow}>
                   <View style={[styles.knowledgeRowIcon, { backgroundColor: bg as string }]}>
@@ -2761,7 +9625,7 @@ export default function HomeScreen(){
                   {/* FIX: same two-line truth styling as the Add Image
                       screen — plain first line, bold blue second line. */}
                   <Text style={styles.attentionTitle}>No Image found for</Text>
-                  <Text style={[styles.attentionTitle, { color: '#1E56A0' }]}>5 of your 16 Pricing Items</Text>
+                  <Text style={[styles.attentionTitle, { color: '#1E56A0' }]}>{`${extractedItems.filter(i => i.type === 'Pricing Item' && !i.image).length} of your ${extractedItems.filter(i => i.type === 'Pricing Item').length} Pricing Items`}</Text>
                   <Text style={styles.attentionSubtitle}>Add images to make your knowledge base more visual and engaging</Text>
                   <View style={styles.reviewBannerButtonRow}>
                     <Pressable onPress={() => setAddKnowledgeStep('addImage')} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1, minHeight: 36 }]}>
@@ -2802,8 +9666,8 @@ export default function HomeScreen(){
                   </View>
                 </Pressable>
               ))}
-              <Pressable onPress={() => openKnowledgeList('products')} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 16 }]}>
-                <Text style={styles.resetButtonText}>Add & Review</Text>
+              <Pressable disabled={savingKnowledge} onPress={commitExtracted} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 16 }]}>
+                {savingKnowledge ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>Add & Review</Text>}
               </Pressable>
             </>
           )}
@@ -2834,7 +9698,7 @@ export default function HomeScreen(){
               {/* FIX: all three option icons had no background tint at all
                   — truth gives each its own colored square (light cyan,
                   light blue, light gray). */}
-              <Pressable onPress={() => { setImageMatchTarget(matchTargetItem?.id || EXTRACTED_REVIEW_ITEMS[0].id); setImageMatchStage('suggestions'); setSelectedSuggestion(0); setAddKnowledgeStep('imageMatch'); }} style={styles.choiceCard}>
+              <Pressable onPress={() => { setImageMatchTarget(matchTargetItem?.id || extractedItems[0]?.id || ''); setImageMatchStage('suggestions'); setSelectedSuggestion(0); setAddKnowledgeStep('imageMatch'); }} style={styles.choiceCard}>
                 <View style={[styles.knowledgeRowIcon, { backgroundColor: '#E3F6FB' }]}><Ionicons name="sparkles" size={20} color="#1E9ED0" /></View>
                 <View style={styles.attentionTextWrap}>
                   <Text style={styles.attentionTitle}>Find image online</Text>
@@ -2868,7 +9732,7 @@ export default function HomeScreen(){
               picker for this mock flow). */}
           {addKnowledgeStep === 'uploadImage' && (
             <>
-              <Pressable onPress={() => setAddKnowledgeStep('review')} style={styles.dropZone}>
+              <Pressable onPress={attachImageToExtracted} style={styles.dropZone}>
                 <Ionicons name="cloud-upload-outline" size={36} color="#1E56A0" />
                 <Text style={styles.attentionTitle}>Drag and drop files here or tap to browse</Text>
                 <Text style={styles.attentionSubtitle}>Supported files: JPG, PNG, or WEBP (Max file size 10MB)</Text>
@@ -2983,208 +9847,2688 @@ export default function HomeScreen(){
     );
   }
 
-  if(screen==='connectChannels'){
-    if (channelConnectStep) {
-      const ch = CONNECT_CHANNELS.find(c => c.key === channelConnectKey)!;
-      if (channelConnectStep === 'permission') {
-        return (
-          <View style={styles.mainScreen}>
-            <StatusBar style="dark" />
-            <View style={styles.knowledgeHeader}>
-              <Pressable onPress={() => setChannelConnectStep(null)} hitSlop={8}><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
-              <Text style={styles.knowledgeHeaderTitle}>Connect your channels</Text>
-              <View style={{ width: 24 }} />
-            </View>
-            <View style={styles.homeScrollContent}>
-              <View style={styles.connectFlowIconWrap}><Ionicons name={ch.icon as any} size={40} color={ch.color} /></View>
-              <Text style={styles.connectFlowTitle}>Connect {ch.name}</Text>
-              <Text style={[styles.attentionSubtitle, { textAlign: 'center', marginBottom: 20 }]}>NEXORA will access your {ch.name.toLowerCase()} messages so it can help you manage customers conversations.</Text>
-              <View style={styles.detailCard}>
-                <Text style={[styles.attentionTitle, { marginBottom: 8 }]}>NEXORA can:</Text>
-                {['Read customer messages', 'Suggest replies', 'Send replies when you allow it'].map(p => (
-                  <View key={p} style={styles.featureRow}><Ionicons name="checkmark-circle" size={16} color="#1E9E6D" /><Text style={styles.attentionSubtitle}>{p}</Text></View>
-                ))}
-              </View>
-              <Pressable onPress={() => { setChannelConnectStep('connecting'); setTimeout(() => setChannelConnectStep('done'), 1600); }} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 16 }]}>
-                <Text style={styles.resetButtonText}>Continue to {ch.name}</Text>
+  if (screen === 'truth') {
+    const tScale = width / FIGMA_WIDTH;
+    const tHeight = FIGMA_HEIGHT * tScale;
+    const spots = getTruthHotspots(truthKey);
+    const fieldInputs = getTruthInputs(truthKey);
+    const truthUri = TRUTH_URLS[truthKey];
+    return (
+      <View style={[styles.fullScreen, { backgroundColor: '#FFF' }]} onLayout={onRootLayout}>
+        <StatusBar hidden />
+        <ScrollView scrollEnabled={tHeight > height + 1} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ width }}>
+          <View style={{ width, height: tHeight, overflow: 'hidden' }}>
+            <ExpoImage
+              source={{ uri: truthUri }}
+              style={{ width: width * ((TRUTH_SRC_WIDTH[truthKey] ?? FIGMA_WIDTH) / FIGMA_WIDTH), height: tHeight }}
+              contentFit="fill"
+              cachePolicy="memory-disk"
+              recyclingKey={truthUri}
+              onError={() => { console.warn('[truth] failed to load', truthKey, truthUri); setTruthImgFailed(true); }}
+            />
+            {fieldInputs.map(inp => (
+              <React.Fragment key={inp.label}>
+                {inp.value.length > 0 && (
+                  <View pointerEvents="none" style={{ position: 'absolute', left: (inp.x + 1) * tScale, top: (inp.y + 1) * tScale, width: (inp.w - 2) * tScale, height: (inp.h - 2) * tScale, backgroundColor: '#FFF', borderRadius: 6 * tScale, zIndex: 15 }} />
+                )}
+                <TextInput
+                  value={inp.value}
+                  onChangeText={inp.onChangeText}
+                  keyboardType={inp.keyboardType ?? 'default'}
+                  multiline={!!inp.multiline}
+                  maxLength={inp.maxLength}
+                  autoCapitalize={inp.autoCapitalize ?? 'none'}
+                  autoCorrect={false}
+                  placeholder=""
+                  underlineColorAndroid="transparent"
+                  selectionColor="#1E56A0"
+                  style={{ position: 'absolute', left: inp.x * tScale, top: inp.y * tScale, width: inp.w * tScale, height: inp.h * tScale, paddingLeft: (inp.padLeft ?? 12) * tScale, paddingRight: 8 * tScale, paddingVertical: inp.multiline ? 8 * tScale : 0, textAlignVertical: inp.multiline ? 'top' : 'center', fontSize: (inp.fontSize ?? 12) * tScale, color: '#0B1220', zIndex: 16, backgroundColor: 'transparent' }}
+                />
+              </React.Fragment>
+            ))}
+            {getTruthOverlays(truthKey, tScale)}
+            {spots.map((s, i) => (
+              <Pressable
+                key={`${s.label}-${i}`}
+                onPress={s.onPress}
+                accessibilityRole="button"
+                accessibilityLabel={s.label}
+                style={[
+                  { position: 'absolute', left: s.x * tScale, top: s.y * tScale, width: s.w * tScale, height: s.h * tScale, zIndex: 20 },
+                  s.chip ? styles.truthChip : null,
+                  TRUTH_DEBUG_HOTSPOTS ? { backgroundColor: s.estimated ? 'rgba(255,160,0,0.28)' : 'rgba(255,0,0,0.2)', borderWidth: 1, borderColor: s.estimated ? '#FFA000' : '#FF0000' } : null,
+                ]}
+              >
+                {s.chip ? <Text style={styles.truthChipText}>{s.chip}</Text> : (TRUTH_DEBUG_HOTSPOTS ? <Text style={{ fontSize: 8, color: '#900' }}>{s.label}</Text> : null)}
               </Pressable>
-              <View style={styles.privacyBanner}>
-                <Ionicons name="lock-closed" size={16} color="#1E56A0" />
-                <Text style={styles.privacyBannerText}>All data is secure and private. You can disconnect anytime.</Text>
-              </View>
-            </View>
+            ))}
           </View>
-        );
-      }
-      if (channelConnectStep === 'connecting') {
-        return (
-          <View style={styles.mainScreen}>
-            <StatusBar style="dark" />
-            <View style={[styles.homeScrollContent, { flex: 1, alignItems: 'center', justifyContent: 'center' }]}>
-              <View style={styles.processingOrb}><Ionicons name={ch.icon as any} size={26} color="#FFF" /></View>
-              <Text style={[styles.attentionTitle, { marginTop: 16 }]}>Connecting to {ch.name}…</Text>
-            </View>
+        </ScrollView>
+        {truthImgFailed && (
+          <View pointerEvents="none" style={styles.truthMissing}>
+            <Text style={styles.truthMissingText}>Couldn't load {TRUTH_FILES[truthKey]} from the {TRUTH_BUCKET[truthKey] ?? 'social-media'} bucket</Text>
           </View>
-        );
-      }
-      // 'done'
-      return (
-        <View style={styles.mainScreen}>
-          <StatusBar style="dark" />
-          <View style={[styles.homeScrollContent, { flex: 1, alignItems: 'center', justifyContent: 'center' }]}>
-            <View style={[styles.connectFlowIconWrap, { backgroundColor: '#E6F4ED' }]}><Ionicons name="checkmark-circle" size={40} color="#1E9E6D" /></View>
-            <Text style={styles.connectFlowTitle}>{ch.name} connected</Text>
-            <Text style={[styles.attentionSubtitle, { textAlign: 'center', marginBottom: 20 }]}>You can now receive and manage {ch.name.toLowerCase()} messages in your NEXORA inbox</Text>
-            <Pressable
-              onPress={() => { setConnectedChannels(prev => ({ ...prev, [ch.key]: true })); setChannelConnectStep(null); setChannelConnectKey(null); }}
-              style={[styles.resetButton, styles.resetButtonEnabled, { width: '100%' }]}>
-              <Text style={styles.resetButtonText}>Done</Text>
-            </Pressable>
+        )}
+        {renderSchedulePicker()}
+        {/* Simple choice list for the Figma frames' date / hour / minute fields. */}
+        <Modal visible={!!truthList} transparent animationType="slide" onRequestClose={() => setTruthList(null)}>
+          <Pressable style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.4)' }} onPress={() => setTruthList(null)} />
+          <View style={{ backgroundColor: '#FFF', borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingTop: 16, paddingBottom: Math.max(insets.bottom, 12) + 8, maxHeight: hookHeight * 0.6, width: '100%', maxWidth: 520, alignSelf: 'center' }}>
+            <Text style={{ fontSize: 17, fontWeight: '800', color: '#0B1220', paddingHorizontal: 20, marginBottom: 8 }}>{truthList?.title}</Text>
+            <ScrollView>
+              {(truthList?.items ?? []).map(it => (
+                <Pressable key={it.label} onPress={() => { setTruthList(null); it.onPick(); }} accessibilityRole="button" style={{ paddingVertical: 13, paddingHorizontal: 20, borderTopWidth: 1, borderTopColor: '#F0F3F7' }}>
+                  <Text style={{ fontSize: 15, color: '#0B1220', fontWeight: '600' }}>{it.label}</Text>
+                  {!!it.sub && <Text style={{ fontSize: 12, color: '#8A97A6' }}>{it.sub}</Text>}
+                </Pressable>
+              ))}
+            </ScrollView>
           </View>
-        </View>
-      );
-    }
+        </Modal>
+        {!!truthToast && (
+          <View pointerEvents="none" style={styles.truthToast}>
+            <Text style={styles.truthToastText}>{truthToast}</Text>
+          </View>
+        )}
+      </View>
+    );
+  }
+
+  if (screen === 'broadcast') {
+    const connected = CONNECT_CHANNELS.filter(c => connectedChannels[c.key] && LIVE_CHANNELS.includes(c.key));
+    const notConnected = CONNECT_CHANNELS.filter(c => !connectedChannels[c.key] && LIVE_CHANNELS.includes(c.key));
+    const selectedKeys = connected.filter(c => broadcastTargets[c.key] !== false).map(c => c.key);
+    const totalConvos = selectedKeys.reduce((n, k) => n + broadcastConvoCount(k), 0);
+    const canSend = broadcastText.trim().length > 0 && selectedKeys.length > 0 && totalConvos > 0 && !broadcastSending;
+    const sentAny = Object.keys(broadcastStatus).length > 0;
     return (
       <View style={styles.mainScreen}>
         <StatusBar style="dark" />
-        <View style={styles.knowledgeHeader}>
+        <View style={[styles.knowledgeHeader, headerSafe]}>
+          <Pressable onPress={() => setScreen(broadcastReturnRef.current)} hitSlop={8}><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={styles.knowledgeHeaderTitle}>Send to all channels</Text>
+          <View style={{ width: 24 }} />
+        </View>
+        <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 24 }]} keyboardShouldPersistTaps="handled">
+          <Text style={[styles.attentionSubtitle, { marginBottom: 14 }]}>Write your message once and NEXORA delivers it to every customer who messaged you in the last 24 hours on your connected channels. WhatsApp, Messenger and Instagram don't allow businesses to start new chats with free-form messages.</Text>
+          <Text style={styles.detailFieldLabel}>Message</Text>
+          <TextInput
+            value={broadcastText}
+            onChangeText={t => { setBroadcastText(t); if (sentAny && !broadcastSending) setBroadcastStatus({}); }}
+            multiline
+            placeholder="Type your message..."
+            placeholderTextColor="#8A97A6"
+            style={[styles.editInput, { height: 120, paddingTop: 12, textAlignVertical: 'top' }]}
+          />
+          <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>Send to</Text>
+          {connected.length === 0 && (
+            <Text style={[styles.attentionSubtitle, { marginBottom: 10 }]}>No channels are connected yet.</Text>
+          )}
+          {connected.map(ch => {
+            const on = broadcastTargets[ch.key] !== false;
+            const st = broadcastStatus[ch.key];
+            const n = broadcastConvoCount(ch.key);
+            return (
+              <View key={ch.key} style={styles.channelRow}>
+                <BrandIcon platform={CHANNEL_PLATFORM[ch.key] ?? 'All'} size={40} />
+                <View style={styles.attentionTextWrap}>
+                  <Text style={styles.attentionTitle}>{ch.name}</Text>
+                  <Text style={styles.attentionSubtitle}>{n === 0 ? 'No customers in the last 24h' : `${n} customer${n === 1 ? '' : 's'} in the last 24h`}</Text>
+                </View>
+                {st === 'sending' ? (
+                  <ActivityIndicator size="small" color="#3B82F6" />
+                ) : st === 'sent' ? (
+                  <View style={styles.channelConnectedPill}><Ionicons name="checkmark" size={12} color="#1E9E6D" /><Text style={styles.channelConnectedText}>Delivered</Text></View>
+                ) : st === 'failed' ? (
+                  <Text style={{ color: '#D64545', fontWeight: '600', fontSize: 12 }}>Failed</Text>
+                ) : (
+                  <Switch
+                    value={on}
+                    onValueChange={v => setBroadcastTargets(p => ({ ...p, [ch.key]: v }))}
+                    trackColor={{ false: '#D8DCE1', true: '#1E56A0' }}
+                    thumbColor="#FFF"
+                  />
+                )}
+              </View>
+            );
+          })}
+          {notConnected.length > 0 && (
+            <Pressable onPress={openConnectChannels} style={styles.channelSummaryBar}>
+              <Ionicons name="link-outline" size={16} color="#1E56A0" />
+              <Text style={styles.channelSummaryText}>Connect more channels ({notConnected.length} available)</Text>
+            </Pressable>
+          )}
+          {selectedKeys.length > 0 && !sentAny && (
+            <Text style={[styles.attentionSubtitle, { marginTop: 14, textAlign: 'center' }]}>
+              This will be sent to {totalConvos} customer{totalConvos === 1 ? '' : 's'} across {selectedKeys.length} channel{selectedKeys.length === 1 ? '' : 's'}.
+            </Text>
+          )}
+        </ScrollView>
+        <View style={{ padding: 16, paddingBottom: 16 + insets.bottom, backgroundColor: '#FFF', borderTopWidth: 1, borderTopColor: '#EEF1F4' }}>
+          <Pressable
+            disabled={!canSend}
+            onPress={() => sendBroadcast(selectedKeys)}
+            style={[styles.resetButton, canSend ? styles.resetButtonEnabled : styles.resetButtonDisabled]}
+          >
+            <Text style={styles.resetButtonText}>
+              {broadcastSending ? 'Sending\u2026' : sentAny ? 'Send another message' : `Send to ${selectedKeys.length} channel${selectedKeys.length === 1 ? '' : 's'}`}
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
+  if (screen === 'activeCall') {
+    // "Nexora calls owner" (Figma node 1466:371). Real escalation when liveCall is set; otherwise the demo refund call.
+    const mm = String(Math.floor(callSeconds / 60)).padStart(2, '0');
+    const ss = String(callSeconds % 60).padStart(2, '0');
+    const lc = liveCall;
+    const NAVY = '#0F1D37', CARD = '#0F2942';
+    const font = (w: '400' | '500' | '600', size: number) => ({ fontFamily: IS_WEB ? 'Inter, system-ui, -apple-system, sans-serif' : undefined, fontWeight: w, fontSize: size, color: '#FFFFFF' } as const);
+    // Fit the 852-tall design on shorter screens by tightening the gaps only.
+    const avail = (height || hookHeight) - (insets.top || 0) - (insets.bottom || 0);
+    const g = Math.max(0.45, Math.min(1, (avail - 63 - 480) / (758 - 480)));
+    const ctrl = (label: string, icon: React.ReactNode, onPress: () => void, on = false) => (
+      <View style={{ alignItems: 'center', gap: 10, width: 80 }}>
+        <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected: on }} style={{ width: 80, height: 80, borderRadius: 60, backgroundColor: on ? '#1E3F66' : CARD, alignItems: 'center', justifyContent: 'center' }}>{icon}</Pressable>
+        <Text style={[font('400', 14), { textAlign: 'center' }]}>{label}</Text>
+      </View>
+    );
+    const keys: { k: string; t: string }[] = [
+      { k: '1', t: "I've got it" }, { k: '2', t: 'Remind me in 30 min' }, { k: '3', t: 'Hear it again' }, { k: '4', t: 'Tell Nexora what to do' }, { k: '5', t: 'Mark it solved' },
+    ];
+    return (
+      <View style={[styles.mainScreen, { backgroundColor: NAVY }]}>
+        <StatusBar style="light" />
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ flexGrow: 1, alignItems: 'center', paddingTop: (insets.top || 44) + 19 * g, paddingBottom: Math.max(insets.bottom, 16) + 16 }} keyboardShouldPersistTaps="handled">
+          <View style={{ width: '100%', maxWidth: 393, paddingHorizontal: 16 }}>
+            {/* Header: back arrow + centred NEXORA AI / Business Assistant */}
+            <View style={{ height: 56, justifyContent: 'center' }}>
+              <Pressable onPress={hangUpCall} hitSlop={10} accessibilityLabel="Back" style={{ position: 'absolute', left: 0, top: 16, zIndex: 1 }}><Ionicons name="arrow-back-sharp" size={24} color="#FFFFFF" /></Pressable>
+              <View style={{ alignItems: 'center', gap: 10 }}>
+                <Text style={font('600', 24)}>NEXORA AI</Text>
+                <Text style={font('400', 14)}>Business Assistant</Text>
+              </View>
+            </View>
+            {/* Incoming call card */}
+            <View style={{ marginTop: 40 * g, height: 99, borderRadius: 18, backgroundColor: CARD, borderWidth: 0.5, borderColor: '#6B7280', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <MaterialCommunityIcons name="phone-in-talk" size={22} color="#FFFFFF" />
+                <Text style={font('500', 16)}>Incoming call</Text>
+              </View>
+              <Text style={[font('400', 14), { textAlign: 'center', marginTop: 10 }]} numberOfLines={2}>{lc ? callHeadline(lc.esc) : 'Refund request needs your attention'}</Text>
+            </View>
+            {/* Nexora orb */}
+            <View style={{ alignSelf: 'center', marginTop: 50 * g, width: 120, height: 120, borderRadius: 60, backgroundColor: CARD, alignItems: 'center', justifyContent: 'center' }}>
+              <View style={{ width: 60, height: 60 }}>
+                <MaterialCommunityIcons name="star-four-points" size={38} color="#F5B8EE" style={{ position: 'absolute', left: 2, top: 18 }} />
+                <MaterialCommunityIcons name="star-four-points" size={26} color="#E8A2F2" style={{ position: 'absolute', left: 30, top: 2 }} />
+              </View>
+            </View>
+            <View style={{ alignItems: 'center', gap: 10, marginTop: 30 * g }}>
+              <Text style={font('600', 24)}>NEXORA AI</Text>
+              <Text style={font('400', 14)}>{mm}:{ss}</Text>
+            </View>
+            {/* Mute / Keypad / Speaker */}
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 70 * g }}>
+              {ctrl(callMuted ? 'Unmute' : 'Mute', <Ionicons name={callMuted ? 'mic-off' : 'mic'} size={30} color="#FFFFFF" />, () => {
+                const m = !callMuted; setCallMuted(m);
+                try { if (canSpeak) { if (m) window.speechSynthesis.pause(); else window.speechSynthesis.resume(); } } catch { /* ignore */ }
+              }, callMuted)}
+              {ctrl('Keypad', <MaterialCommunityIcons name="dialpad" size={30} color="#FFFFFF" />, () => { if (lc) setCallKeypad(v => !v); else flash('Keypad is not available on this call.'); }, callKeypad)}
+              {ctrl('Speaker', <Ionicons name="volume-high" size={30} color="#FFFFFF" />, () => setCallSpeakerOn(v => !v), callSpeakerOn)}
+            </View>
+            {/* Hang up */}
+            <Pressable onPress={hangUpCall} accessibilityRole="button" accessibilityLabel="End call" style={{ alignSelf: 'center', marginTop: 50 * g, width: 80, height: 80, borderRadius: 60, backgroundColor: '#FF383C', alignItems: 'center', justifyContent: 'center' }}>
+              <Ionicons name="call" size={30} color="#FFFFFF" style={{ transform: [{ rotate: '135.68deg' }] }} />
+            </Pressable>
+          </View>
+        </ScrollView>
+        {/* Keypad: the same choices as the phone call */}
+        <Modal visible={!!lc && (callKeypad || callAnswerOpen)} transparent animationType="slide" onRequestClose={() => { setCallKeypad(false); setCallAnswerOpen(false); }}>
+          <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)' }} onPress={() => { setCallKeypad(false); setCallAnswerOpen(false); }} />
+          <View style={{ backgroundColor: CARD, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 20, paddingBottom: Math.max(insets.bottom, 16) + 12, width: '100%', maxWidth: 520, alignSelf: 'center' }}>
+            {callAnswerOpen ? (
+              <View>
+                <Text style={font('600', 18)}>Tell Nexora what to do</Text>
+                <Text style={[font('400', 13), { color: '#B9C6D8', marginTop: 4 }]}>{lc ? `About ${lc.esc.customer_name || 'this customer'}: ${lc.esc.reason}` : ''}</Text>
+                <TextInput value={callAnswerText} onChangeText={setCallAnswerText} autoFocus multiline placeholder="e.g. Approve the refund and apologise for the delay" placeholderTextColor="#7D8DA3" style={{ marginTop: 14, minHeight: 90, borderRadius: 14, borderWidth: 0.5, borderColor: '#6B7280', backgroundColor: NAVY, color: '#FFFFFF', padding: 12, fontSize: 15, textAlignVertical: 'top' }} maxLength={500} />
+                <Pressable onPress={submitCallAnswer} disabled={!callAnswerText.trim()} style={{ marginTop: 14, height: 50, borderRadius: 14, backgroundColor: callAnswerText.trim() ? '#1E56A0' : '#2A3C57', alignItems: 'center', justifyContent: 'center' }}>
+                  <Text style={font('600', 16)}>Save my answer</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <View>
+                <Text style={[font('600', 16), { textAlign: 'center', marginBottom: 14 }]}>Press a number</Text>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 14 }}>
+                  {keys.map(x => (
+                    <Pressable key={x.k} onPress={() => callKey(x.k)} accessibilityRole="button" accessibilityLabel={`${x.k}: ${x.t}`} style={{ width: 96, alignItems: 'center' }}>
+                      <View style={{ width: 64, height: 64, borderRadius: 32, backgroundColor: NAVY, alignItems: 'center', justifyContent: 'center' }}><Text style={font('500', 26)}>{x.k}</Text></View>
+                      <Text style={[font('400', 12), { textAlign: 'center', marginTop: 6, color: '#B9C6D8' }]}>{x.t}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+            )}
+          </View>
+        </Modal>
+      </View>
+    );
+  }
+
+  if (screen === 'callSummary') {
+    return (
+      <View style={styles.mainScreen}>
+        <StatusBar style="dark" />
+        <View style={[styles.knowledgeHeader, headerSafe]}>
           <Pressable onPress={() => setScreen('main')} hitSlop={8}><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
-          <Text style={styles.knowledgeHeaderTitle}>Connect your channels</Text>
+          <Text style={styles.knowledgeHeaderTitle}>Call Summary</Text>
           <View style={{ width: 24 }} />
         </View>
         <ScrollView style={styles.homeScroll} contentContainerStyle={styles.homeScrollContent}>
-          <Text style={[styles.attentionSubtitle, { marginBottom: 16 }]}>Bring customer messages from your favorite platforms into NEXORA</Text>
-          <Text style={styles.channelSectionLabel}>Messaging &amp; Social</Text>
-          {CONNECT_CHANNELS.slice(0, 3).map(ch => (
-            <View key={ch.key} style={styles.channelRow}>
-              <View style={[styles.channelIconBox, { backgroundColor: ch.color }]}><Ionicons name={ch.icon as any} size={20} color="#FFF" /></View>
-              <View style={styles.attentionTextWrap}>
-                <Text style={styles.attentionTitle}>{ch.name}</Text>
-                <Text style={styles.attentionSubtitle}>{ch.desc}</Text>
-              </View>
-              {connectedChannels[ch.key]
-                ? <View style={styles.channelConnectedPill}><Ionicons name="checkmark" size={12} color="#1E9E6D" /><Text style={styles.channelConnectedText}>Connected</Text></View>
-                : <Pressable onPress={() => { setChannelConnectKey(ch.key); setChannelConnectStep('permission'); }} style={styles.channelConnectBtn}><Text style={styles.channelConnectBtnText}>Connect</Text></Pressable>}
+          <View style={styles.callSummaryBanner}>
+            <View style={styles.callSummaryOrb}><Ionicons name="sparkles" size={16} color="#FFF" /></View>
+            <View style={styles.attentionTextWrap}>
+              <Text style={styles.callSummaryHeading}>NEXORA AI called you</Text>
+              {lastCall ? (
+                <Text style={styles.attentionSubtitle}>{`Today  \u2022  ${new Date(lastCall.startedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}  \u2022  ${(() => { const sec = Math.max(1, Math.round(((lastCall.endedAt || Date.now()) - lastCall.startedAt) / 1000)); return sec >= 60 ? `${Math.floor(sec / 60)}m ${sec % 60}s` : `${sec}s`; })()}`}</Text>
+              ) : <Text style={styles.attentionSubtitle}>Today  &bull;  9:41 AM  &bull;  1m 37s</Text>}
             </View>
-          ))}
-          <Text style={styles.channelSectionLabel}>Other channels</Text>
-          {CONNECT_CHANNELS.slice(3).map(ch => (
-            <View key={ch.key} style={styles.channelRow}>
-              <View style={[styles.channelIconBox, { backgroundColor: ch.color }]}><Ionicons name={ch.icon as any} size={20} color="#FFF" /></View>
-              <View style={styles.attentionTextWrap}>
-                <Text style={styles.attentionTitle}>{ch.name}</Text>
-                <Text style={styles.attentionSubtitle}>{ch.desc}</Text>
-              </View>
-              {connectedChannels[ch.key]
-                ? <View style={styles.channelConnectedPill}><Ionicons name="checkmark" size={12} color="#1E9E6D" /><Text style={styles.channelConnectedText}>Connected</Text></View>
-                : <Pressable onPress={() => { setChannelConnectKey(ch.key); setChannelConnectStep('permission'); }} style={styles.channelConnectBtn}><Text style={styles.channelConnectBtnText}>Connect</Text></Pressable>}
-            </View>
-          ))}
-          <View style={styles.channelSummaryBar}>
-            <Ionicons name="link-outline" size={16} color="#1E56A0" />
-            <Text style={styles.channelSummaryText}>{Object.values(connectedChannels).filter(Boolean).length} of {CONNECT_CHANNELS.length} channels connected</Text>
           </View>
-          <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); }} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 16 }]}>
-            <Text style={styles.resetButtonText}>Ask NEXORA</Text>
+          {lastCall ? (
+            <View style={styles.detailCard}>
+              <Text style={styles.sectionLabel}>Topic</Text>
+              <Text style={[styles.attentionSubtitle, { marginBottom: 12 }]}>{`${lastCall.esc.reason}${lastCall.esc.customer_name ? ` (${lastCall.esc.customer_name}${lastCall.esc.channel ? `, ${lastCall.esc.channel}` : ''})` : ''}`}</Text>
+              <Text style={styles.sectionLabel}>Summary</Text>
+              <Text style={[styles.attentionSubtitle, { marginBottom: 12 }]}>{`NEXORA AI explained what ${lastCall.esc.customer_name || 'the customer'} needs and asked for your decision. ${lastCall.outcome === 'ack' ? "You said you're on it." : lastCall.outcome === 'snooze' ? 'You asked to be reminded in 30 minutes.' : lastCall.outcome === 'solved' ? 'You marked it solved.' : lastCall.outcome === 'answer' ? 'You told Nexora what to do.' : "You ended the call before choosing."}`}</Text>
+              {!!lastCall.answer && (<><Text style={styles.sectionLabel}>Your answer</Text><Text style={[styles.attentionSubtitle, { marginBottom: 12, color: '#0B1220' }]}>{`\u201c${lastCall.answer}\u201d`}</Text></>)}
+              <Text style={styles.sectionLabel}>Next steps</Text>
+              {(lastCall.outcome === 'solved' ? ['Nothing else to do. It is closed.'] : lastCall.outcome === 'snooze' ? ['Nexora will call you again in 30 minutes', 'It is still in Needs your decision'] : lastCall.outcome === 'hangup' ? ['It is still waiting in Needs your decision', alertCfg?.phone_verified ? 'Nexora will phone you if it stays open' : 'Add your phone so Nexora can call you about it'] : ['Reply to the customer from the conversation', 'Mark it resolved when you are done']).map(t => <Text key={t} style={styles.attentionSubtitle}>{`\u2022 ${t}`}</Text>)}
+            </View>
+          ) : (
+          <View style={styles.detailCard}>
+            <Text style={styles.sectionLabel}>Topic</Text>
+            <Text style={[styles.attentionSubtitle, { marginBottom: 12 }]}>Blue variant of Oraimo headphone request (Sarah Johnson)</Text>
+            <Text style={styles.sectionLabel}>Summary</Text>
+            <Text style={[styles.attentionSubtitle, { marginBottom: 12 }]}>NEXORA AI explained the customer's needs, confirmed the missing pricing rule and requested your approval.</Text>
+            <Text style={styles.sectionLabel}>Next steps</Text>
+            <Text style={styles.attentionSubtitle}>&bull; Set bulk pricing in Business Brain</Text>
+            <Text style={styles.attentionSubtitle}>&bull; NEXORA will send the confirmed price and availability</Text>
+          </View>
+          )}
+          <Pressable onPress={() => {
+            if (lastCall) {
+              const cv = conversations.find(x => x.name === lastCall.esc.customer_name);
+              if (cv) { setActiveConversationId(cv.id); setScreen('inboxChat'); } else { refreshEscalations().catch(() => {}); setScreen('agendaPriority'); }
+              return;
+            }
+            setMainTab('inbox'); setActiveConversationId('sarah-ig'); setScreen('main');
+          }} style={styles.callSummaryGoToConvo}>
+            <Text style={styles.callSummaryGoToConvoText}>Go to conversation</Text>
+            <Ionicons name="arrow-forward" size={16} color="#1E56A0" />
           </Pressable>
+          {!!lastCall && (lastCall.outcome === 'answer' || lastCall.outcome === 'hangup' || lastCall.outcome === 'ack') && (
+            <Pressable onPress={() => openDecide(lastCall.esc, lastCall.answer || '')} accessibilityRole="button" style={{ marginTop: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#0B1220', borderRadius: 14, paddingVertical: 14 }}>
+              <Ionicons name="paper-plane" size={15} color="#FFF" />
+              <Text style={styles.resetButtonText}>{lastCall.answer ? 'Let Nexora carry out your answer' : 'Decide now'}</Text>
+            </Pressable>
+          )}
+        </ScrollView>
+        <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); }} style={styles.callSummaryAskNexora}>
+          <Ionicons name="sparkles" size={14} color="#FFF" />
+          <Text style={styles.resetButtonText}>Ask NEXORA</Text>
+        </Pressable>
+        {renderBottomNav()}
+        {renderDecideSheet()}
+      </View>
+    );
+  }
+
+  // ---- Live Leads / Customers lists ----
+  if (screen === 'leads' || screen === 'customersLive') {
+    const leadsMode = screen === 'leads';
+    const pool = contacts.filter(c => (leadsMode ? isLead(c) : !isLead(c)));
+    const chips = leadsMode ? ['All', 'New', 'Contacted', 'Qualified'] : ['All', 'New', 'VIP', 'Active'];
+    const matchChip = (c: ContactRow, chip: string) => chip === 'All' || (leadsMode && chip === 'New' ? c.segment === 'Lead' : c.segment === chip);
+    const q = contactSearch.trim().toLowerCase();
+    const shown = pool.filter(c => matchChip(c, contactFilter)).filter(c => !q || c.name.toLowerCase().includes(q) || (c.handle || '').toLowerCase().includes(q) || (c.location || '').toLowerCase().includes(q));
+    const pill = (c: ContactRow) => {
+      const label = c.segment === 'Lead' ? 'New' : c.segment;
+      const st = label === 'Contacted' || label === 'VIP' ? { bg: '#FDEFE0', fg: '#C2760C' } : label === 'Qualified' || label === 'Active' ? { bg: '#E6F4ED', fg: '#1E9E6D' } : { bg: '#EAF1FB', fg: '#1E56A0' };
+      return <View style={{ backgroundColor: st.bg, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 3 }}><Text style={{ color: st.fg, fontSize: 11, fontWeight: '700' }}>{label}</Text></View>;
+    };
+    return (
+      <View style={styles.mainScreen}>
+        <StatusBar style="dark" />
+        {leadsMode ? renderTopBar() : (
+          <View style={[styles.knowledgeHeader, headerSafe]}>
+            <Pressable onPress={() => customersReturnRef.current()} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+            <Text style={styles.knowledgeHeaderTitle}>Customers</Text>
+            <Pressable onPress={() => setContactForm({ kind: 'customer', name: '', phone: '', email: '', location: '', note: '' })} hitSlop={8} accessibilityLabel="Add customer"><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 15 }}>+ Add</Text></Pressable>
+          </View>
+        )}
+        <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 100 }]} keyboardShouldPersistTaps="handled">
+          {leadsMode && (
+            <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 22, fontWeight: '700', color: '#0B1220' }}>Leads</Text>
+                <Text style={[styles.attentionSubtitle, { marginTop: 2 }]}>Find, track and convert your leads with AI</Text>
+              </View>
+              <View style={{ alignItems: 'flex-end', gap: 8 }}>
+                <Pressable onPress={() => setContactForm({ kind: 'lead', name: '', phone: '', email: '', location: '', note: '' })} hitSlop={6}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 15 }}>+ Add</Text></Pressable>
+                <Pressable onPress={() => openCustomers(() => openLeads())} hitSlop={6}><Text style={{ color: '#1E56A0', fontWeight: '600', fontSize: 13 }}>Customers {'›'}</Text></Pressable>
+              </View>
+            </View>
+          )}
+          {leadsMode && (
+            <Pressable onPress={() => { openFollowups().catch(() => {}); }} accessibilityRole="button" style={{ marginTop: 12, flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12, borderRadius: 14, backgroundColor: '#0B1220' }}>
+              <Ionicons name="paper-plane" size={18} color="#7FB2FF" />
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 14 }}>Smart follow-ups</Text>
+                <Text style={{ color: '#9FB0C6', fontSize: 12 }}>Nexora writes a message for every lead that went quiet</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color="#9FB0C6" />
+            </Pressable>
+          )}
+          <View style={[styles.searchBarPlain, { marginTop: 14 }]}>
+            <Ionicons name="search-outline" size={16} color="#8A97A6" />
+            <TextInput value={contactSearch} onChangeText={setContactSearch} placeholder={leadsMode ? 'Search leads...' : 'Search customers...'} placeholderTextColor="#8A97A6" style={[styles.homeSearchPlaceholder, { flex: 1, paddingVertical: 0 }]} />
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.filterRow, { paddingRight: 8 }]}>
+            {chips.map(ch => (
+              <Pressable key={ch} onPress={() => setContactFilter(ch)} style={[styles.filterChip, contactFilter === ch && styles.filterChipActive]}>
+                <Text style={[styles.filterChipText, contactFilter === ch && styles.filterChipTextActive]}>{ch} ({pool.filter(c => matchChip(c, ch)).length})</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+          {contactsLoading && contacts.length === 0 && <ActivityIndicator style={{ marginTop: 24 }} color="#1E56A0" />}
+          {!contactsLoading && shown.length === 0 && (
+            <View style={{ alignItems: 'center', paddingVertical: 36 }}>
+              <Ionicons name={leadsMode ? 'storefront-outline' : 'people-outline'} size={40} color="#A5AFBB" />
+              <Text style={[styles.attentionTitle, { marginTop: 10 }]}>{pool.length ? 'Nothing matches' : leadsMode ? 'No leads yet' : 'No customers yet'}</Text>
+              <Text style={[styles.attentionSubtitle, { textAlign: 'center', marginTop: 4, paddingHorizontal: 16 }]}>
+                {pool.length ? 'Try another filter or search.' : leadsMode ? 'Add a lead, or open a chat in your Inbox and choose "Save as lead".' : 'Add your customers, or convert a qualified lead into a customer.'}
+              </Text>
+            </View>
+          )}
+          {shown.map(c => {
+            const plat = CHANNEL_TO_PLATFORM[String(c.channel || '').toLowerCase()];
+            return (
+              <Pressable key={c.id} onPress={() => openContact(c)} style={[styles.conversationRow, { paddingVertical: 12 }]} accessibilityRole="button" accessibilityLabel={`${c.name}, ${c.segment}`}>
+                <View style={[styles.conversationAvatar, { width: 48, height: 48, borderRadius: 24 }]}><Text style={styles.conversationAvatarText}>{c.name.split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase()}</Text></View>
+                <View style={styles.attentionTextWrap}>
+                  <Text style={styles.attentionTitle}>{c.name}</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 }}>
+                    {plat && <BrandIcon platform={plat} size={14} />}
+                    <Text style={styles.attentionSubtitle} numberOfLines={1}>{c.handle || c.channel}</Text>
+                  </View>
+                  <Text style={[styles.attentionSubtitle, { marginTop: 2 }]} numberOfLines={1}>{leadsMode ? (c.ai_recommendation ? 'Product interest' : 'Lead') : 'Last interaction'} | {contactLastSeen(c)}</Text>
+                </View>
+                {pill(c)}
+                <Ionicons name="chevron-forward" size={16} color="#8A97A6" style={{ marginLeft: 6 }} />
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+        <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); sendChatMessage(leadsMode ? 'Look at my leads and tell me who to follow up with first and what to say.' : 'Look at my customers and tell me who to re-engage and what to offer them.'); }} style={{ position: 'absolute', right: 16, bottom: (IS_WEB && userId && hookWidth >= 1000 ? 24 : 96) + insets.bottom, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#0F2942', borderRadius: 20, paddingHorizontal: 14, paddingVertical: 10 }} accessibilityLabel="Ask Nexora">
+          <Ionicons name="sparkles" size={14} color="#FFF" /><Text style={{ color: '#FFF', fontWeight: '700', fontSize: 13 }}>Ask NEXORA</Text>
+        </Pressable>
+        {renderBottomNav()}
+        {renderContactForm()}
+      </View>
+    );
+  }
+
+  // ---- Live Lead / Customer profile ----
+  if (screen === 'leadDetail' || screen === 'customerDetail') {
+    const c = contacts.find(x => x.id === activeContactId);
+    const leadMode = screen === 'leadDetail';
+    if (!c) {
+      return (
+        <View style={[styles.mainScreen, { alignItems: 'center', justifyContent: 'center' }]}>
+          <Text style={styles.attentionSubtitle}>This contact is no longer available.</Text>
+          <Pressable onPress={() => (leadMode ? openLeads() : openCustomers())} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 16, paddingHorizontal: 24 }]}><Text style={styles.resetButtonText}>Back</Text></Pressable>
+        </View>
+      );
+    }
+    const plat = CHANNEL_TO_PLATFORM[String(c.channel || '').toLowerCase()];
+    const myOrders = ordersFor(c);
+    const liveSpent = myOrders.filter(o => o.status !== 'cancelled').reduce((n, o) => n + Number(o.total || 0), 0);
+    const totalOrders = Math.max(myOrders.length, c.total_orders ?? 0);
+    const totalSpent = Math.max(liveSpent, Number(c.total_spent ?? 0));
+    const lastOrder = myOrders[0]?.created_at ?? c.last_order_at;
+    const conv = contactConversation(c);
+    const fmtDate = (d?: string | null) => (d ? new Date(d.length === 10 ? `${d}T12:00:00` : d).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }) : '—');
+    const ask = (q: string) => { setMainTab('brain'); setScreen('main'); sendChatMessage(q); };
+    const infoRow = (label: string, value: string) => (
+      <View key={label} style={{ flexDirection: 'row', paddingVertical: 7 }}>
+        <Text style={[styles.attentionSubtitle, { width: 92 }]}>{label}</Text>
+        <Text style={[styles.attentionTitle, { flex: 1, fontWeight: '500' }]} numberOfLines={2}>{value || '—'}</Text>
+      </View>
+    );
+    const stat = (icon: string, label: string, value: string) => (
+      <View style={{ flex: 1, padding: 12, borderRadius: 14, backgroundColor: '#F5F6F8' }}>
+        <Ionicons name={icon as any} size={18} color="#0B1220" />
+        <Text style={[styles.attentionSubtitle, { marginTop: 6 }]}>{label}</Text>
+        <Text style={{ fontSize: 17, fontWeight: '700', color: '#0B1220', marginTop: 2 }}>{value}</Text>
+      </View>
+    );
+    return (
+      <View style={styles.mainScreen}>
+        <StatusBar style="dark" />
+        <View style={[styles.knowledgeHeader, headerSafe]}>
+          <Pressable onPress={() => setScreen(leadMode ? 'leads' : 'customersLive')} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={styles.knowledgeHeaderTitle}>{leadMode ? 'Lead Profile' : 'Customer Profile'}</Text>
+          <Pressable onPress={() => Alert.alert(c.name, undefined, [
+            ...(leadMode ? [{ text: 'Convert to customer', onPress: () => { updateContact(c, { segment: 'New', customer_since: localIsoDate() }, `${c.name} is now a customer`); } }] : []),
+            { text: 'Delete', style: 'destructive' as const, onPress: () => deleteContact(c) },
+            { text: 'Cancel', style: 'cancel' as const },
+          ])} hitSlop={8} accessibilityLabel="More options"><Ionicons name="ellipsis-vertical" size={20} color="#0B1220" /></Pressable>
+        </View>
+        <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 110 }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+            <View style={[styles.conversationAvatar, { width: 64, height: 64, borderRadius: 32 }]}><Text style={[styles.conversationAvatarText, { fontSize: 20 }]}>{c.name.split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase()}</Text></View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 18, fontWeight: '700', color: '#0B1220' }}>{c.name}</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
+                {plat && <BrandIcon platform={plat} size={16} />}
+                <Text style={styles.attentionSubtitle} numberOfLines={1}>{c.handle || c.channel}</Text>
+                {!!c.location && <Text style={styles.attentionSubtitle} numberOfLines={1}>{'  ·  '}{c.location}</Text>}
+              </View>
+            </View>
+          </View>
+          <View style={{ flexDirection: 'row', gap: 12, marginTop: 16 }}>
+            <Pressable onPress={() => messageContact(c)} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1, flexDirection: 'row', gap: 8, minHeight: 42 }]} accessibilityLabel="Message">
+              <Ionicons name="chatbox-ellipses-outline" size={16} color="#FFF" /><Text style={styles.resetButtonText}>Message</Text>
+            </Pressable>
+            <Pressable onPress={() => callContact(c)} style={[styles.resetButton, { flex: 1, flexDirection: 'row', gap: 8, minHeight: 42, borderWidth: 1, borderColor: '#5381BB' }]} accessibilityLabel="Call">
+              <Ionicons name="call-outline" size={16} color="#1E56A0" /><Text style={[styles.resetButtonText, { color: '#1E56A0' }]}>Call</Text>
+            </Pressable>
+          </View>
+
+          {leadMode ? (
+            <>
+              <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>Stage</Text>
+              <View style={[styles.filterRow, { marginTop: 6 }]}>
+                {LEAD_STAGES.map(st => (
+                  <Pressable key={st} onPress={() => { if (c.segment !== st) updateContact(c, { segment: st, last_interaction_at: new Date().toISOString() }, `Marked as ${st === 'Lead' ? 'New' : st}`); }} style={[styles.filterChip, c.segment === st && styles.filterChipActive]}>
+                    <Text style={[styles.filterChipText, c.segment === st && styles.filterChipTextActive]}>{st === 'Lead' ? 'New' : st}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <View style={[styles.detailCard, { marginTop: 12 }]}>
+                <Text style={[styles.attentionTitle, { fontSize: 15, marginBottom: 4 }]}>Contact information</Text>
+                {infoRow('Email', contactEmail(c))}
+                {infoRow('Phone', contactPhone(c))}
+                {infoRow('Location', c.location || '')}
+                {infoRow('Source', c.channel)}
+                {infoRow('Added', fmtDate(c.created_at))}
+                {infoRow('Last contact', contactLastSeen(c))}
+              </View>
+              <View style={[styles.detailCard, { backgroundColor: '#F2F8FD' }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Ionicons name="sparkles" size={16} color="#1E9EC5" /><Text style={[styles.attentionTitle, { color: '#1E9EC5' }]}>AI Insights</Text>
+                </View>
+                <Text style={[styles.attentionSubtitle, { marginTop: 6, fontSize: 13 }]}>{c.ai_recommendation || `No notes yet for ${c.name.split(' ')[0]}. Ask Nexora how to convert this lead.`}</Text>
+                <Pressable onPress={() => ask(`Help me convert my lead ${c.name} (${c.channel}${c.handle ? `, ${c.handle}` : ''}). ${c.ai_recommendation ? `What I know: ${c.ai_recommendation}. ` : ''}Suggest the next step and write the message I should send.`)} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 12, minHeight: 40, backgroundColor: '#1E9EC5' }]}>
+                  <Text style={styles.resetButtonText}>View recommendations {'→'}</Text>
+                </Pressable>
+              </View>
+              {c.segment === 'Qualified' && (
+                <Pressable onPress={() => updateContact(c, { segment: 'New', customer_since: localIsoDate() }, `${c.name} is now a customer`)} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 4 }]}>
+                  <Text style={styles.resetButtonText}>Convert to customer</Text>
+                </Pressable>
+              )}
+            </>
+          ) : (
+            <>
+              <View style={[styles.filterRow, { marginTop: 18 }]}>
+                {(['Overview', 'Orders', 'History'] as const).map(t => (
+                  <Pressable key={t} onPress={() => setContactTab(t)} style={[styles.filterChip, contactTab === t && styles.filterChipActive]}>
+                    <Text style={[styles.filterChipText, contactTab === t && styles.filterChipTextActive]}>{t === 'History' ? 'Interaction history' : t === 'Orders' ? `Orders (${myOrders.length})` : t}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              {contactTab === 'Overview' && (
+                <>
+                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 8 }}>
+                    {stat('bag-handle-outline', 'Total orders', String(totalOrders))}
+                    {stat('wallet-outline', 'Total spent', money(totalSpent))}
+                  </View>
+                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
+                    {stat('calendar-outline', 'Last order', fmtDate(lastOrder))}
+                    {stat('time-outline', 'Customer since', fmtDate(c.customer_since || c.created_at))}
+                  </View>
+                  <View style={[styles.detailCard, { backgroundColor: '#F2F8FD', marginTop: 14 }]}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <Ionicons name="sparkles" size={16} color="#1E9EC5" /><Text style={[styles.attentionTitle, { color: '#1E9EC5' }]}>AI Recommendation</Text>
+                    </View>
+                    <Text style={[styles.attentionSubtitle, { marginTop: 6, fontSize: 13 }]}>{c.ai_recommendation || `Ask Nexora what to offer ${c.name.split(' ')[0]} next, based on their orders.`}</Text>
+                    <Pressable onPress={() => ask(`Write a personalized offer for my customer ${c.name}. They have ${totalOrders} orders worth ${money(totalSpent)}${myOrders[0] ? `; latest: ${myOrders[0].items}` : ''}. Keep it short for ${c.channel}.`)} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 12, minHeight: 40, backgroundColor: '#1E9EC5' }]}>
+                      <Text style={styles.resetButtonText}>Send personalized offer {'→'}</Text>
+                    </Pressable>
+                  </View>
+                  <Text style={[styles.channelSectionLabel, { marginTop: 6 }]}>Segment</Text>
+                  <View style={[styles.filterRow, { marginTop: 6 }]}>
+                    {['New', 'VIP', 'Active'].map(sg => (
+                      <Pressable key={sg} onPress={() => { if (c.segment !== sg) updateContact(c, { segment: sg }, `Moved to ${sg}`); }} style={[styles.filterChip, c.segment === sg && styles.filterChipActive]}>
+                        <Text style={[styles.filterChipText, c.segment === sg && styles.filterChipTextActive]}>{sg}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                  {!!c.tags?.length && (
+                    <>
+                      <Text style={[styles.channelSectionLabel, { marginTop: 10 }]}>Tags</Text>
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 }}>
+                        {c.tags.map(t => <View key={t} style={{ backgroundColor: '#EEF1F4', borderRadius: 12, paddingHorizontal: 10, paddingVertical: 4 }}><Text style={{ fontSize: 12, color: '#0B1220' }}>{t}</Text></View>)}
+                      </View>
+                    </>
+                  )}
+                </>
+              )}
+              {contactTab === 'Orders' && (
+                <>
+                  {myOrders.length === 0 && <Text style={[styles.attentionSubtitle, { textAlign: 'center', marginTop: 24 }]}>No orders under the name "{c.name}" yet.</Text>}
+                  {myOrders.map(o => (
+                    <Pressable key={o.id} onPress={() => openOrders('All')} style={[styles.detailCard, { marginTop: 10 }]}>
+                      <Text style={styles.attentionTitle}>{o.items}</Text>
+                      <Text style={[styles.attentionSubtitle, { marginTop: 2 }]}>${Number(o.total).toFixed(2)}{'  ·  '}{o.status}{'  ·  '}{timeAgo(o.created_at)}</Text>
+                    </Pressable>
+                  ))}
+                </>
+              )}
+              {contactTab === 'History' && (
+                <>
+                  {conv ? (
+                    <Pressable onPress={() => openConversation(conv)} style={[styles.detailCard, { marginTop: 10, flexDirection: 'row', alignItems: 'center', gap: 12 }]}>
+                      <BrandIcon platform={conv.platform} size={36} />
+                      <View style={styles.attentionTextWrap}>
+                        <Text style={styles.attentionTitle}>{conv.platform} conversation</Text>
+                        <Text style={styles.attentionSubtitle} numberOfLines={1}>{conv.lastMessage}</Text>
+                      </View>
+                      <Text style={styles.conversationTime}>{conv.lastTime}</Text>
+                    </Pressable>
+                  ) : <Text style={[styles.attentionSubtitle, { marginTop: 12 }]}>No conversation with {c.name} in your Inbox yet.</Text>}
+                  {myOrders.slice(0, 10).map(o => (
+                    <View key={o.id} style={[styles.detailCard, { marginTop: 10, flexDirection: 'row', alignItems: 'center', gap: 12 }]}>
+                      <View style={[styles.conversationAvatar, { width: 36, height: 36, borderRadius: 18, backgroundColor: '#0F2942' }]}><Ionicons name="bag-handle" size={16} color="#FFF" /></View>
+                      <View style={styles.attentionTextWrap}>
+                        <Text style={styles.attentionTitle}>Order placed</Text>
+                        <Text style={styles.attentionSubtitle} numberOfLines={1}>{o.items}{'  ·  '}${Number(o.total).toFixed(2)}</Text>
+                      </View>
+                      <Text style={styles.conversationTime}>{timeAgo(o.created_at)}</Text>
+                    </View>
+                  ))}
+                </>
+              )}
+            </>
+          )}
+        </ScrollView>
+        {renderBottomNav()}
+      </View>
+    );
+  }
+
+  if (screen === 'learned') {
+    const catLabel: Record<string, string> = { products: 'Product', services: 'Service', policies: 'Policy', faqs: 'FAQ', operations: 'Operations' };
+    return (
+      <View style={styles.mainScreen}>
+        <StatusBar style="dark" />
+        <View style={[styles.knowledgeHeader, headerSafe]}>
+          <Pressable onPress={() => setScreen('knowledgeHealth')} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={styles.knowledgeHeaderTitle}>What Nexora learned</Text>
+          <Pressable disabled={!!learnBusy} onPress={() => runLearning(true).then(() => loadLearned())} hitSlop={8} accessibilityLabel="Learn now">
+            {learnBusy === 'run' ? <ActivityIndicator color="#1E56A0" /> : <Ionicons name="sparkles-outline" size={22} color="#0B1220" />}
+          </Pressable>
+        </View>
+        <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40 }]}>
+          <Text style={[styles.attentionSubtitle, { marginBottom: 12 }]}>Facts you mentioned are already used in answers (marked "Needs your OK"). Customer questions without an answer wait here until you add one. Confirm, edit or remove each item.</Text>
+          {!isOwnerUser && <Text style={styles.attentionSubtitle}>Only the business owner can review what Nexora learns.</Text>}
+          {learnedLoading && <ActivityIndicator color="#1E56A0" style={{ marginTop: 20 }} />}
+          {!learnedLoading && learnedItems.length === 0 && isOwnerUser && (
+            <View style={[styles.detailCard, { alignItems: 'center', paddingVertical: 24 }]}>
+              <Ionicons name="checkmark-done-outline" size={28} color={GAUGE_GREEN} />
+              <Text style={[styles.attentionTitle, { marginTop: 8 }]}>Nothing to review</Text>
+              <Text style={[styles.attentionSubtitle, { marginTop: 4, textAlign: 'center' }]}>Chat with Nexora in Brain or reply to customers in Inbox. New facts and frequent questions show up here.</Text>
+            </View>
+          )}
+          {learnedItems.map(it => {
+            const draft = it.status === 'Draft';
+            return (
+              <View key={it.id} style={[styles.detailCard, { marginTop: 10 }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <View style={{ paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, backgroundColor: '#EAF1FB' }}><Text style={{ fontSize: 11, fontWeight: '700', color: '#1E56A0' }}>{catLabel[it.category] ?? it.category}</Text></View>
+                  <View style={{ paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, backgroundColor: draft ? '#FDEFE0' : '#E6F4ED' }}><Text style={{ fontSize: 11, fontWeight: '700', color: draft ? '#C2760C' : GAUGE_GREEN }}>{draft ? 'Needs an answer' : 'In use · Needs your OK'}</Text></View>
+                  <Text style={{ marginLeft: 'auto', fontSize: 11, color: '#8A97A6' }}>{relTime(it.created_at)}</Text>
+                </View>
+                <Text style={[styles.attentionTitle, { marginTop: 8, fontSize: 15 }]}>{it.name}</Text>
+                <Text style={[styles.attentionSubtitle, { marginTop: 4, fontSize: 14, lineHeight: 20 }]}>{it.overview || '(no answer yet)'}</Text>
+                {!!it.source_detail && <Text style={{ marginTop: 8, fontSize: 12, color: '#5C6B7A', fontStyle: 'italic' }}>From your chats: “{it.source_detail}”</Text>}
+                <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+                  {!draft && <Pressable onPress={() => approveLearned(it.id)} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1, minHeight: 38 }]}><Text style={styles.resetButtonText}>Confirm</Text></Pressable>}
+                  <Pressable onPress={() => setLearnEdit({ id: it.id, name: it.name, content: draft ? '' : it.overview })} style={[styles.resetButton, { flex: 1, minHeight: 38, backgroundColor: '#EAF1FB' }]}><Text style={[styles.resetButtonText, { color: '#1E56A0' }]}>{draft ? 'Add answer' : 'Edit'}</Text></Pressable>
+                  <Pressable onPress={() => dismissLearned(it.id)} style={[styles.resetButton, { flex: 1, minHeight: 38, backgroundColor: '#FDEDED' }]}><Text style={[styles.resetButtonText, { color: '#D64545' }]}>Remove</Text></Pressable>
+                </View>
+              </View>
+            );
+          })}
+        </ScrollView>
+        {learnEdit && (
+          <Modal visible transparent animationType="slide" onRequestClose={() => setLearnEdit(null)} statusBarTranslucent>
+            <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+              <Pressable style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)' }} onPress={() => setLearnEdit(null)} accessibilityLabel="Close" />
+              <View style={{ backgroundColor: '#FFF', borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 20, paddingBottom: 20 + insets.bottom }}>
+                <Text style={{ fontSize: 18, fontWeight: '700', color: '#0B1220' }}>Edit and confirm</Text>
+                <Text style={[styles.detailFieldLabel, { marginTop: 12 }]}>Title or question</Text>
+                <TextInput value={learnEdit.name} onChangeText={t => setLearnEdit(e => (e ? { ...e, name: t } : e))} style={styles.editInput} maxLength={120} />
+                <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Details or answer</Text>
+                <TextInput value={learnEdit.content} onChangeText={t => setLearnEdit(e => (e ? { ...e, content: t } : e))} style={[styles.editInput, { minHeight: 90, textAlignVertical: 'top' }]} multiline maxLength={800} placeholder="Write what Nexora should say" placeholderTextColor="#A5AFBB" />
+                <Pressable disabled={!learnEdit.name.trim() || !learnEdit.content.trim()} onPress={() => approveLearned(learnEdit.id, { name: learnEdit.name.trim(), content: learnEdit.content.trim() })} style={[styles.resetButton, learnEdit.name.trim() && learnEdit.content.trim() ? styles.resetButtonEnabled : null, { marginTop: 16 }]}>
+                  <Text style={styles.resetButtonText}>Save and confirm</Text>
+                </Pressable>
+              </View>
+            </KeyboardAvoidingView>
+          </Modal>
+        )}
+      </View>
+    );
+  }
+
+  if (screen === 'network') {
+    const f = netForm;
+    const setF = (k: keyof NetForm) => (v: any) => setNetForm(prev => ({ ...prev, [k]: v }));
+    const incoming = netConnections.filter(c => c.direction === 'in' && c.status === 'pending');
+    const outgoing = netConnections.filter(c => c.direction === 'out' && c.status === 'pending');
+    const connected = netConnections.filter(c => c.status === 'accepted');
+    const field = (label: string, k: keyof NetForm, placeholder: string, opts: { multiline?: boolean; keyboardType?: any; max?: number } = {}) => (
+      <>
+        <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>{label}</Text>
+        <TextInput value={String(f[k] ?? '')} onChangeText={setF(k)} placeholder={placeholder} placeholderTextColor="#A5AFBB" style={[styles.editInput, opts.multiline ? { minHeight: 72, textAlignVertical: 'top' } : null]} multiline={opts.multiline} keyboardType={opts.keyboardType} autoCapitalize={opts.keyboardType ? 'none' : 'sentences'} maxLength={opts.max ?? 300} />
+      </>
+    );
+    return (
+      <View style={styles.mainScreen}>
+        <StatusBar style="dark" />
+        <View style={[styles.knowledgeHeader, headerSafe]}>
+          <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); }} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={styles.knowledgeHeaderTitle}>Find partners</Text>
+          <Pressable onPress={() => { openNetwork().catch(() => {}); }} hitSlop={8} accessibilityLabel="Refresh"><Ionicons name="refresh-outline" size={22} color="#0B1220" /></Pressable>
+        </View>
+        <View style={{ flexDirection: 'row', gap: 8, paddingHorizontal: 20, paddingBottom: 10 }}>
+          {([['matches', 'Matches'], ['requests', `Requests${incoming.length ? ` (${incoming.length})` : ''}`], ['profile', 'My profile']] as const).map(([k, label]) => (
+            <Pressable key={k} onPress={() => { setNetTab(k); if (k === 'matches' && netVisible && netMatches === null) loadNetMatches().catch(() => {}); if (k === 'requests') loadNetConnections().catch(() => {}); }} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 18, backgroundColor: netTab === k ? '#1E56A0' : '#EAF1FB' }}>
+              <Text style={{ color: netTab === k ? '#FFFFFF' : '#1E56A0', fontWeight: '600', fontSize: 13 }}>{label}</Text>
+            </Pressable>
+          ))}
+        </View>
+        <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40 }]} keyboardShouldPersistTaps="handled">
+          {netLoading && <ActivityIndicator color="#1E56A0" style={{ marginTop: 20 }} />}
+          {!!netError && !netLoading && <Text style={[styles.attentionSubtitle, { color: '#C2760C', marginBottom: 10 }]}>{netError}</Text>}
+
+          {!netLoading && netTab === 'matches' && (
+            !netVisible ? (
+              <View style={[styles.detailCard, { alignItems: 'center', paddingVertical: 24 }]}>
+                <Ionicons name="people-outline" size={28} color="#1E56A0" />
+                <Text style={[styles.attentionTitle, { marginTop: 8 }]}>Set up your partner profile</Text>
+                <Text style={[styles.attentionSubtitle, { marginTop: 4, textAlign: 'center' }]}>Say what you offer and what you need. Nexora matches you with businesses that fit, and only shares your contacts when you both agree.</Text>
+                <Pressable onPress={() => setNetTab('profile')} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 14, minHeight: 40, alignSelf: 'stretch' }]}><Text style={styles.resetButtonText}>Create my profile</Text></Pressable>
+              </View>
+            ) : netMatches === null ? (
+              <View style={{ alignItems: 'center', paddingVertical: 30, gap: 8 }}><ActivityIndicator color="#1E56A0" /><Text style={styles.attentionSubtitle}>Nexora is finding your best matches…</Text></View>
+            ) : netMatches.length === 0 ? (
+              <View style={[styles.detailCard, { alignItems: 'center', paddingVertical: 24 }]}>
+                <Ionicons name="hourglass-outline" size={26} color="#8A97A6" />
+                <Text style={[styles.attentionTitle, { marginTop: 8 }]}>No matches yet</Text>
+                <Text style={[styles.attentionSubtitle, { marginTop: 4, textAlign: 'center' }]}>As more businesses join the network, Nexora will suggest partners here. Make your "needs" and "offers" specific to get better matches.</Text>
+              </View>
+            ) : netMatches.map(m => (
+              <View key={m.user_id} style={[styles.detailCard, { marginTop: 10 }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <View style={{ width: 42, height: 42, borderRadius: 21, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#1E56A0', fontWeight: '800', fontSize: 16 }}>{m.display_name.charAt(0).toUpperCase()}</Text></View>
+                  <View style={styles.attentionTextWrap}>
+                    <Text style={styles.attentionTitle}>{m.display_name}</Text>
+                    <Text style={styles.attentionSubtitle}>{[m.industry, [m.city, m.country].filter(Boolean).join(', ')].filter(Boolean).join(' · ')}</Text>
+                  </View>
+                  <View style={{ alignItems: 'center' }}><Text style={{ fontSize: 16, fontWeight: '800', color: m.score >= 70 ? GAUGE_GREEN : m.score >= 45 ? GAUGE_ORANGE : '#5C6B7A' }}>{m.score}%</Text><Text style={{ fontSize: 10, color: '#8A97A6' }}>fit</Text></View>
+                </View>
+                <View style={{ marginTop: 10, padding: 10, borderRadius: 12, backgroundColor: '#F2F8FD', flexDirection: 'row', gap: 6 }}>
+                  <Ionicons name="sparkles" size={14} color="#1E56A0" style={{ marginTop: 2 }} />
+                  <Text style={{ flex: 1, fontSize: 13, color: '#1E3A5F', lineHeight: 19 }}>{m.reason}</Text>
+                </View>
+                {!!m.offers && <Text style={{ marginTop: 8, fontSize: 13, color: '#334155' }}><Text style={{ fontWeight: '700' }}>Offers: </Text>{m.offers}</Text>}
+                {!!m.needs && <Text style={{ marginTop: 4, fontSize: 13, color: '#334155' }}><Text style={{ fontWeight: '700' }}>Looking for: </Text>{m.needs}</Text>}
+                <Pressable onPress={() => { setConnectTarget(m); setConnectMsg(`Hi ${m.display_name}, I'm ${f.display_name}. ${m.reason} Would you like to talk?`); }} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 12, minHeight: 40 }]}>
+                  <Text style={styles.resetButtonText}>Connect</Text>
+                </Pressable>
+              </View>
+            ))
+          )}
+
+          {!netLoading && netTab === 'matches' && (
+            <View style={[styles.detailCard, { marginTop: 16, backgroundColor: '#F7FAFE', borderWidth: 1, borderColor: '#C9DDF5' }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="globe-outline" size={18} color="#1E56A0" />
+                <Text style={[styles.attentionTitle, { flex: 1 }]}>Also on the web (not on Nexora yet)</Text>
+              </View>
+              <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}>Nexora searches the internet for suppliers, buyers, distributors, influencers and associations that fit what you offer and need, including people who don't use Nexora.</Text>
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+                <TextInput value={netWebFocus} onChangeText={setNetWebFocus} onSubmitEditing={searchPartnersWeb} placeholder="Optional: e.g. phone accessory wholesalers in Lagos" placeholderTextColor="#A5AFBB" style={[styles.editInput, { flex: 1, minWidth: 0 }]} maxLength={160} />
+                <Pressable disabled={netWebLoading} onPress={searchPartnersWeb} style={{ backgroundColor: '#1E56A0', borderRadius: 14, paddingHorizontal: 16, justifyContent: 'center' }}>
+                  {netWebLoading ? <ActivityIndicator color="#FFF" /> : <Text style={{ color: '#FFF', fontWeight: '700' }}>{netWeb ? 'Search again' : 'Search the web'}</Text>}
+                </Pressable>
+              </View>
+              {netWebLoading && <Text style={[styles.attentionSubtitle, { marginTop: 8 }]}>Searching the web for good partners… about 20 seconds.</Text>}
+              {!!netWebError && <Text style={{ color: '#C2410C', fontSize: 13, marginTop: 8 }}>{netWebError}</Text>}
+              {!netWebLoading && netWeb?.map((w, i) => (
+                <View key={`${w.url}-${i}`} style={{ marginTop: 12, padding: 12, borderRadius: 14, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E6ECF3' }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                    {renderWebThumb(w.url, 64, 12)}
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        <Text style={[styles.attentionTitle, { flex: 1 }]} numberOfLines={2}>{w.name}</Text>
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: '#1E56A0', backgroundColor: '#EAF1FB', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8, overflow: 'hidden', textTransform: 'capitalize' }}>{w.kind}</Text>
+                      </View>
+                      <Text style={styles.attentionSubtitle} numberOfLines={1}>{[w.location, w.domain].filter(Boolean).join(' · ')}</Text>
+                    </View>
+                  </View>
+                  {!!w.why && <Text style={{ marginTop: 6, fontSize: 13, color: '#334155', lineHeight: 19 }}>{w.why}</Text>}
+                  {!!w.how_to_approach && <Text style={{ marginTop: 4, fontSize: 13, color: '#14532D', lineHeight: 19 }}><Text style={{ fontWeight: '700' }}>First step: </Text>{w.how_to_approach}</Text>}
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+                    <Pressable onPress={() => openInApp(w.url, w.name)} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 14, borderWidth: 1, borderColor: '#D5DEE8' }}>
+                      <Ionicons name="open-outline" size={13} color="#1E56A0" /><Text style={{ color: '#1E56A0', fontSize: 13, fontWeight: '600' }}>Visit</Text>
+                    </Pressable>
+                    <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); sendChatMessage(`Write a short, friendly first message from my business to ${w.name} (${w.domain}) proposing a partnership. Why they fit: ${w.why}. Keep it under 100 words.`); }} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 14, backgroundColor: '#EAF1FB' }}>
+                      <Ionicons name="sparkles" size={13} color="#1E56A0" /><Text style={{ color: '#1E56A0', fontSize: 13, fontWeight: '600' }}>Draft a message</Text>
+                    </Pressable>
+                    <Pressable onPress={() => { Share.share({ message: `Hi ${w.name}, I'd love to explore working together. I use Nexora AI to manage my business. Join me there so we can connect: ${SHOP_BASE_URL}` }).catch(() => {}); }} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 14, backgroundColor: '#E9F8EE' }}>
+                      <Ionicons name="person-add-outline" size={13} color="#15803D" /><Text style={{ color: '#15803D', fontSize: 13, fontWeight: '600' }}>Invite to Nexora</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              ))}
+              {!netWebLoading && netWeb?.length === 0 && <Text style={[styles.attentionSubtitle, { marginTop: 8 }]}>Nothing reliable came up. Add more detail to what you offer and need in My profile.</Text>}
+            </View>
+          )}
+
+          {!netLoading && netTab === 'requests' && (
+            <>
+              <Text style={styles.channelSectionLabel}>Waiting for you</Text>
+              {incoming.length === 0 && <Text style={[styles.attentionSubtitle, { marginBottom: 6 }]}>No new requests.</Text>}
+              {incoming.map(c => (
+                <View key={c.id} style={[styles.detailCard, { marginTop: 8 }]}>
+                  <Text style={styles.attentionTitle}>{c.other.display_name}</Text>
+                  {!!c.other.industry && <Text style={styles.attentionSubtitle}>{c.other.industry}{c.other.city ? ` · ${c.other.city}` : ''}</Text>}
+                  {!!c.message && <Text style={{ marginTop: 8, fontSize: 14, color: '#1F2937', lineHeight: 20 }}>“{c.message}”</Text>}
+                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+                    <Pressable disabled={netBusy === c.id} onPress={() => respondConnection(c, true)} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1, minHeight: 38 }]}><Text style={styles.resetButtonText}>Accept</Text></Pressable>
+                    <Pressable disabled={netBusy === c.id} onPress={() => respondConnection(c, false)} style={[styles.resetButton, { flex: 1, minHeight: 38, backgroundColor: '#F2F4F7' }]}><Text style={[styles.resetButtonText, { color: '#5C6B7A' }]}>Decline</Text></Pressable>
+                  </View>
+                </View>
+              ))}
+              <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>Connected</Text>
+              {connected.length === 0 && <Text style={[styles.attentionSubtitle, { marginBottom: 6 }]}>When someone accepts, their contact details appear here.</Text>}
+              {connected.map(c => (
+                <View key={c.id} style={[styles.detailCard, { marginTop: 8 }]}>
+                  <Text style={styles.attentionTitle}>{c.other.display_name}</Text>
+                  {!!c.other.offers && <Text style={[styles.attentionSubtitle, { marginTop: 2 }]} numberOfLines={2}>{c.other.offers}</Text>}
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+                    {!!c.contacts?.whatsapp && <Pressable onPress={() => Linking.openURL(`https://wa.me/${c.contacts!.whatsapp.replace(/[^\d]/g, '')}`).catch(() => {})} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16, backgroundColor: '#E6F4ED' }}><Ionicons name="logo-whatsapp" size={15} color="#1E9E6D" /><Text style={{ color: '#14532D', fontWeight: '600', fontSize: 13 }}>WhatsApp</Text></Pressable>}
+                    {!!c.contacts?.email && <Pressable onPress={() => Linking.openURL(`mailto:${c.contacts!.email}`).catch(() => {})} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16, backgroundColor: '#EAF1FB' }}><Ionicons name="mail-outline" size={15} color="#1E56A0" /><Text style={{ color: '#1E56A0', fontWeight: '600', fontSize: 13 }}>Email</Text></Pressable>}
+                    {!!c.contacts?.website && <Pressable onPress={() => openInApp(c.contacts!.website, c.other.display_name)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16, backgroundColor: '#F1EAFE' }}><Ionicons name="globe-outline" size={15} color="#7C3AED" /><Text style={{ color: '#5B21B6', fontWeight: '600', fontSize: 13 }}>Website</Text></Pressable>}
+                    {!c.contacts?.whatsapp && !c.contacts?.email && !c.contacts?.website && <Text style={styles.attentionSubtitle}>They haven't added contact details yet.</Text>}
+                  </View>
+                </View>
+              ))}
+              {outgoing.length > 0 && <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>Sent</Text>}
+              {outgoing.map(c => (
+                <View key={c.id} style={[styles.detailCard, { marginTop: 8, flexDirection: 'row', alignItems: 'center', gap: 10 }]}>
+                  <View style={styles.attentionTextWrap}><Text style={styles.attentionTitle}>{c.other.display_name}</Text><Text style={styles.attentionSubtitle}>Waiting for a reply · {relTime(c.created_at)}</Text></View>
+                  <Pressable disabled={netBusy === c.id} onPress={() => respondConnection(c, false)} hitSlop={8}><Text style={{ color: '#D64545', fontWeight: '600' }}>Cancel</Text></Pressable>
+                </View>
+              ))}
+            </>
+          )}
+
+          {!netLoading && netTab === 'profile' && (
+            <>
+              <Text style={[styles.attentionSubtitle, { marginBottom: 6 }]}>Other members see your name, industry, location, bio, offers and needs. Your contact details are shared only with people whose request you accept.</Text>
+              <Pressable disabled={netBusy === 'draft'} onPress={draftNetProfile} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, padding: 12, borderRadius: 12, backgroundColor: '#F2F8FD', marginTop: 4 }}>
+                {netBusy === 'draft' ? <ActivityIndicator size="small" color="#1E56A0" /> : <Ionicons name="sparkles" size={16} color="#1E56A0" />}
+                <Text style={{ color: '#1E56A0', fontWeight: '600', flex: 1 }}>{netBusy === 'draft' ? 'Nexora is writing your profile…' : 'Let Nexora write it from my business knowledge'}</Text>
+              </Pressable>
+              {field('Name shown to others*', 'display_name', 'e.g. Ade Gadget Hub', { max: 120 })}
+              {field('Industry', 'industry', 'e.g. Phone & audio accessories', { max: 80 })}
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <View style={{ flex: 1 }}>{field('City', 'city', 'e.g. Lagos', { max: 60 })}</View>
+                <View style={{ flex: 1 }}>{field('Country', 'country', 'e.g. Nigeria', { max: 60 })}</View>
+              </View>
+              {field('About you', 'bio', 'One or two sentences about your business', { multiline: true, max: 600 })}
+              {field('What you offer partners', 'offers', 'Products, services, wholesale, skills, referrals…', { multiline: true, max: 600 })}
+              {field('What you are looking for', 'needs', 'Suppliers, logistics, marketing, investors, distributors…', { multiline: true, max: 600 })}
+              {field('Tags (comma separated)', 'tags', 'e.g. electronics, wholesale, lagos', { max: 200 })}
+              <Text style={[styles.channelSectionLabel, { marginTop: 16 }]}>Contact details (private until you accept)</Text>
+              {field('WhatsApp number', 'whatsapp', '+234 803 000 0000', { keyboardType: 'phone-pad', max: 30 })}
+              {field('Email', 'email', 'name@business.com', { keyboardType: 'email-address', max: 120 })}
+              {field('Website', 'website', 'www.yourbusiness.com', { keyboardType: 'url', max: 200 })}
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 16, padding: 12, borderRadius: 12, backgroundColor: '#F5F6F8' }}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.attentionTitle}>Visible to other members</Text>
+                  <Text style={styles.attentionSubtitle}>Turn off to hide your profile and stop new matches.</Text>
+                </View>
+                <Switch value={f.visible} onValueChange={setF('visible')} trackColor={{ true: '#5381BB', false: '#D5DEE8' }} thumbColor="#FFFFFF" />
+              </View>
+              <Pressable disabled={netBusy === 'save'} onPress={saveNetProfile} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 16 }]}>
+                {netBusy === 'save' ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>{netHasProfile ? 'Save profile' : 'Create profile and find matches'}</Text>}
+              </Pressable>
+            </>
+          )}
+        </ScrollView>
+        {connectTarget && (
+          <Modal visible transparent animationType="slide" onRequestClose={() => setConnectTarget(null)} statusBarTranslucent>
+            <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+              <Pressable style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)' }} onPress={() => setConnectTarget(null)} accessibilityLabel="Close" />
+              <View style={{ backgroundColor: '#FFF', borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 20, paddingBottom: 20 + insets.bottom }}>
+                <Text style={{ fontSize: 18, fontWeight: '700', color: '#0B1220' }}>Connect with {connectTarget.display_name}</Text>
+                <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}>They'll see your profile and this message. Contact details are shared only if they accept.</Text>
+                <TextInput value={connectMsg} onChangeText={setConnectMsg} multiline maxLength={500} style={[styles.editInput, { minHeight: 100, textAlignVertical: 'top', marginTop: 12 }]} />
+                <Pressable disabled={netBusy === 'connect'} onPress={sendConnect} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 14 }]}>
+                  {netBusy === 'connect' ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>Send request</Text>}
+                </Pressable>
+              </View>
+            </KeyboardAvoidingView>
+          </Modal>
+        )}
+      </View>
+    );
+  }
+
+  if (screen === 'rules') {
+    const list = rulesList ?? [];
+    const f = ruleForm;
+    const input = { borderWidth: 1, borderColor: '#D5DEE8', borderRadius: 12, padding: 12, fontSize: 15, color: '#0B1220', backgroundColor: '#FFFFFF' };
+    return (
+      <View style={styles.mainScreen}>
+        <StatusBar style="dark" />
+        <View style={[styles.knowledgeHeader, headerSafe]}>
+          <Pressable onPress={() => rulesReturnRef.current()} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={styles.knowledgeHeaderTitle}>What Nexora decides for you</Text>
+          <Pressable onPress={() => setRuleForm(f ? null : { situation: 'When ', action: '', limits: '' })} hitSlop={8} accessibilityLabel="New rule"><Ionicons name={f ? 'close' : 'add-circle-outline'} size={24} color="#0B1220" /></Pressable>
+        </View>
+        <ScrollView style={{ flex: 1, backgroundColor: '#F4F7FB' }} contentContainerStyle={{ padding: 16, paddingBottom: 40, width: '100%', maxWidth: 860, alignSelf: 'center' }} keyboardShouldPersistTaps="handled">
+          {renderAutonomyCard()}
+          <Text style={{ fontSize: 14, color: '#5C6B7A', lineHeight: 20, marginBottom: 12 }}>Every time you decide something for a customer, Nexora can learn it. Then it handles the same situation on its own, within your limits, and shows it here.</Text>
+          {!!f && (
+            <View style={[styles.detailCard, { padding: 16 }]}>
+              <Text style={styles.attentionTitle}>New rule</Text>
+              <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>When</Text>
+              <TextInput value={f.situation} onChangeText={(v) => setRuleForm({ ...f, situation: v })} style={input} maxLength={300} placeholder="When a customer asks for delivery on Sunday" placeholderTextColor="#A5AFBB" />
+              <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Nexora will</Text>
+              <TextInput value={f.action} onChangeText={(v) => setRuleForm({ ...f, action: v })} style={input} maxLength={400} placeholder="Offer Monday morning delivery at no extra cost" placeholderTextColor="#A5AFBB" />
+              <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Limit (optional)</Text>
+              <TextInput value={f.limits} onChangeText={(v) => setRuleForm({ ...f, limits: v })} style={input} maxLength={300} placeholder="Only for orders above \u20a620,000" placeholderTextColor="#A5AFBB" />
+              <Pressable onPress={addRule} disabled={f.situation.trim().length < 6 || f.action.trim().length < 3} style={[styles.resetButton, f.situation.trim().length >= 6 && f.action.trim().length >= 3 && styles.resetButtonEnabled, { marginTop: 14, minHeight: 46 }]}><Text style={styles.resetButtonText}>Save rule</Text></Pressable>
+            </View>
+          )}
+          {rulesLoading && !rulesList && <ActivityIndicator style={{ marginTop: 20 }} color="#1E56A0" />}
+          {!!rulesList && list.length === 0 && !f && (
+            <View style={[styles.detailCard, { alignItems: 'center', padding: 22 }]}>
+              <Ionicons name="git-branch-outline" size={30} color="#8A97A6" />
+              <Text style={[styles.attentionTitle, { marginTop: 8 }]}>No rules yet</Text>
+              <Text style={[styles.attentionSubtitle, { textAlign: 'center' }]}>{autonomy?.notSetUp ? 'Rules switch on once the latest database update is installed.' : 'Decide your next customer request in Needs your decision, and Nexora will offer to learn it. Or tap + to write one.'}</Text>
+            </View>
+          )}
+          {list.map(r => (
+            <View key={r.id} style={[styles.detailCard, { padding: 14, opacity: r.enabled ? 1 : 0.6 }]}>
+              <View style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={{ fontSize: 14, color: '#0B1220', fontWeight: '700' }}>{r.situation}</Text>
+                  <Text style={{ fontSize: 14, color: '#1E56A0', marginTop: 4 }}>{`\u2192 ${r.action}`}</Text>
+                  {!!r.limits && <Text style={{ fontSize: 12.5, color: '#8A6A1E', marginTop: 4 }}>{`Limit: ${r.limits}`}</Text>}
+                  <Text style={{ fontSize: 12, color: '#8A97A6', marginTop: 6 }}>{`${r.uses ? `Used ${r.uses} time${r.uses === 1 ? '' : 's'}${r.last_used_at ? `, last ${timeAgo(r.last_used_at)}` : ''}` : 'Not used yet'}${r.source_customer ? ` \u00b7 learned from ${r.source_customer}` : ''}`}</Text>
+                </View>
+                <Switch value={!!r.enabled} onValueChange={(v) => toggleRule(r.id, v)} accessibilityLabel="Rule on" trackColor={{ true: '#5381BB', false: '#D5DEE8' }} thumbColor="#FFFFFF" />
+              </View>
+              <Pressable onPress={() => deleteRule(r.id)} hitSlop={6} style={{ marginTop: 8, alignSelf: 'flex-start' }}><Text style={{ fontSize: 12.5, color: '#D64545', fontWeight: '700' }}>Remove</Text></Pressable>
+            </View>
+          ))}
         </ScrollView>
       </View>
     );
   }
 
-  if (screen === 'calendar') {
-    const year = calendarCursor.getFullYear(), month = calendarCursor.getMonth();
-    const monthLabel = calendarCursor.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-    const firstWeekday = new Date(year, month, 1).getDay(); // 0=Sun
-    const daysInMonth = new Date(year, month + 1, 0).getDate();
-    const daysInPrevMonth = new Date(year, month, 0).getDate();
-    type CalCell = { iso: string; day: number; inMonth: boolean };
-    const cells: CalCell[] = [];
-    for (let i = firstWeekday - 1; i >= 0; i--) {
-      const day = daysInPrevMonth - i;
-      const d = new Date(year, month - 1, day);
-      cells.push({ iso: d.toISOString().slice(0, 10), day, inMonth: false });
-    }
-    for (let day = 1; day <= daysInMonth; day++) {
-      const d = new Date(year, month, day);
-      cells.push({ iso: d.toISOString().slice(0, 10), day, inMonth: true });
-    }
-    while (cells.length % 7 !== 0 || cells.length < 42) {
-      const day = cells.length - (firstWeekday + daysInMonth) + 1;
-      const d = new Date(year, month + 1, day);
-      cells.push({ iso: d.toISOString().slice(0, 10), day, inMonth: false });
-    }
-    const eventDates = new Set(SCHEDULE_EVENTS.map(e => e.date));
-    const dayEvents = SCHEDULE_EVENTS.filter(e => e.date === selectedScheduleDate).sort((a, b) => a.time.localeCompare(b.time));
+  if (screen === 'ownerAlerts') {
+    const c = alertCfg || { call_enabled: true, call_when: 'high', call_after_min: 10, email_enabled: true, sms_fallback: true, urgent_overrides_quiet: true, only_when_away: false, quiet_start: null, quiet_end: null, phone: '', phone_verified: false };
+    const info = alertInfo;
+    const verified = !!c.phone_verified && (!!c.phone && c.phone === alertPhone.trim());
+    const wide = IS_WEB && hookWidth >= 1000;
+    const chip = (label: string, on: boolean, onPress: () => void, key?: string) => (
+      <Pressable key={key || label} onPress={onPress} accessibilityRole="button" accessibilityState={{ selected: on }} style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 18, borderWidth: 1, borderColor: on ? '#1E56A0' : '#D5DEE8', backgroundColor: on ? '#1E56A0' : '#FFFFFF' }}>
+        <Text style={{ fontSize: 13, fontWeight: '700', color: on ? '#FFFFFF' : '#0B1220' }}>{label}</Text>
+      </Pressable>
+    );
+    const toggle = (title: string, sub: string, value: boolean, onChange: (v: boolean) => void) => (
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10 }}>
+        <View style={{ flex: 1 }}><Text style={styles.attentionTitle}>{title}</Text><Text style={styles.attentionSubtitle}>{sub}</Text></View>
+        <Switch value={value} onValueChange={onChange} accessibilityLabel={title} trackColor={{ true: '#5381BB', false: '#D5DEE8' }} thumbColor="#FFFFFF" />
+      </View>
+    );
+    const hr = (h: number) => `${((h + 11) % 12) + 1}${h < 12 ? 'am' : 'pm'}`;
+    const quietOn = c.quiet_start != null && c.quiet_end != null;
+    const card = (children: React.ReactNode, extra: any = {}) => <View style={[styles.detailCard, { padding: 16 }, extra]}>{children}</View>;
+    const label = (t: string) => <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>{t}</Text>;
+    const steps = [
+      { icon: 'chatbubbles-outline', t: 'Nexora handles customers', d: 'Answers, books and sells from what you taught it.' },
+      { icon: 'hand-left-outline', t: "It can't decide something", d: 'A complaint, a refund outside policy, a big order or a hot lead.' },
+      { icon: 'mail-outline', t: 'It tells you right away', d: 'In the app and by email.' },
+      { icon: 'call-outline', t: "Still open? It calls you", d: 'Press 1 got it, 2 remind me, 4 say what to do, 5 solved.' },
+    ];
+    const left = (
+      <View style={{ flex: 1, minWidth: 0 }}>
+        {card(
+          <View>
+            <Text style={{ fontSize: 13, fontWeight: '800', color: '#1E56A0', letterSpacing: 0.5 }}>HOW IT WORKS</Text>
+            {steps.map((x, i) => (
+              <View key={x.t} style={{ flexDirection: 'row', gap: 12, marginTop: 12 }}>
+                <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}><Ionicons name={x.icon as any} size={16} color="#1E56A0" /></View>
+                <View style={{ flex: 1 }}><Text style={styles.attentionTitle}>{`${i + 1}. ${x.t}`}</Text><Text style={styles.attentionSubtitle}>{x.d}</Text></View>
+              </View>
+            ))}
+          </View>, { backgroundColor: '#FFFFFF' })}
+
+        {label('Your phone')}
+        {card(
+          <View>
+            <Text style={styles.detailFieldLabel}>Mobile number (with country code)</Text>
+            <TextInput value={alertPhone} onChangeText={(v) => { setAlertPhone(v); setAlertCodeSent(''); }} placeholder="+2348012345678" placeholderTextColor="#A5AFBB" keyboardType="phone-pad" autoComplete="tel" style={styles.editInput} maxLength={20} accessibilityLabel="Mobile number" />
+            {verified ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10 }}>
+                <Ionicons name="checkmark-circle" size={16} color="#1E9E6D" /><Text style={{ fontSize: 13, color: '#1E9E6D', fontWeight: '700', flex: 1 }}>Confirmed</Text>
+                <Pressable onPress={testOwnerCall} disabled={alertBusy === 'test'} style={[styles.resetButton, { minHeight: 36, paddingHorizontal: 14, borderWidth: 1, borderColor: '#5381BB' }]}>
+                  {alertBusy === 'test' ? <ActivityIndicator color="#1E56A0" /> : <Text style={[styles.resetButtonText, { color: '#1E56A0', fontSize: 13 }]}>Test call</Text>}
+                </Pressable>
+              </View>
+            ) : alertCodeSent ? (
+              <View style={{ marginTop: 12 }}>
+                <Text style={styles.detailFieldLabel}>4-digit code</Text>
+                <View style={{ flexDirection: 'row', gap: 10 }}>
+                  <TextInput value={alertCode} onChangeText={(v) => setAlertCode(v.replace(/\D/g, '').slice(0, 4))} placeholder="0000" placeholderTextColor="#A5AFBB" keyboardType="number-pad" style={[styles.editInput, { flex: 1, letterSpacing: 6, fontSize: 18 }]} accessibilityLabel="Code" />
+                  <Pressable onPress={checkPhoneVerify} disabled={alertCode.length !== 4 || alertBusy === 'check'} style={[styles.resetButton, alertCode.length === 4 && styles.resetButtonEnabled, { minHeight: 44, paddingHorizontal: 18 }]}>
+                    {alertBusy === 'check' ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>Confirm</Text>}
+                  </Pressable>
+                </View>
+                <Pressable onPress={() => startPhoneVerify(alertCodeSent === 'call' ? 'sms' : 'call')} style={{ marginTop: 8 }}><Text style={{ color: '#1E56A0', fontSize: 13, fontWeight: '700' }}>{alertCodeSent === 'call' ? 'Text me the code instead' : 'Call me with the code instead'}</Text></Pressable>
+              </View>
+            ) : (
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                <Pressable onPress={() => startPhoneVerify('call')} disabled={!alertPhone.trim() || alertBusy === 'verify'} style={[styles.resetButton, !!alertPhone.trim() && styles.resetButtonEnabled, { flex: 1, minHeight: 44 }]}>
+                  {alertBusy === 'verify' ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>Call me with a code</Text>}
+                </Pressable>
+                <Pressable onPress={() => startPhoneVerify('sms')} disabled={!alertPhone.trim() || alertBusy === 'verify'} style={[styles.resetButton, { flex: 1, minHeight: 44, borderWidth: 1, borderColor: '#5381BB' }]}>
+                  <Text style={[styles.resetButtonText, { color: '#1E56A0' }]}>Text me a code</Text>
+                </Pressable>
+              </View>
+            )}
+            {!!alertMsg && <Text style={{ marginTop: 10, fontSize: 13, color: alertMsg.bad ? '#D64545' : '#1E56A0' }}>{alertMsg.text}</Text>}
+            {!!info && !info.twilio && !info.notSetUp && <Text style={{ marginTop: 10, fontSize: 12, color: '#8A6A1E' }}>Phone calls switch on once Twilio is connected to Nexora. Until then Nexora reaches you by email and in the app.</Text>}
+          </View>)}
+
+        {label('When to call')}
+        {card(
+          <View>
+            {toggle('Phone calls', 'Nexora calls when something still needs you', !!c.call_enabled && c.call_when !== 'never', (v) => saveOwnerAlerts({ call_enabled: v, ...(v && c.call_when === 'never' ? { call_when: 'high' } : {}) }))}
+            <Text style={[styles.detailFieldLabel, { marginTop: 6 }]}>Call me about</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+              {chip('Urgent things only', c.call_when === 'high', () => saveOwnerAlerts({ call_when: 'high', call_enabled: true }))}
+              {chip('Anything Nexora escalates', c.call_when === 'all', () => saveOwnerAlerts({ call_when: 'all', call_enabled: true }))}
+            </View>
+            <Text style={[styles.detailFieldLabel, { marginTop: 14 }]}>If I haven't responded within</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+              {[0, 5, 10, 15, 30, 60].map(m => chip(m === 0 ? 'Call at once' : m === 60 ? '1 hour' : `${m} min`, c.call_after_min === m, () => saveOwnerAlerts({ call_after_min: m }), `d${m}`))}
+            </View>
+            <View style={{ height: 8 }} />
+            {toggle('Only while I\'m away', 'Calls only when Away mode is on', !!c.only_when_away, (v) => saveOwnerAlerts({ only_when_away: v }))}
+            {toggle('Text me if I miss the call', 'An SMS with the details and a link', !!c.sms_fallback, (v) => saveOwnerAlerts({ sms_fallback: v }))}
+            {toggle('Email me straight away', 'Every time Nexora needs you', !!c.email_enabled, (v) => saveOwnerAlerts({ email_enabled: v }))}
+          </View>)}
+
+        {label('Quiet hours')}
+        {card(
+          <View>
+            {toggle('Don\'t call at night', quietOn ? `No calls ${hr(c.quiet_start)} \u2013 ${hr(c.quiet_end)} (your time)` : 'Nexora may call any time', quietOn, (v) => saveOwnerAlerts(v ? { quiet_start: 22, quiet_end: 7 } : { quiet_start: null, quiet_end: null }))}
+            {quietOn && (
+              <View>
+                <Text style={[styles.detailFieldLabel, { marginTop: 6 }]}>From</Text>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>{[20, 21, 22, 23].map(h => chip(hr(h), c.quiet_start === h, () => saveOwnerAlerts({ quiet_start: h }), `s${h}`))}</View>
+                <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Until</Text>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>{[5, 6, 7, 8, 9].map(h => chip(hr(h), c.quiet_end === h, () => saveOwnerAlerts({ quiet_end: h }), `e${h}`))}</View>
+                <View style={{ height: 6 }} />
+                {toggle('Urgent things still ring', 'A furious customer or a big order can wake you', !!c.urgent_overrides_quiet, (v) => saveOwnerAlerts({ urgent_overrides_quiet: v }))}
+              </View>
+            )}
+          </View>)}
+      </View>
+    );
+    const log = info?.log ?? [];
+    const right = (
+      <View style={{ flex: wide ? 0.85 : undefined, minWidth: 0 }}>
+        {label('What Nexora did')}
+        {card(
+          log.length === 0 ? (
+            <View style={{ alignItems: 'center', paddingVertical: 18 }}>
+              <Ionicons name="notifications-off-outline" size={28} color="#8A97A6" />
+              <Text style={[styles.attentionTitle, { marginTop: 8 }]}>Nothing yet</Text>
+              <Text style={[styles.attentionSubtitle, { textAlign: 'center' }]}>When Nexora needs you, you'll see every email, call and answer here.</Text>
+            </View>
+          ) : (
+            <View>
+              {log.map((a: any, i: number) => (
+                <View key={a.escalation_id} style={{ paddingVertical: 10, borderBottomWidth: i === log.length - 1 ? 0 : 1, borderBottomColor: '#EEF1F4' }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: a.escalations?.urgency === 'high' ? '#D64545' : '#E5A63A' }} />
+                    <Text style={[styles.attentionTitle, { flex: 1 }]} numberOfLines={1}>{a.escalations?.customer_name || 'A customer'}{a.escalations?.channel ? ` \u00b7 ${a.escalations.channel}` : ''}</Text>
+                    <Text style={{ fontSize: 11, color: '#8A97A6' }}>{timeAgo(a.created_at)}</Text>
+                  </View>
+                  <Text style={styles.attentionSubtitle} numberOfLines={2}>{a.escalations?.reason}</Text>
+                  {!!alertStatusText(a) && <Text style={{ fontSize: 12, color: a.acknowledged_at ? '#1E9E6D' : '#5C6B7A', marginTop: 3 }}>{alertStatusText(a)}</Text>}
+                  {a.escalations?.status === 'resolved' && <Text style={{ fontSize: 12, color: '#1E9E6D', marginTop: 2 }}>Resolved</Text>}
+                </View>
+              ))}
+            </View>
+          ))}
+        {!!info?.notSetUp && card(<Text style={{ fontSize: 13, color: '#8A6A1E' }}>Owner calls are being set up for your account. Your settings will appear here soon.</Text>, { backgroundColor: '#FFF4E5' })}
+      </View>
+    );
     return (
       <View style={styles.mainScreen}>
         <StatusBar style="dark" />
-        <View style={styles.knowledgeHeader}>
-          <Pressable onPress={() => setScreen('main')} hitSlop={8}><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
-          <Text style={styles.knowledgeHeaderTitle}>Schedule</Text>
-          <View style={{ width: 24 }} />
+        <View style={[styles.knowledgeHeader, headerSafe]}>
+          <Pressable onPress={() => alertReturnRef.current()} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={styles.knowledgeHeaderTitle}>When Nexora needs you</Text>
+          <Pressable onPress={() => loadOwnerAlerts().catch(() => {})} hitSlop={8} accessibilityLabel="Refresh">{alertLoading ? <ActivityIndicator color="#1E56A0" /> : <Ionicons name="refresh" size={22} color="#0B1220" />}</Pressable>
         </View>
-        <ScrollView style={styles.homeScroll} contentContainerStyle={styles.homeScrollContent}>
-          <View style={styles.calendarNavRow}>
-            <Pressable onPress={() => setCalendarCursor(new Date(year, month - 1, 1))} hitSlop={8}>
-              <Ionicons name="chevron-back" size={20} color="#0B1220" />
-            </Pressable>
-            <Text style={styles.calendarMonthLabel}>{monthLabel}</Text>
-            <Pressable onPress={() => setCalendarCursor(new Date(year, month + 1, 1))} hitSlop={8}>
-              <Ionicons name="chevron-forward" size={20} color="#0B1220" />
-            </Pressable>
+        <ScrollView style={{ flex: 1, backgroundColor: '#F4F7FB' }} contentContainerStyle={{ padding: 16, paddingBottom: 40, width: '100%', maxWidth: 1180, alignSelf: 'center' }} keyboardShouldPersistTaps="handled">
+          <View style={{ borderRadius: 18, padding: 18, backgroundColor: '#0B1220' }}>
+            <Text style={{ color: '#FFFFFF', fontSize: 20, fontWeight: '800' }}>Nexora runs things. You decide the big stuff.</Text>
+            <Text style={{ color: '#B9C6D8', fontSize: 14, marginTop: 6, lineHeight: 20 }}>{verified && c.call_enabled && c.call_when !== 'never'
+              ? `If something can't wait, Nexora emails you, then calls ${c.phone} after ${c.call_after_min ? `${c.call_after_min} min` : 'no delay'} if you haven't answered${c.sms_fallback ? ', and texts if you miss it' : ''}.`
+              : 'Confirm your number and Nexora will phone you about complaints, refunds, big orders and hot leads it can\'t handle on its own.'}</Text>
           </View>
-          <View style={styles.calendarWeekdayRow}>
-            {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((w, i) => (
-              <Text key={i} style={styles.calendarWeekdayText}>{w}</Text>
+          {wide ? <View style={{ flexDirection: 'row', gap: 20, alignItems: 'flex-start' }}>{left}{right}</View> : <View>{left}{right}</View>}
+        </ScrollView>
+      </View>
+    );
+  }
+
+  if (screen === 'insights') {
+    const I = insights;
+    const D = I?.data;
+    const cur: string = D?.business?.currency || '';
+    const cw = insightsW || Math.min(hookWidth, 1180) - 32;
+    const twoCol = cw >= 860, threeCol = cw >= 1080;
+    const k = D?.kpis;
+    const trial = D?.business?.status === 'trialing';
+    const kpiTiles: { label: string; value: string; change?: number | null; note?: string; spark?: number[]; icon: string }[] = k ? [
+      { label: 'Revenue · 30 days', value: inMoney(k.revenue_30d.value, cur), change: k.revenue_30d.change, spark: k.revenue_30d.spark, icon: 'cash-outline' },
+      { label: 'Orders · 30 days', value: String(k.orders_30d.value), change: k.orders_30d.change, spark: k.orders_30d.spark, icon: 'bag-handle-outline' },
+      { label: 'Average order', value: inMoney(k.avg_order.value, cur), change: k.avg_order.change, icon: 'pricetag-outline' },
+      { label: 'Customers', value: String(k.customers.value), note: `${k.customers.new_30d} new in 30 days`, spark: k.customers.spark, icon: 'people-outline' },
+      { label: 'Repeat buyers', value: k.repeat_rate.value === null ? '—' : `${k.repeat_rate.value}%`, note: 'of customers ordered 2+ times', icon: 'repeat-outline' },
+      { label: 'Lead conversion', value: k.lead_conversion.value === null ? '—' : `${k.lead_conversion.value}%`, note: `${k.lead_conversion.open_leads} open lead${k.lead_conversion.open_leads === 1 ? '' : 's'}`, icon: 'funnel-outline' },
+      { label: 'Customer lifetime value', value: inMoney(k.lifetime_value.value, cur, true), note: 'average spent per customer', icon: 'diamond-outline' },
+      { label: 'Forecast · next 30 days', value: inMoney(k.forecast_30d.value, cur, true), note: k.forecast_30d.trend === 'up' ? 'Trend is rising' : k.forecast_30d.trend === 'down' ? 'Trend is falling' : 'Trend is steady', icon: k.forecast_30d.trend === 'down' ? 'trending-down-outline' : 'trending-up-outline' },
+    ] : [];
+    const toneStyle = (t: string) => t === 'good' ? { icon: 'checkmark-circle', color: IN_GOOD, bg: '#E9F8EE', word: 'Working' } : t === 'warn' ? { icon: 'alert-circle', color: IN_WARN, bg: '#FFF4E5', word: 'Watch' } : { icon: 'bulb', color: IN_C[0], bg: '#EAF1FB', word: 'Insight' };
+    const effortWord: Record<string, string> = { low: 'Easy', medium: 'Moderate', high: 'Big project' };
+    const row = (children: React.ReactNode) => <View style={{ flexDirection: twoCol ? 'row' : 'column', gap: 16, alignItems: 'stretch' }}>{children}</View>;
+    const planIdea = (it: any) => {
+      setMainTab('brain'); setScreen('main');
+      sendChatMessage(`Help me carry out this idea for my business: "${it.title}". ${it.why} Give me a simple 7-day plan, what to post or say to customers, and how to measure if it works.`);
+    };
+    return (
+      <View style={styles.mainScreen}>
+        <StatusBar style="light" />
+        <ScrollView style={{ flex: 1, backgroundColor: '#F4F7FB' }} contentContainerStyle={{ paddingBottom: 48 }}>
+          {/* Hero: the business's own picture (or its industry), name and the AI summary */}
+          <View style={{ backgroundColor: '#0B1220', minHeight: 230, paddingTop: (insets.top || 16) + 8 }}>
+            {!!I?.hero && <Image source={{ uri: I.hero }} style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, opacity: 0.32 }} resizeMode="cover" accessibilityLabel={`${D?.business?.industry || 'Business'} picture`} />}
+            <View style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, backgroundColor: 'rgba(11,18,32,0.55)' }} />
+            <View style={{ width: '100%', maxWidth: 1180, alignSelf: 'center', paddingHorizontal: 16, paddingBottom: 22 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <Pressable onPress={() => goTab('home')} hitSlop={8} accessibilityLabel="Back" style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.12)', alignItems: 'center', justifyContent: 'center' }}>
+                  <Ionicons name="chevron-back" size={22} color="#FFFFFF" />
+                </Pressable>
+                <View style={{ flex: 1 }} />
+                {trial && <View style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, backgroundColor: 'rgba(127,178,255,0.2)', borderWidth: 1, borderColor: 'rgba(127,178,255,0.5)' }}><Text style={{ color: '#D7E7FF', fontSize: 11.5, fontWeight: '700' }}>Included in your free trial</Text></View>}
+                {D?.business?.has_business !== false && <Pressable onPress={() => loadInsights(true)} disabled={insightsLoading} accessibilityRole="button" accessibilityLabel="Refresh insights and ideas"
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, height: 36, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.12)' }}>
+                  {insightsLoading ? <ActivityIndicator color="#FFFFFF" size="small" /> : <Ionicons name="refresh" size={16} color="#FFFFFF" />}
+                  <Text style={{ color: '#FFFFFF', fontSize: 13, fontWeight: '700' }}>New ideas</Text>
+                </Pressable>}
+              </View>
+              <Text style={{ color: '#7FB2FF', fontSize: 12, fontWeight: '800', letterSpacing: 0.8, marginTop: 22 }}>BUSINESS INSIGHTS</Text>
+              <Text style={{ color: '#FFFFFF', fontSize: twoCol ? 30 : 24, fontWeight: '800', marginTop: 6 }}>{D && !D.business?.has_business ? `Welcome${fullName ? `, ${fullName.split(' ')[0]}` : ''}` : D?.business?.name || fullName || 'Your business'}</Text>
+              <Text style={{ color: '#B6C3D4', fontSize: 13.5, marginTop: 4 }}>{D && !D.business?.has_business ? 'One step before your dashboard' : [D?.business?.industry, D?.business?.country].filter(Boolean).join(' · ') || 'Add your industry and country for sharper ideas'}</Text>
+              {!!I?.summary && <Text style={{ color: '#E6EEF8', fontSize: 15, lineHeight: 22, marginTop: 14, maxWidth: 760 }}>{I.summary}</Text>}
+              {!!I && D?.business?.has_business && <Text style={{ color: '#7D8DA3', fontSize: 11.5, marginTop: 10 }}>Updated {new Date(I.loaded_at || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · from your own orders, customers, chats and shop link{I.ai ? '' : ' · AI ideas are unavailable right now'}</Text>}
+            </View>
+          </View>
+
+          <View onLayout={e => setInsightsW(Math.round(e.nativeEvent.layout.width))} style={{ width: '100%', maxWidth: 1180, alignSelf: 'center', paddingHorizontal: 16, marginTop: -18, gap: 16 }}>
+            {insightsLoading && !I && (
+              <View style={{ backgroundColor: '#FFFFFF', borderRadius: 18, padding: 28, alignItems: 'center', gap: 10, borderWidth: 1, borderColor: IN_GRID }}>
+                <ActivityIndicator color={IN_C[0]} />
+                <Text style={{ fontSize: 14, fontWeight: '700', color: IN_INK }}>Nexora is analysing your business…</Text>
+                <Text style={{ fontSize: 12.5, color: IN_MUTED, textAlign: 'center' }}>Reading your sales, customers and chats, then writing ideas made for you. This takes about 20 seconds.</Text>
+              </View>
+            )}
+            {!!insightsError && (
+              <View style={{ backgroundColor: '#FFF4E5', borderRadius: 14, padding: 14, flexDirection: 'row', gap: 10, alignItems: 'center' }}>
+                <Ionicons name="alert-circle" size={18} color={IN_WARN} />
+                <Text style={{ flex: 1, color: '#7A4A06', fontSize: 13 }}>{insightsError}</Text>
+                <Pressable onPress={() => loadInsights()}><Text style={{ color: IN_C[0], fontWeight: '700' }}>Try again</Text></Pressable>
+              </View>
+            )}
+            {D && !D.business?.has_business && (
+              <View style={{ backgroundColor: '#FFFFFF', borderRadius: 18, padding: twoCol ? 32 : 22, borderWidth: 1, borderColor: IN_GRID, alignItems: 'center' }}>
+                <View style={{ width: 64, height: 64, borderRadius: 20, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}>
+                  <Ionicons name="business" size={30} color={IN_C[0]} />
+                </View>
+                <Text style={{ fontSize: 20, fontWeight: '900', color: IN_INK, marginTop: 14, textAlign: 'center' }}>Register your business to see your insights</Text>
+                <Text style={{ fontSize: 14, color: IN_MUTED, marginTop: 8, textAlign: 'center', lineHeight: 21, maxWidth: 520 }}>
+                  Business Insights is built from your company's own sales, customers and chats. Tell Nexora your business name, what you sell and your country. It takes a minute, starts your 14-day free trial, and Nexora will then draw your charts and suggest ideas made for you.
+                </Text>
+                <View style={{ alignSelf: 'stretch', maxWidth: 440, width: '100%', marginTop: 18, marginHorizontal: 'auto' } as any}>
+                  {([['name', 'Business name', 'e.g. Global Foods Ltd', 120], ['industry', 'What do you sell or do?', 'e.g. Foodstuff and groceries', 80], ['country', 'Country', 'e.g. Nigeria', 60]] as const).map(([key, label, ph, max]) => (
+                    <View key={key} style={{ marginTop: 10 }}>
+                      <Text style={{ fontSize: 12.5, fontWeight: '700', color: '#334155' }}>{label}</Text>
+                      <TextInput value={bizForm[key]} onChangeText={t => setBizForm(f => ({ ...f, [key]: t }))} placeholder={ph} placeholderTextColor="#A5AFBB" maxLength={max}
+                        style={{ marginTop: 6, height: 46, borderRadius: 12, borderWidth: 1, borderColor: '#D5DEE8', paddingHorizontal: 14, fontSize: 15, color: IN_INK, backgroundColor: '#FFFFFF' }} />
+                    </View>
+                  ))}
+                  <Pressable disabled={billingBusy === 'create'} accessibilityRole="button"
+                    onPress={async () => { if (await createBusiness()) { setBizForm({ name: '', industry: '', country: '' }); loadInsights(true).catch(() => {}); } }}
+                    style={{ marginTop: 16, height: 48, borderRadius: 12, backgroundColor: IN_C[0], justifyContent: 'center', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    {billingBusy === 'create' ? <ActivityIndicator color="#FFFFFF" /> : <><Ionicons name="gift-outline" size={18} color="#FFFFFF" /><Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 15 }}>Start my free 14-day trial</Text></>}
+                  </Pressable>
+                  <Text style={{ fontSize: 12, color: IN_MUTED, marginTop: 8, textAlign: 'center' }}>No card needed. Everything is unlocked for 14 days; you choose a plan only after the trial.</Text>
+                </View>
+                <View style={{ gap: 8, marginTop: 18 }}>
+                  {['Revenue, orders and customer charts', 'Your business health score', 'Profitable ideas for your industry and country'].map(t => (
+                    <View key={t} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <Ionicons name="checkmark-circle" size={16} color={IN_GOOD} />
+                      <Text style={{ fontSize: 13.5, color: IN_INK }}>{t}</Text>
+                    </View>
+                  ))}
+                </View>
+                <Text style={{ fontSize: 12.5, color: IN_FAINT, marginTop: 14, textAlign: 'center' }}>
+                  Joining someone else's business as staff? <Text style={{ color: IN_C[0], fontWeight: '700' }} onPress={() => openBilling(() => openInsights(true))}>Enter your invite code</Text>
+                </Text>
+              </View>
+            )}
+
+            {D && D.business?.has_business && (
+              <>
+                {renderAutonomyCard()}
+                {/* KPI tiles */}
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+                  {kpiTiles.map(t => (
+                    <View key={t.label} style={{ flexGrow: 1, flexBasis: threeCol ? '22%' : twoCol ? '30%' : '46%', minWidth: 150, backgroundColor: '#FFFFFF', borderRadius: 16, padding: 14, borderWidth: 1, borderColor: IN_GRID }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        <View style={{ width: 28, height: 28, borderRadius: 8, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}><Ionicons name={t.icon as any} size={15} color={IN_C[0]} /></View>
+                        <Text style={{ flex: 1, fontSize: 12, color: IN_MUTED, fontWeight: '600' }} numberOfLines={1}>{t.label}</Text>
+                      </View>
+                      <View style={{ flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', marginTop: 10, gap: 6 }}>
+                        <Text style={{ fontSize: 22, fontWeight: '900', color: IN_INK, flexShrink: 1 }} numberOfLines={1} adjustsFontSizeToFit>{t.value}</Text>
+                        {!!t.spark && <InSparkline values={t.spark} width={70} height={26} />}
+                      </View>
+                      <View style={{ marginTop: 6 }}>{t.change !== undefined ? <InChange value={t.change} /> : <Text style={{ fontSize: 11.5, color: IN_FAINT }}>{t.note}</Text>}</View>
+                    </View>
+                  ))}
+                </View>
+
+                {row(<>
+                  <InCard title="Business health" subtitle="Five checks, 20 points each" style={{ flex: twoCol ? 0.9 : undefined }}>
+                    <InGauge score={D.health.score} parts={D.health.parts} />
+                  </InCard>
+                  <InCard title="Revenue, day by day" subtitle="Tap or hover a day to see its numbers" style={{ flex: twoCol ? 1.4 : undefined }}>
+                    <InLineCompare daily={D.daily} width={twoCol ? (cw - 16) * (1.4 / 2.3) - 38 : cw - 38} cur={cur} />
+                  </InCard>
+                </>)}
+
+                {row(<>
+                  <InCard title="Weekly revenue and forecast" subtitle="12 weeks of sales and Nexora's estimate for the next 4" style={{ flex: twoCol ? 1.4 : undefined }}>
+                    <InBarsForecast weekly={D.weekly} forecast={D.forecast} width={twoCol ? (cw - 16) * (1.4 / 2.3) - 38 : cw - 38} cur={cur} />
+                  </InCard>
+                  <InCard title="Order status" subtitle={`Last 90 days${D.late_orders ? ` · ${D.late_orders} waiting over 2 days` : ''}`} style={{ flex: twoCol ? 0.9 : undefined }}
+                    right={D.open_orders ? <Pressable onPress={() => openOrders('Unshipped')}><Text style={{ color: IN_C[0], fontSize: 12.5, fontWeight: '700' }}>Open orders</Text></Pressable> : undefined}>
+                    <InDonut items={D.status} center="orders" colorFor={l => IN_STATUS_COLOR[l] || IN_C[5]} size={140} />
+                  </InCard>
+                </>)}
+
+                {row(<>
+                  <InCard title="Best sellers" subtitle="Revenue in the last 90 days, with your product photos" style={{ flex: 1 }}>
+                    <InRankBars items={D.products.map((p: any) => ({ label: p.name, value: p.revenue, image: p.image, sub: `${p.units} sold · ${p.orders} order${p.orders === 1 ? '' : 's'}` }))} fmt={v => inMoney(v, cur, true)} />
+                  </InCard>
+                  <InCard title="When customers buy" subtitle="Orders by day and time, last 90 days" style={{ flex: 1 }}>
+                    <InHeatmap grid={D.heat} />
+                  </InCard>
+                </>)}
+
+                <View style={{ flexDirection: threeCol ? 'row' : 'column', gap: 16 }}>
+                  <InCard title="From contact to loyal customer" subtitle="How many move to the next step" style={{ flex: 1 }}>
+                    <InFunnel steps={D.funnel} />
+                  </InCard>
+                  <InCard title="Where customers come from" subtitle="By channel" style={{ flex: 1 }}>
+                    <InDonut items={D.channels} center="people" size={130} />
+                  </InCard>
+                  <InCard title="Top places" subtitle="Where your customers are" style={{ flex: 1 }}>
+                    <InRankBars items={D.places.map((p: any) => ({ label: p.label, value: p.value }))} fmt={v => `${v}`} />
+                  </InCard>
+                </View>
+
+                {row(<>
+                  <InCard title="Who brings the money" subtitle={D.top_share !== null ? `Your top 20% of customers bring ${D.top_share}% of all spending` : 'Spending by customer group'} style={{ flex: 1 }}>
+                    <InStack items={D.tiers} cur={cur} />
+                  </InCard>
+                  <InCard title="AI shop link · 30 days" subtitle="Visits, chats with your Nexora, and leads" style={{ flex: 1 }}
+                    right={<Pressable onPress={() => { openStorefront().catch(() => {}); }}><Text style={{ color: IN_C[0], fontSize: 12.5, fontWeight: '700' }}>Open</Text></Pressable>}>
+                    <InFunnel steps={[{ label: 'Visits', value: D.shop.visits }, { label: 'Chats', value: D.shop.chats }, { label: 'Leads', value: D.shop.leads }]} />
+                    {!D.shop.visits && <Text style={{ fontSize: 12, color: IN_FAINT, marginTop: 8 }}>Share your shop link in your bio and WhatsApp status to start getting visits.</Text>}
+                  </InCard>
+                </>)}
+
+                {/* AI analysis */}
+                {!!I?.insights?.length && (
+                  <InCard title="What Nexora sees" subtitle="Read from your numbers">
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+                      {I.insights.map((x: any, i: number) => {
+                        const t = toneStyle(x.tone);
+                        return (
+                          <View key={i} style={{ flexGrow: 1, flexBasis: twoCol ? '45%' : '100%', backgroundColor: t.bg, borderRadius: 14, padding: 14 }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                              <Ionicons name={t.icon as any} size={16} color={t.color} />
+                              <Text style={{ fontSize: 11, fontWeight: '800', color: t.color, letterSpacing: 0.5 }}>{t.word.toUpperCase()}</Text>
+                            </View>
+                            <Text style={{ fontSize: 14, fontWeight: '800', color: IN_INK, marginTop: 6 }}>{x.title}</Text>
+                            <Text style={{ fontSize: 13, color: '#334155', marginTop: 4, lineHeight: 19 }}>{x.detail}</Text>
+                          </View>
+                        );
+                      })}
+                    </View>
+                  </InCard>
+                )}
+
+                {/* Profitable ideas, each with a picture */}
+                <View>
+                  <Text style={{ fontSize: 20, fontWeight: '900', color: IN_INK, marginTop: 6 }}>Ideas to grow your profit</Text>
+                  <Text style={{ fontSize: 13, color: IN_MUTED, marginTop: 4 }}>Made for {D.business?.name || 'your business'} from your numbers{D.trends?.length ? ' and what is trending in your market' : ''}. Estimates are a guide, not a promise.</Text>
+                </View>
+                {!I?.ideas?.length && !insightsLoading && <Text style={{ fontSize: 13, color: IN_FAINT }}>Ideas will appear here. Tap "New ideas" at the top to try again.</Text>}
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 16 }}>
+                  {(I?.ideas ?? []).map((it: any, i: number) => {
+                    const open = insightsOpenIdea === i;
+                    return (
+                      <View key={i} style={{ flexGrow: 1, flexBasis: threeCol ? '30%' : twoCol ? '45%' : '100%', backgroundColor: '#FFFFFF', borderRadius: 18, overflow: 'hidden', borderWidth: 1, borderColor: IN_GRID }}>
+                        <View style={{ height: 150, backgroundColor: '#EEF3F9' }}>
+                          {it.image
+                            ? <Image source={{ uri: it.image }} style={{ width: '100%', height: 150 }} resizeMode="cover" accessibilityLabel={it.title} />
+                            : <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}><Ionicons name="bulb-outline" size={40} color={IN_C[0]} /></View>}
+                          <View style={{ position: 'absolute', left: 10, top: 10, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 10, backgroundColor: 'rgba(11,18,32,0.78)' }}>
+                            <Text style={{ color: '#FFFFFF', fontSize: 11, fontWeight: '800' }}>{it.category}</Text>
+                          </View>
+                        </View>
+                        <View style={{ padding: 14 }}>
+                          <Text style={{ fontSize: 15.5, fontWeight: '800', color: IN_INK }}>{it.title}</Text>
+                          <Text style={{ fontSize: 13, color: '#334155', marginTop: 6, lineHeight: 19 }}>{it.why}</Text>
+                          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, backgroundColor: '#E9F8EE' }}>
+                              <Ionicons name="trending-up" size={12} color={IN_GOOD} />
+                              <Text style={{ fontSize: 11.5, fontWeight: '700', color: IN_GOOD }}>{it.impact_high_amount > 0 ? `+${inMoney(it.impact_low_amount, cur, true)}–${inMoney(it.impact_high_amount, cur, true)}/month` : `+${it.impact_low_pct}–${it.impact_high_pct}% revenue`}</Text>
+                            </View>
+                            <View style={{ paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, backgroundColor: '#F1F5F9' }}><Text style={{ fontSize: 11.5, fontWeight: '600', color: IN_MUTED }}>{effortWord[it.effort] || 'Moderate'}</Text></View>
+                            <View style={{ paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, backgroundColor: '#F1F5F9' }}><Text style={{ fontSize: 11.5, fontWeight: '600', color: IN_MUTED }}>Start {it.horizon}</Text></View>
+                          </View>
+                          <Pressable onPress={() => setInsightsOpenIdea(open ? null : i)} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 12 }}>
+                            <Text style={{ color: IN_C[0], fontSize: 13, fontWeight: '700' }}>{open ? 'Hide the steps' : 'How to do it'}</Text>
+                            <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={14} color={IN_C[0]} />
+                          </Pressable>
+                          {open && (
+                            <View style={{ marginTop: 8, gap: 8 }}>
+                              {it.steps.map((s: string, j: number) => (
+                                <View key={j} style={{ flexDirection: 'row', gap: 8 }}>
+                                  <View style={{ width: 20, height: 20, borderRadius: 10, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 11, fontWeight: '800', color: IN_C[0] }}>{j + 1}</Text></View>
+                                  <Text style={{ flex: 1, fontSize: 13, color: '#334155', lineHeight: 19 }}>{s}</Text>
+                                </View>
+                              ))}
+                            </View>
+                          )}
+                          <Pressable onPress={() => planIdea(it)} accessibilityRole="button" style={{ marginTop: 14, height: 40, borderRadius: 10, backgroundColor: IN_C[0], alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 6 }}>
+                            <Ionicons name="sparkles" size={14} color="#FFFFFF" />
+                            <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 13 }}>Plan it with Nexora</Text>
+                          </Pressable>
+                        </View>
+                      </View>
+                    );
+                  })}
+                </View>
+
+                {row(<>
+                  {!!D.unsold?.length && (
+                    <InCard title="Products not selling yet" subtitle="In your catalogue but not in any order for 90 days" style={{ flex: 1 }}>
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+                        {D.unsold.map((u: any) => (
+                          <View key={u.name} style={{ width: 104 }}>
+                            {u.image
+                              ? <Image source={{ uri: u.image }} style={{ width: 104, height: 80, borderRadius: 12, backgroundColor: '#F1F5F9' }} resizeMode="cover" accessibilityLabel={u.name} />
+                              : <View style={{ width: 104, height: 80, borderRadius: 12, backgroundColor: '#EEF3F9', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="image-outline" size={22} color={IN_FAINT} /></View>}
+                            <Text style={{ fontSize: 12, color: IN_INK, marginTop: 6 }} numberOfLines={2}>{u.name}</Text>
+                          </View>
+                        ))}
+                      </View>
+                      <Text style={{ fontSize: 12, color: IN_MUTED, marginTop: 10 }}>Try a bundle with a best seller, a better photo, or a short video post.</Text>
+                    </InCard>
+                  )}
+                  {!!D.trends?.length && (
+                    <InCard title="What's moving in your market" subtitle="From Trending for you, refreshed every 6 hours" style={{ flex: 1 }}
+                      right={<Pressable onPress={openTrends}><Text style={{ color: IN_C[0], fontSize: 12.5, fontWeight: '700' }}>See all</Text></Pressable>}>
+                      <View style={{ gap: 12 }}>
+                        {D.trends.map((t: any, i: number) => (
+                          <Pressable key={i} onPress={() => t.url && openInApp(t.url, t.title)} style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
+                            {renderWebThumb(t.url, 56, 12)}
+                            <View style={{ flex: 1, minWidth: 0 }}>
+                              <Text style={{ fontSize: 13, fontWeight: '700', color: IN_INK }} numberOfLines={2}>{t.title}</Text>
+                              <Text style={{ fontSize: 12, color: IN_MUTED, marginTop: 2 }} numberOfLines={2}>{t.summary}</Text>
+                            </View>
+                          </Pressable>
+                        ))}
+                      </View>
+                    </InCard>
+                  )}
+                </>)}
+
+                <Text style={{ fontSize: 11.5, color: IN_FAINT, textAlign: 'center', marginTop: 4 }}>
+                  Figures come from the orders, customers and chats saved in Nexora. Idea pictures: your product photos or Wikimedia Commons.
+                </Text>
+              </>
+            )}
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
+
+  if (screen === 'followups') {
+    const list = followups ?? [];
+    return (
+      <View style={styles.mainScreen}>
+        <StatusBar style="dark" />
+        <View style={[styles.knowledgeHeader, headerSafe]}>
+          <Pressable onPress={() => openLeads()} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={styles.knowledgeHeaderTitle}>Smart follow-ups</Text>
+          <Pressable onPress={() => { openFollowups().catch(() => {}); }} hitSlop={8} accessibilityLabel="Draft again"><Ionicons name="refresh-outline" size={22} color="#0B1220" /></Pressable>
+        </View>
+        <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40 }]} keyboardShouldPersistTaps="handled">
+          <Text style={styles.attentionSubtitle}>Leads who went quiet and past customers you haven't spoken to in a month. Nexora wrote a personal message for each: edit it if you like, send it, then mark it done.</Text>
+          {followupsLoading && <View style={{ alignItems: 'center', paddingVertical: 30, gap: 8 }}><ActivityIndicator color="#1E56A0" /><Text style={styles.attentionSubtitle}>Nexora is writing your follow-ups…</Text></View>}
+          {!!followupsError && !followupsLoading && <Text style={[styles.attentionSubtitle, { color: '#C2760C', marginTop: 12 }]}>{followupsError}</Text>}
+          {!followupsLoading && list.length === 0 && !followupsError && (
+            <View style={[styles.detailCard, { alignItems: 'center', paddingVertical: 26, marginTop: 14 }]}>
+              <Ionicons name="checkmark-done-circle-outline" size={30} color="#1E9E6D" />
+              <Text style={[styles.attentionTitle, { marginTop: 8 }]}>Nobody to chase right now</Text>
+              <Text style={[styles.attentionSubtitle, { marginTop: 4, textAlign: 'center' }]}>Leads quiet for 2+ days and customers you haven't spoken to in 30+ days show up here.</Text>
+            </View>
+          )}
+          {!followupsLoading && list.map(f => (
+            <View key={f.customer_id} style={[styles.detailCard, { marginTop: 12 }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <View style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: f.type === 'lead' ? '#EAF1FB' : '#FFF6E5', alignItems: 'center', justifyContent: 'center' }}>
+                  <Text style={{ color: f.type === 'lead' ? '#1E56A0' : '#B7791F', fontWeight: '800' }}>{f.name.charAt(0).toUpperCase()}</Text>
+                </View>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={styles.attentionTitle} numberOfLines={1}>{f.name}</Text>
+                  <Text style={styles.attentionSubtitle} numberOfLines={1}>{[f.type === 'lead' ? f.segment : 'Win back', f.channel, f.handle].filter(Boolean).join(' · ')}</Text>
+                </View>
+              </View>
+              <View style={{ marginTop: 10, flexDirection: 'row', gap: 6, alignItems: 'flex-start' }}>
+                <Ionicons name="time-outline" size={14} color="#8A97A6" style={{ marginTop: 2 }} />
+                <Text style={{ flex: 1, fontSize: 13, color: '#5C6B7A' }}>{f.reason}</Text>
+              </View>
+              <TextInput value={f.message} onChangeText={v => setFollowups(l => (l ?? []).map(x => x.customer_id === f.customer_id ? { ...x, message: v } : x))} multiline maxLength={600}
+                style={[styles.editInput, { minHeight: 90, textAlignVertical: 'top', marginTop: 10 }]} />
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+                <Pressable onPress={() => sendFollowup(f)} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1, minHeight: 40 }]}>
+                  <Text style={styles.resetButtonText}>{/@/.test(f.handle || '') || f.channel === 'Email' ? 'Send email' : (f.handle || '').replace(/[^\d]/g, '').length >= 7 && f.channel !== 'Instagram' && f.channel !== 'Facebook' ? 'Send on WhatsApp' : 'Copy message'}</Text>
+                </Pressable>
+                <Pressable onPress={() => markFollowedUp(f)} style={[styles.resetButton, { flex: 1, minHeight: 40, borderWidth: 1, borderColor: '#5381BB' }]}>
+                  <Text style={[styles.resetButtonText, { color: '#1E56A0' }]}>Mark done</Text>
+                </Pressable>
+              </View>
+            </View>
+          ))}
+        </ScrollView>
+      </View>
+    );
+  }
+
+  if (screen === 'storefront') {
+    const f = shopForm;
+    const setF = (k: keyof MyShop) => (v: any) => setShopForm(prev => prev ? { ...prev, [k]: v } : prev);
+    const dirty = !!f && !!myShop && (['slug', 'headline', 'about', 'whatsapp', 'show_prices'] as (keyof MyShop)[]).some(k => f[k] !== myShop[k]);
+    return (
+      <View style={styles.mainScreen}>
+        <StatusBar style="dark" />
+        <View style={[styles.knowledgeHeader, headerSafe]}>
+          <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); }} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={styles.knowledgeHeaderTitle}>AI shop link</Text>
+          <Pressable onPress={() => { openStorefront().catch(() => {}); }} hitSlop={8} accessibilityLabel="Refresh"><Ionicons name="refresh-outline" size={22} color="#0B1220" /></Pressable>
+        </View>
+        <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40 }]} keyboardShouldPersistTaps="handled">
+          <View style={{ borderRadius: 18, padding: 16, backgroundColor: '#0B1220' }}>
+            <Text style={{ color: '#FFFFFF', fontSize: 17, fontWeight: '800' }}>Your business, open 24/7</Text>
+            <Text style={{ color: '#B6C3D4', fontSize: 13, marginTop: 4, lineHeight: 19 }}>Share one link in your Instagram bio, WhatsApp status or flyers. Customers see your products and chat with your Nexora any time. Anyone who leaves their details lands in your Leads.</Text>
+          </View>
+          {shopLoading && <ActivityIndicator color="#1E56A0" style={{ marginTop: 20 }} />}
+          {!!shopError && <Text style={[styles.attentionSubtitle, { color: '#C2760C', marginTop: 12 }]}>{shopError}</Text>}
+          {f && !shopLoading && (
+            <>
+              <View style={[styles.detailCard, { marginTop: 14 }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.attentionTitle}>{myShop?.enabled ? 'Your shop is live' : 'Your shop is off'}</Text>
+                    <Text style={styles.attentionSubtitle}>{myShop?.enabled ? 'Anyone with the link can open it.' : 'Switch it on when you are ready to share it.'}</Text>
+                  </View>
+                  <Switch value={!!myShop?.enabled} disabled={shopBusy} onValueChange={v => saveShop({ enabled: v })} trackColor={{ true: '#5381BB', false: '#D5DEE8' }} thumbColor="#FFFFFF" />
+                </View>
+                <View style={{ marginTop: 12, padding: 12, borderRadius: 12, backgroundColor: '#F2F8FD' }}>
+                  <Text selectable style={{ fontSize: 13, color: '#1E3A5F' }} numberOfLines={2}>{shopUrl(myShop?.slug || f.slug)}</Text>
+                </View>
+                <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+                  <Pressable onPress={() => copyShopLink(myShop?.slug || f.slug)} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1, minHeight: 40 }]}>
+                    <Text style={styles.resetButtonText}>{IS_WEB ? 'Copy link' : 'Share link'}</Text>
+                  </Pressable>
+                  <Pressable disabled={!myShop?.enabled} onPress={() => (IS_WEB ? Linking.openURL(shopUrl(myShop!.slug)) : openInApp(shopUrl(myShop!.slug), 'Your shop'))} style={[styles.resetButton, { flex: 1, minHeight: 40, borderWidth: 1, borderColor: '#5381BB', opacity: myShop?.enabled ? 1 : 0.5 }]}>
+                    <Text style={[styles.resetButtonText, { color: '#1E56A0' }]}>Preview</Text>
+                  </Pressable>
+                </View>
+                <View style={{ flexDirection: 'row', marginTop: 14 }}>
+                  {([['Visits', myShop?.views ?? 0], ['Chats', myShop?.chats ?? 0], ['Leads', myShop?.leads ?? 0]] as const).map(([label, n]) => (
+                    <View key={label} style={{ flex: 1, alignItems: 'center' }}>
+                      <Text style={{ fontSize: 20, fontWeight: '800', color: '#0B1220' }}>{n}</Text>
+                      <Text style={{ fontSize: 12, color: '#64748B' }}>{label}</Text>
+                    </View>
+                  ))}
+                </View>
+              </View>
+
+              <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>How it looks</Text>
+              <View style={styles.detailCard}>
+                <Text style={styles.detailFieldLabel}>Link name</Text>
+                <TextInput value={f.slug} onChangeText={v => setF('slug')(v.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 40))} autoCapitalize="none" autoCorrect={false} style={styles.editInput} placeholder="e.g. mama-tee-foods" placeholderTextColor="#A5AFBB" />
+                <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Headline</Text>
+                <TextInput value={f.headline} onChangeText={setF('headline')} maxLength={120} style={styles.editInput} placeholder="e.g. Fresh gadgets, delivered same day in Lagos" placeholderTextColor="#A5AFBB" />
+                <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>About your business</Text>
+                <TextInput value={f.about} onChangeText={setF('about')} maxLength={600} multiline style={[styles.editInput, { minHeight: 90, textAlignVertical: 'top' }]} placeholder="What you sell, where you deliver, opening hours…" placeholderTextColor="#A5AFBB" />
+                <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>WhatsApp number (optional)</Text>
+                <TextInput value={f.whatsapp} onChangeText={setF('whatsapp')} maxLength={20} keyboardType="phone-pad" style={styles.editInput} placeholder="+2348012345678" placeholderTextColor="#A5AFBB" />
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 12 }}>
+                  <Text style={[styles.attentionTitle, { flex: 1, fontSize: 14 }]}>Show prices</Text>
+                  <Switch value={f.show_prices} onValueChange={setF('show_prices')} trackColor={{ true: '#5381BB', false: '#D5DEE8' }} thumbColor="#FFFFFF" />
+                </View>
+                <Pressable disabled={shopBusy || !dirty} onPress={() => saveShop()} style={[styles.resetButton, dirty ? styles.resetButtonEnabled : { backgroundColor: '#C7D2DE' }, { marginTop: 14 }]}>
+                  {shopBusy ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>{dirty ? 'Save changes' : 'Saved'}</Text>}
+                </Pressable>
+              </View>
+              <Text style={[styles.attentionSubtitle, { marginTop: 10 }]}>Your shop shows products and services from Train AI that are Verified or Need review, plus your FAQs and policies. Drafts stay private. Customers' chats are answered only from this information.</Text>
+              <Pressable onPress={() => openFeature('operations')} style={{ marginTop: 10 }}><Text style={{ color: '#1E56A0', fontWeight: '700' }}>Add or edit products in Train AI ›</Text></Pressable>
+            </>
+          )}
+        </ScrollView>
+      </View>
+    );
+  }
+
+  // ---- Community screens ----
+  const COMM_META: Record<CommKind, { label: string; icon: string; color: string; bg: string; hint: string }> = {
+    question: { label: 'Question', icon: 'help-circle', color: '#1E56A0', bg: '#EAF1FB', hint: 'Ask other business owners. Nexora posts a first answer within seconds.' },
+    tip: { label: 'Tip', icon: 'bulb', color: '#B7791F', bg: '#FFF6E5', hint: 'Share something that works for your business.' },
+    win: { label: 'Win', icon: 'trophy', color: '#15803D', bg: '#E9F8EE', hint: 'Celebrate a milestone. Wins inspire the whole community.' },
+    offer: { label: 'Offer', icon: 'pricetag', color: '#7C3AED', bg: '#F3EEFF', hint: 'Offer a product, service or deal to other businesses.' },
+  };
+  const commBold = (line: string, key: string) => line.split(/(\*\*[^*]+\*\*)/g).map((part, i) =>
+    /^\*\*[^*]+\*\*$/.test(part) ? <Text key={`${key}-${i}`} style={{ fontWeight: '700' }}>{part.slice(2, -2)}</Text> : part);
+  const commText = (text: string, color = '#1F2937') => (
+    <View style={{ gap: 4 }}>
+      {text.split('\n').map(l => l.trim()).filter(Boolean).map((line, i) => {
+        const b = line.match(/^(?:[-•*]|\d+[.)])\s+(.*)/);
+        const head = line.match(/^#{1,4}\s+(.*)/);
+        if (head) return <Text key={i} style={{ fontSize: 14, fontWeight: '700', color, marginTop: 4 }}>{head[1].replace(/\*\*/g, '')}</Text>;
+        return <Text key={i} style={{ fontSize: 14, color, lineHeight: 21 }}>{b ? '•  ' : ''}{commBold(b ? b[1] : line, String(i))}</Text>;
+      })}
+    </View>
+  );
+  const commAvatar = (name: string, ai = false, size = 36) => (
+    <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: ai ? '#1E56A0' : '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}>
+      {ai ? <Ionicons name="sparkles" size={size * 0.45} color="#FFFFFF" /> : <Text style={{ color: '#1E56A0', fontWeight: '800', fontSize: size * 0.42 }}>{(name || '?').charAt(0).toUpperCase()}</Text>}
+    </View>
+  );
+  const commKindChip = (k: CommKind) => (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, backgroundColor: COMM_META[k].bg }}>
+      <Ionicons name={COMM_META[k].icon as any} size={12} color={COMM_META[k].color} />
+      <Text style={{ fontSize: 11, fontWeight: '700', color: COMM_META[k].color }}>{COMM_META[k].label}</Text>
+    </View>
+  );
+  const COMM_LEVEL_STYLE: Record<string, { color: string; bg: string; icon: string }> = {
+    Contributor: { color: '#1E56A0', bg: '#EAF1FB', icon: 'star-outline' },
+    Helper: { color: '#15803D', bg: '#E9F8EE', icon: 'star-half' },
+    Expert: { color: '#B7791F', bg: '#FFF6E5', icon: 'star' },
+  };
+  const commLevel = (level?: string) => {
+    const st = level ? COMM_LEVEL_STYLE[level] : undefined;
+    if (!st) return null;   // New members and Nexora AI get no badge
+    return (
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 8, backgroundColor: st.bg }}>
+        <Ionicons name={st.icon as any} size={10} color={st.color} />
+        <Text style={{ fontSize: 10, fontWeight: '800', color: st.color }}>{level}</Text>
+      </View>
+    );
+  };
+  const commActivityText = (n: CommActivity) => n.type === 'reply' ? `${n.actor_name} replied to your post`
+    : n.type === 'upvote' ? `${n.actor_name} upvoted ${n.reply_id ? 'your reply' : 'your post'}`
+    : n.type === 'accepted' ? `${n.actor_name} picked your reply as the best answer (+10 pts)`
+    : n.type === 'ai_answer' ? 'Nexora answered your question'
+    : 'You reached a new level';
+  const commActivityIcon: Record<string, [string, string]> = { reply: ['chatbubble', '#1E56A0'], upvote: ['arrow-up-circle', '#7C3AED'], accepted: ['checkmark-circle', '#15803D'], ai_answer: ['sparkles', '#1E56A0'], level: ['ribbon', '#B7791F'] };
+  const commActivitySheet = commActivityOpen && (
+    <Modal visible transparent animationType="slide" onRequestClose={() => setCommActivityOpen(false)} statusBarTranslucent>
+      <Pressable style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)' }} onPress={() => setCommActivityOpen(false)} accessibilityLabel="Close" />
+      <View style={{ maxHeight: '75%', backgroundColor: '#FFF', borderTopLeftRadius: 22, borderTopRightRadius: 22, paddingTop: 18, paddingBottom: 12 + insets.bottom }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, marginBottom: 8 }}>
+          <Text style={{ fontSize: 18, fontWeight: '700', color: '#0B1220' }}>Activity</Text>
+          <Pressable onPress={() => setCommActivityOpen(false)} hitSlop={8} accessibilityLabel="Close"><Ionicons name="close" size={22} color="#0B1220" /></Pressable>
+        </View>
+        <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 10 }}>
+          {commActivity === null && <ActivityIndicator color="#1E56A0" style={{ marginVertical: 24 }} />}
+          {commActivity?.length === 0 && (
+            <View style={{ alignItems: 'center', paddingVertical: 26 }}>
+              <Ionicons name="notifications-outline" size={26} color="#8A97A6" />
+              <Text style={[styles.attentionSubtitle, { marginTop: 8, textAlign: 'center' }]}>No activity yet. When someone replies to you, upvotes you or picks your answer, it shows up here.</Text>
+            </View>
+          )}
+          {(commActivity ?? []).map(n => {
+            const [icon, color] = commActivityIcon[n.type] ?? ['notifications', '#1E56A0'];
+            return (
+              <Pressable key={n.id} disabled={!n.post_id} onPress={() => n.post_id && openCommPostById(n.post_id)} style={{ flexDirection: 'row', gap: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' }}>
+                <View style={{ width: 34, height: 34, borderRadius: 17, backgroundColor: n.read ? '#F1F5F9' : '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}>
+                  <Ionicons name={icon as any} size={17} color={color} />
+                </View>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={{ fontSize: 14, fontWeight: n.read ? '500' : '700', color: '#0B1220' }}>{commActivityText(n)}</Text>
+                  {!!(n.post_title || n.snippet) && <Text style={{ fontSize: 13, color: '#64748B', marginTop: 2 }} numberOfLines={2}>{n.type === 'reply' || n.type === 'ai_answer' ? n.snippet : n.post_title || n.snippet}</Text>}
+                  <Text style={{ fontSize: 11, color: '#94A3B8', marginTop: 3 }}>{commAgo(n.created_at)}</Text>
+                </View>
+                {!n.read && <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#1E56A0', marginTop: 6 }} />}
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      </View>
+    </Modal>
+  );
+  const commVoteBtn = (type: 'post' | 'reply', id: string, n: number, mine: boolean) => {
+    const on = commVoted.includes(id);
+    return (
+      <Pressable onPress={() => toggleCommVote(type, id, mine)} hitSlop={6} accessibilityRole="button" accessibilityLabel={on ? 'Remove upvote' : 'Upvote'}
+        style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 14, backgroundColor: on ? '#1E56A0' : '#F1F5F9' }}>
+        <Ionicons name={on ? 'arrow-up-circle' : 'arrow-up-circle-outline'} size={16} color={on ? '#FFFFFF' : '#475569'} />
+        <Text style={{ fontSize: 13, fontWeight: '700', color: on ? '#FFFFFF' : '#475569' }}>{n}</Text>
+      </Pressable>
+    );
+  };
+  const renderCommWeb = (query: string, label: string) => {
+    const mine = commWeb && commWeb.query === query.trim() ? commWeb : null;
+    return (
+      <View style={[styles.detailCard, { marginTop: 12, backgroundColor: '#F7FAFE', borderWidth: 1, borderColor: '#C9DDF5' }]}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <Ionicons name="globe-outline" size={17} color="#1E56A0" />
+          <Text style={[styles.attentionTitle, { flex: 1 }]}>From around the web</Text>
+          {!mine && (
+            <Pressable disabled={!!commWebLoading} onPress={() => searchCommunityWeb(query)} style={{ paddingHorizontal: 12, paddingVertical: 7, borderRadius: 14, backgroundColor: '#1E56A0' }}>
+              {commWebLoading === query.trim() ? <ActivityIndicator color="#FFF" size="small" /> : <Text style={{ color: '#FFF', fontWeight: '700', fontSize: 13 }}>{label}</Text>}
+            </Pressable>
+          )}
+        </View>
+        {!mine && <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}>See what other business owners, guides and news say online, including people who aren't on Nexora.</Text>}
+        {commWebLoading === query.trim() && <Text style={[styles.attentionSubtitle, { marginTop: 6 }]}>Searching forums, guides and news… about 20 seconds.</Text>}
+        {!!commWebError && !commWebLoading && <Text style={{ color: '#C2410C', fontSize: 13, marginTop: 6 }}>{commWebError}</Text>}
+        {mine && (
+          <>
+            {!!mine.summary && <Text style={{ marginTop: 8, fontSize: 14, color: '#1E3A5F', lineHeight: 20 }}>{mine.summary}</Text>}
+            {mine.results.map((r, i) => (
+              <Pressable key={`${r.url}-${i}`} onPress={() => openInApp(r.url, r.title)} style={{ marginTop: 10, padding: 10, borderRadius: 12, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E6ECF3', flexDirection: 'row', gap: 12 }}>
+                {renderWebThumb(r.url, 72, 10)}
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text style={{ fontSize: 10, fontWeight: '800', color: '#1E56A0', backgroundColor: '#EAF1FB', paddingHorizontal: 6, paddingVertical: 1, borderRadius: 6, overflow: 'hidden', textTransform: 'uppercase' }}>{r.kind}</Text>
+                    <Text style={{ fontSize: 12, color: '#8A97A6', flexShrink: 1 }} numberOfLines={1}>{r.domain}</Text>
+                  </View>
+                  <Text style={{ fontSize: 14, fontWeight: '700', color: '#0B1220', marginTop: 4 }} numberOfLines={2}>{r.title}</Text>
+                  {!!r.takeaway && <Text style={{ fontSize: 13, color: '#475569', marginTop: 3, lineHeight: 18 }} numberOfLines={3}>{r.takeaway}</Text>}
+                </View>
+              </Pressable>
+            ))}
+          </>
+        )}
+      </View>
+    );
+  };
+  const commComposer = commDraft && (
+    <Modal visible transparent animationType="slide" onRequestClose={() => setCommDraft(null)} statusBarTranslucent>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+        <Pressable style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)' }} onPress={() => setCommDraft(null)} accessibilityLabel="Close" />
+        <ScrollView style={{ flexGrow: 0, maxHeight: '88%', backgroundColor: '#FFF', borderTopLeftRadius: 22, borderTopRightRadius: 22 }} contentContainerStyle={{ padding: 20, paddingBottom: 20 + insets.bottom }} keyboardShouldPersistTaps="handled">
+          <Text style={{ fontSize: 18, fontWeight: '700', color: '#0B1220' }}>New post</Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+            {(Object.keys(COMM_META) as CommKind[]).map(k => (
+              <Pressable key={k} onPress={() => setCommDraft(d => d ? { ...d, kind: k } : d)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16, borderWidth: 1.5, borderColor: commDraft.kind === k ? COMM_META[k].color : '#E2E8F0', backgroundColor: commDraft.kind === k ? COMM_META[k].bg : '#FFFFFF' }}>
+                <Ionicons name={COMM_META[k].icon as any} size={15} color={COMM_META[k].color} />
+                <Text style={{ fontSize: 13, fontWeight: '700', color: commDraft.kind === k ? COMM_META[k].color : '#475569' }}>{COMM_META[k].label}</Text>
+              </Pressable>
             ))}
           </View>
-          <View style={styles.calendarGrid}>
-            {cells.map(c => {
-              const isToday = c.iso === todayIso;
-              const isSelected = c.iso === selectedScheduleDate;
-              const hasEvent = eventDates.has(c.iso);
-              return (
-                <Pressable key={c.iso} onPress={() => setSelectedScheduleDate(c.iso)} style={styles.calendarCell}>
-                  <View style={[
-                    styles.calendarDayCircle,
-                    isSelected && styles.calendarDaySelected,
-                    !isSelected && isToday && styles.calendarDayToday,
-                  ]}>
-                    <Text style={[
-                      styles.calendarDayText,
-                      !c.inMonth && styles.calendarDayTextMuted,
-                      isSelected && styles.calendarDayTextSelected,
-                    ]}>{c.day}</Text>
+          <Text style={[styles.attentionSubtitle, { marginTop: 8 }]}>{COMM_META[commDraft.kind].hint}</Text>
+          <Text style={[styles.detailFieldLabel, { marginTop: 12 }]}>Title</Text>
+          <TextInput value={commDraft.title} onChangeText={v => setCommDraft(d => d ? { ...d, title: v } : d)} maxLength={140} placeholderTextColor="#A5AFBB" style={styles.editInput}
+            placeholder={commDraft.kind === 'question' ? 'e.g. How do I get customers to pay on time?' : commDraft.kind === 'tip' ? 'e.g. WhatsApp catalog doubled my orders' : commDraft.kind === 'win' ? 'e.g. We hit 100 orders this month!' : 'e.g. Bulk packaging at wholesale prices'} />
+          <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Details (optional)</Text>
+          <TextInput value={commDraft.body} onChangeText={v => setCommDraft(d => d ? { ...d, body: v } : d)} maxLength={3000} multiline placeholder="Add context so others can help…" placeholderTextColor="#A5AFBB" style={[styles.editInput, { minHeight: 110, textAlignVertical: 'top' }]} />
+          <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Tags (optional, comma separated)</Text>
+          <TextInput value={commDraft.tags} onChangeText={v => setCommDraft(d => d ? { ...d, tags: v } : d)} maxLength={100} placeholder="e.g. pricing, delivery, fashion" placeholderTextColor="#A5AFBB" autoCapitalize="none" style={styles.editInput} />
+          <Text style={{ fontSize: 12, color: '#8A97A6', marginTop: 10, lineHeight: 17 }}>Posts are public to Nexora members. Phone numbers and emails are removed automatically; use Find partners to swap contacts safely.</Text>
+          {!!commDraftError && <Text style={{ color: '#C2410C', fontSize: 13, marginTop: 10 }}>{commDraftError}</Text>}
+          <Pressable disabled={commBusy === 'post'} onPress={submitCommPost} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 14 }]}>
+            {commBusy === 'post' ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>Post to community</Text>}
+          </Pressable>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+
+  if (screen === 'community') {
+    const kinds: [typeof commKind, string][] = [['all', 'All'], ['question', 'Questions'], ['tip', 'Tips'], ['win', 'Wins'], ['offer', 'Offers'], ['mine', 'My posts']];
+    return (
+      <View style={styles.mainScreen}>
+        <StatusBar style="dark" />
+        <View style={[styles.knowledgeHeader, headerSafe]}>
+          <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); }} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={styles.knowledgeHeaderTitle}>Community</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+            <Pressable onPress={() => { loadCommunity().catch(() => {}); }} hitSlop={8} accessibilityLabel="Refresh"><Ionicons name="refresh-outline" size={22} color="#0B1220" /></Pressable>
+            <Pressable onPress={openCommActivity} hitSlop={8} accessibilityLabel={commUnread ? `Activity, ${commUnread} new` : 'Activity'}>
+              <Ionicons name={commUnread ? 'notifications' : 'notifications-outline'} size={22} color="#0B1220" />
+              {commUnread > 0 && <View style={{ position: 'absolute', top: -5, right: -7, minWidth: 17, height: 17, borderRadius: 9, paddingHorizontal: 4, backgroundColor: '#EF4444', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#FFF', fontSize: 10, fontWeight: '800' }}>{commUnread > 9 ? '9+' : commUnread}</Text></View>}
+            </Pressable>
+          </View>
+        </View>
+        <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 110 }]} keyboardShouldPersistTaps="handled">
+          <View style={{ borderRadius: 18, padding: 16, backgroundColor: '#0B1220' }}>
+            <Text style={{ color: '#FFFFFF', fontSize: 17, fontWeight: '800' }}>Business owners helping each other</Text>
+            <Text style={{ color: '#B6C3D4', fontSize: 13, marginTop: 4, lineHeight: 19 }}>Ask anything, share what works, celebrate wins. Nexora answers every question too, and the community picks the best answer.</Text>
+            <View style={{ flexDirection: 'row', gap: 18, marginTop: 12 }}>
+              <Text style={{ color: '#7FB2FF', fontSize: 13, fontWeight: '700' }}>{commStats.total} posts</Text>
+              <Text style={{ color: '#7FB2FF', fontSize: 13, fontWeight: '700' }}>{commStats.today} today</Text>
+            </View>
+            {commMe && (
+              <View style={{ marginTop: 12, padding: 12, borderRadius: 14, backgroundColor: 'rgba(127,178,255,0.12)' }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '700' }}>You're {/^[AEIOU]/.test(commMe.level) ? 'an' : 'a'} {commMe.level}</Text>
+                  <Text style={{ color: '#7FB2FF', fontSize: 13, fontWeight: '700' }}>{commMe.points} pts</Text>
+                </View>
+                {commMe.next_at !== null && (() => {
+                  const LV = [0, 10, 50, 150];
+                  const from = LV[commMe.rank] ?? 0, to = commMe.next_at ?? 1;
+                  const pct = Math.max(4, Math.min(100, ((commMe.points - from) / Math.max(1, to - from)) * 100));
+                  return (
+                    <>
+                      <View style={{ height: 6, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.15)', marginTop: 8, overflow: 'hidden' }}>
+                        <View style={{ width: `${pct}%`, height: 6, borderRadius: 3, backgroundColor: '#7FB2FF' }} />
+                      </View>
+                      <Text style={{ color: '#B6C3D4', fontSize: 12, marginTop: 6 }}>{to - commMe.points} pts to {commMe.next_level}. Replies earn 2, upvotes 1, best answers 10.</Text>
+                    </>
+                  );
+                })()}
+                {commMe.next_at === null && <Text style={{ color: '#B6C3D4', fontSize: 12, marginTop: 4 }}>Top level. Thank you for helping the community.</Text>}
+              </View>
+            )}
+            <Pressable onPress={() => startCommPost('question')} style={{ marginTop: 14, flexDirection: 'row', alignItems: 'center', gap: 8, padding: 12, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.1)' }}>
+              <Ionicons name="create-outline" size={18} color="#FFFFFF" />
+              <Text style={{ color: '#D7E2F0', fontSize: 14 }}>Ask the community a question…</Text>
+            </Pressable>
+          </View>
+
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 14, paddingHorizontal: 12, borderRadius: 14, backgroundColor: '#F1F5F9' }}>
+            <Ionicons name="search" size={16} color="#64748B" />
+            <TextInput value={commQuery} onChangeText={setCommQuery} onSubmitEditing={() => loadCommunity().catch(() => {})} returnKeyType="search" placeholder="Search posts" placeholderTextColor="#94A3B8" style={{ flex: 1, minWidth: 0, paddingVertical: 10, fontSize: 14, color: '#0B1220' }} />
+            {!!commQuery && <Pressable onPress={() => { setCommQuery(''); loadCommunity({ q: '' }).catch(() => {}); }} hitSlop={8} accessibilityLabel="Clear search"><Ionicons name="close-circle" size={18} color="#94A3B8" /></Pressable>}
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 12 }}>
+            {kinds.map(([k, label]) => (
+              <Pressable key={k} onPress={() => { setCommKind(k); loadCommunity({ kind: k }).catch(() => {}); }} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 18, backgroundColor: commKind === k ? '#1E56A0' : '#EAF1FB' }}>
+                <Text style={{ color: commKind === k ? '#FFFFFF' : '#1E56A0', fontWeight: '600', fontSize: 13 }}>{label}</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+          <View style={{ flexDirection: 'row', gap: 18, marginBottom: 4 }}>
+            {([['hot', 'Popular'], ['new', 'Newest'], ['top', 'Top']] as const).map(([k, label]) => (
+              <Pressable key={k} onPress={() => { setCommSort(k); loadCommunity({ sort: k }).catch(() => {}); }} hitSlop={6}>
+                <Text style={{ fontSize: 14, fontWeight: commSort === k ? '800' : '500', color: commSort === k ? '#0B1220' : '#8A97A6', borderBottomWidth: 2, borderBottomColor: commSort === k ? '#1E56A0' : 'transparent', paddingBottom: 4 }}>{label}</Text>
+              </Pressable>
+            ))}
+          </View>
+
+          {commHelpers.length > 0 && commKind === 'all' && !commQuery && (
+            <View style={[styles.detailCard, { marginTop: 10 }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="ribbon" size={16} color="#B7791F" />
+                <Text style={styles.attentionTitle}>Top helpers this week</Text>
+              </View>
+              {commHelpers.map((h, i) => (
+                <View key={`${h.name}-${i}`} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 10 }}>
+                  <Text style={{ width: 18, fontWeight: '800', color: i === 0 ? '#B7791F' : '#8A97A6' }}>{i + 1}</Text>
+                  {commAvatar(h.name, false, 30)}
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={{ fontSize: 14, fontWeight: '700', color: '#0B1220' }} numberOfLines={1}>{h.name}</Text>
+                    {!!(h.label || (h as any).level) && <Text style={{ fontSize: 12, color: '#8A97A6' }} numberOfLines={1}>{[(h as any).level, h.label].filter(Boolean).join(' · ')}</Text>}
                   </View>
-                  {hasEvent && <View style={[styles.calendarEventDot, isSelected && { backgroundColor: '#FFF' }]} />}
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: '#1E56A0' }}>{h.points} pts · {h.answers} {h.answers === 1 ? 'answer' : 'answers'}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {!!commError && <Text style={[styles.attentionSubtitle, { color: '#C2760C', marginTop: 12 }]}>{commError}</Text>}
+          {commLoading && commPosts === null && <ActivityIndicator color="#1E56A0" style={{ marginTop: 24 }} />}
+          {commPosts !== null && commPosts.length === 0 && !commLoading && !commError && (
+            <View style={[styles.detailCard, { alignItems: 'center', paddingVertical: 26, marginTop: 12 }]}>
+              <Ionicons name="chatbubbles-outline" size={28} color="#1E56A0" />
+              <Text style={[styles.attentionTitle, { marginTop: 8 }]}>{commQuery ? 'No posts match your search' : commKind === 'mine' ? "You haven't posted yet" : 'Be the first to post'}</Text>
+              <Text style={[styles.attentionSubtitle, { marginTop: 4, textAlign: 'center' }]}>Ask a question, share a tip that works for your business, or celebrate a win.</Text>
+              <Pressable onPress={() => startCommPost(commKind === 'all' || commKind === 'mine' ? 'question' : commKind)} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 14, minHeight: 40, alignSelf: 'stretch' }]}><Text style={styles.resetButtonText}>Create a post</Text></Pressable>
+            </View>
+          )}
+          {(commPosts ?? []).map(p => (
+            <Pressable key={p.id} onPress={() => openCommPost(p)} accessibilityRole="button" style={[styles.detailCard, { marginTop: 10 }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                {commAvatar(p.author_name)}
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text style={{ fontSize: 13, fontWeight: '700', color: '#0B1220', flexShrink: 1 }} numberOfLines={1}>{p.author_name}{p.mine ? ' (you)' : ''}</Text>
+                    {commLevel(p.author_level)}
+                  </View>
+                  <Text style={{ fontSize: 12, color: '#8A97A6' }} numberOfLines={1}>{[p.author_label, commAgo(p.created_at)].filter(Boolean).join(' · ')}</Text>
+                </View>
+                {commKindChip(p.kind)}
+              </View>
+              <Text style={{ fontSize: 16, fontWeight: '700', color: '#0B1220', marginTop: 10, lineHeight: 22 }}>{p.title}</Text>
+              {!!p.body && <Text style={{ fontSize: 14, color: '#475569', marginTop: 4, lineHeight: 20 }} numberOfLines={3}>{p.body.replace(/\*\*/g, '')}</Text>}
+              {p.tags?.length > 0 && (
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                  {p.tags.map(t => <Text key={t} style={{ fontSize: 12, color: '#1E56A0' }}>#{t.replace(/\s+/g, '')}</Text>)}
+                </View>
+              )}
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 12 }}>
+                {commVoteBtn('post', p.id, p.upvotes, p.mine)}
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                  <Ionicons name="chatbubble-outline" size={15} color="#64748B" />
+                  <Text style={{ fontSize: 13, color: '#64748B', fontWeight: '600' }}>{p.reply_count}</Text>
+                </View>
+                {p.ai_answered && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}><Ionicons name="sparkles" size={13} color="#1E56A0" /><Text style={{ fontSize: 12, color: '#1E56A0', fontWeight: '600' }}>Nexora answered</Text></View>}
+                {p.solved && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginLeft: 'auto' }}><Ionicons name="checkmark-circle" size={15} color="#15803D" /><Text style={{ fontSize: 12, color: '#15803D', fontWeight: '700' }}>Solved</Text></View>}
+              </View>
+            </Pressable>
+          ))}
+          {commLoading && commPosts !== null && <ActivityIndicator color="#1E56A0" style={{ marginTop: 14 }} />}
+          {!!commQuery.trim() && !commLoading && renderCommWeb(commQuery, 'Search the web')}
+        </ScrollView>
+        <Pressable onPress={() => startCommPost(commKind === 'all' || commKind === 'mine' ? 'question' : commKind)} accessibilityRole="button" accessibilityLabel="New post"
+          style={{ position: 'absolute', right: 20, bottom: 24 + insets.bottom, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 18, height: 50, borderRadius: 25, backgroundColor: '#1E56A0', shadowColor: '#1E56A0', shadowOpacity: 0.35, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 6 }}>
+          <Ionicons name="add" size={22} color="#FFFFFF" />
+          <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 15 }}>New post</Text>
+        </Pressable>
+        {commComposer}
+        {commActivitySheet}
+      </View>
+    );
+  }
+
+  if (screen === 'communityPost') {
+    const t = commThread;
+    const back = () => setScreen('community');
+    const waitingForAi = !!t && t.post.kind === 'question' && !t.post.ai_answered && Date.now() - new Date(t.post.created_at).getTime() < 3 * 60000;
+    return (
+      <KeyboardAvoidingView style={styles.mainScreen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <StatusBar style="dark" />
+        <View style={[styles.knowledgeHeader, headerSafe]}>
+          <Pressable onPress={back} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={styles.knowledgeHeaderTitle}>{t ? COMM_META[t.post.kind].label : 'Post'}</Text>
+          {t ? (
+            <Pressable onPress={() => t.post.mine ? deleteComm('post', t.post.id) : reportComm('post', t.post.id)} hitSlop={8} accessibilityLabel={t.post.mine ? 'Delete post' : 'Report post'}>
+              <Ionicons name={t.post.mine ? 'trash-outline' : 'flag-outline'} size={21} color="#0B1220" />
+            </Pressable>
+          ) : <View style={{ width: 22 }} />}
+        </View>
+        <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 30 }]} keyboardShouldPersistTaps="handled">
+          {!t && <ActivityIndicator color="#1E56A0" style={{ marginTop: 24 }} />}
+          {t && (
+            <>
+              <View style={styles.detailCard}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  {commAvatar(t.post.author_name, false, 40)}
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Text style={{ fontSize: 14, fontWeight: '700', color: '#0B1220', flexShrink: 1 }} numberOfLines={1}>{t.post.author_name}{t.post.mine ? ' (you)' : ''}</Text>
+                      {commLevel(t.post.author_level)}
+                    </View>
+                    <Text style={{ fontSize: 12, color: '#8A97A6' }}>{[t.post.author_label, commAgo(t.post.created_at)].filter(Boolean).join(' · ')}</Text>
+                  </View>
+                  {commKindChip(t.post.kind)}
+                </View>
+                <Text style={{ fontSize: 19, fontWeight: '800', color: '#0B1220', marginTop: 12, lineHeight: 26 }}>{t.post.title}</Text>
+                {!!t.post.body && <View style={{ marginTop: 8 }}>{commText(t.post.body)}</View>}
+                {t.post.tags?.length > 0 && <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>{t.post.tags.map(tag => <Text key={tag} style={{ fontSize: 12, color: '#1E56A0' }}>#{tag.replace(/\s+/g, '')}</Text>)}</View>}
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 14 }}>
+                  {commVoteBtn('post', t.post.id, t.post.upvotes, t.post.mine)}
+                  <Text style={{ fontSize: 13, color: '#64748B' }}>{t.post.reply_count} {t.post.reply_count === 1 ? 'reply' : 'replies'}</Text>
+                  {t.post.solved && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginLeft: 'auto' }}><Ionicons name="checkmark-circle" size={16} color="#15803D" /><Text style={{ fontSize: 13, color: '#15803D', fontWeight: '700' }}>Solved</Text></View>}
+                </View>
+              </View>
+
+              {waitingForAi && (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 12, padding: 12, borderRadius: 14, backgroundColor: '#F2F8FD' }}>
+                  <ActivityIndicator color="#1E56A0" size="small" />
+                  <Text style={{ flex: 1, fontSize: 13, color: '#1E3A5F' }}>Nexora is writing a first answer…</Text>
+                </View>
+              )}
+              {commThreadLoading && t.replies.length === 0 && <ActivityIndicator color="#1E56A0" style={{ marginTop: 16 }} />}
+              {t.post.mine && t.post.kind === 'question' && t.replies.length > 0 && !t.post.solved && (
+                <Text style={{ fontSize: 12, color: '#8A97A6', marginTop: 14 }}>Tap “Best answer” on the reply that helped you most. It helps the next person with the same question.</Text>
+              )}
+              {t.replies.map(r => (
+                <View key={r.id} style={[styles.detailCard, { marginTop: 10 }, r.accepted ? { borderWidth: 1.5, borderColor: '#15803D' } : r.is_ai ? { borderWidth: 1, borderColor: '#C9DDF5', backgroundColor: '#F7FAFE' } : null]}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                    {commAvatar(r.author_name, r.is_ai, 32)}
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Text style={{ fontSize: 13, fontWeight: '700', color: '#0B1220' }} numberOfLines={1}>{r.author_name}{r.mine ? ' (you)' : ''}</Text>
+                        {r.is_ai && <Text style={{ fontSize: 10, fontWeight: '800', color: '#FFFFFF', backgroundColor: '#1E56A0', paddingHorizontal: 6, paddingVertical: 1, borderRadius: 6, overflow: 'hidden' }}>AI</Text>}
+                        {!r.is_ai && commLevel(r.author_level)}
+                      </View>
+                      <Text style={{ fontSize: 12, color: '#8A97A6' }} numberOfLines={1}>{[r.is_ai ? 'Check advice before acting on it' : r.author_label, commAgo(r.created_at)].filter(Boolean).join(' · ')}</Text>
+                    </View>
+                    {r.accepted && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}><Ionicons name="checkmark-circle" size={15} color="#15803D" /><Text style={{ fontSize: 12, color: '#15803D', fontWeight: '700' }}>Best answer</Text></View>}
+                  </View>
+                  <View style={{ marginTop: 10 }}>{commText(r.body)}</View>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, marginTop: 12 }}>
+                    {commVoteBtn('reply', r.id, r.upvotes, r.mine)}
+                    {t.post.mine && t.post.kind === 'question' && (
+                      <Pressable disabled={commBusy === r.id} onPress={() => acceptCommReply(r.id)} hitSlop={6} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                        <Ionicons name={r.accepted ? 'close-circle-outline' : 'checkmark-circle-outline'} size={16} color="#15803D" />
+                        <Text style={{ fontSize: 13, color: '#15803D', fontWeight: '600' }}>{r.accepted ? 'Undo best answer' : 'Best answer'}</Text>
+                      </Pressable>
+                    )}
+                    <Pressable onPress={() => r.mine ? deleteComm('reply', r.id) : reportComm('reply', r.id)} hitSlop={6} style={{ marginLeft: 'auto' }} accessibilityLabel={r.mine ? 'Delete reply' : 'Report reply'}>
+                      <Ionicons name={r.mine ? 'trash-outline' : 'flag-outline'} size={16} color="#94A3B8" />
+                    </Pressable>
+                  </View>
+                </View>
+              ))}
+              {t.post.kind === 'question' && renderCommWeb(t.post.title, 'See what the web says')}
+              {!commThreadLoading && t.replies.length === 0 && !waitingForAi && (
+                <Text style={[styles.attentionSubtitle, { marginTop: 16, textAlign: 'center' }]}>No replies yet. Share what you know.</Text>
+              )}
+            </>
+          )}
+        </ScrollView>
+        {t && (
+          <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 8, paddingHorizontal: 14, paddingTop: 10, paddingBottom: 10 + insets.bottom, borderTopWidth: 1, borderTopColor: '#E2E8F0', backgroundColor: '#FFFFFF' }}>
+            <TextInput value={commReplyText} onChangeText={setCommReplyText} multiline maxLength={3000} placeholder={t.post.kind === 'question' ? 'Share what worked for you…' : 'Write a reply…'} placeholderTextColor="#94A3B8"
+              style={{ flex: 1, minWidth: 0, maxHeight: 120, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 18, backgroundColor: '#F1F5F9', fontSize: 14, color: '#0B1220' }} />
+            <Pressable disabled={!commReplyText.trim() || commBusy === 'reply'} onPress={sendCommReply} accessibilityLabel="Send reply"
+              style={{ width: 42, height: 42, flexShrink: 0, borderRadius: 21, alignItems: 'center', justifyContent: 'center', backgroundColor: commReplyText.trim() ? '#1E56A0' : '#CBD5E1' }}>
+              {commBusy === 'reply' ? <ActivityIndicator color="#FFF" size="small" /> : <Ionicons name="send" size={18} color="#FFFFFF" />}
+            </Pressable>
+          </View>
+        )}
+      </KeyboardAvoidingView>
+    );
+  }
+
+  if (screen === 'terms') return <LegalTermsPage onBack={closeTerms} />;
+
+  if (screen === 'verifyEmail') {
+    return (
+      <KeyboardAvoidingView style={{ flex: 1, backgroundColor: '#FFFFFF' }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <StatusBar style="dark" />
+        <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', padding: 24 }} keyboardShouldPersistTaps="handled">
+          <View style={{ alignItems: 'center' }}>
+            <View style={{ width: 64, height: 64, borderRadius: 20, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}>
+              <Ionicons name="mail-open-outline" size={30} color="#1E56A0" />
+            </View>
+            <Text style={{ fontSize: 22, fontWeight: '800', color: '#0B1220', marginTop: 16 }}>Check your email</Text>
+            <Text style={{ fontSize: 14, color: '#5C6B7A', marginTop: 6, textAlign: 'center', lineHeight: 20 }}>Enter the 4-digit code we sent to{'\n'}<Text style={{ fontWeight: '700', color: '#0B1220' }}>{verifyEmailAddr || userEmail}</Text></Text>
+          </View>
+          <TextInput value={verifyCode} onChangeText={t => { setVerifyCode(t.replace(/\D/g, '').slice(0, 4)); setVerifyError(''); }} onSubmitEditing={checkVerifyCode}
+            keyboardType="number-pad" maxLength={4} autoFocus placeholder="••••" placeholderTextColor="#C7D2DE" textContentType="oneTimeCode" autoComplete="one-time-code" accessibilityLabel="4-digit code"
+            style={{ alignSelf: 'center', marginTop: 24, width: 220, height: 64, borderRadius: 16, borderWidth: 1.5, borderColor: verifyError ? '#D64545' : '#D5DEE8', textAlign: 'center', fontSize: 30, fontWeight: '800', letterSpacing: 18, color: '#0B1220' }} />
+          {!!verifyError && <Text style={{ color: '#D64545', fontSize: 13, textAlign: 'center', marginTop: 10 }}>{verifyError}</Text>}
+          {!!verifyInfo && !verifyError && <Text style={{ color: '#1E9E6D', fontSize: 13, textAlign: 'center', marginTop: 10 }}>{verifyInfo}</Text>}
+          <Pressable disabled={verifyBusy || verifyCode.length !== 4} onPress={checkVerifyCode} style={[styles.resetButton, verifyCode.length === 4 ? styles.resetButtonEnabled : { backgroundColor: '#C7D2DE' }, { marginTop: 20, alignSelf: 'center', width: '100%', maxWidth: 360 }]}>
+            {verifyBusy ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>Confirm email</Text>}
+          </Pressable>
+          <Pressable disabled={verifyBusy || verifyCooldown > 0} onPress={sendVerifyCode} style={{ marginTop: 16, alignSelf: 'center' }}>
+            <Text style={{ color: verifyCooldown > 0 ? '#8A97A6' : '#1E56A0', fontWeight: '700' }}>{verifyCooldown > 0 ? `Send a new code in ${verifyCooldown}s` : 'Send a new code'}</Text>
+          </Pressable>
+          <Text style={{ color: '#8A97A6', fontSize: 12, textAlign: 'center', marginTop: 10 }}>Can't find it? Check your spam or promotions folder.</Text>
+          <Pressable onPress={handleLogout} style={{ marginTop: 18, alignSelf: 'center' }}><Text style={{ color: '#5C6B7A', fontSize: 13 }}>Use a different account</Text></Pressable>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    );
+  }
+
+  if (screen === 'browser') {
+    const secure = /^https:/i.test(browserNav.url || browserUrl);
+    const reader = readerMode || !WebView;
+    const canBack = reader ? readerHistory.idx > 0 : browserNav.canGoBack;
+    const canFwd = reader ? readerHistory.idx < readerHistory.list.length - 1 : browserNav.canGoForward;
+    const openOriginal = () => Linking.openURL(browserNav.url || browserUrl).catch(() => {});
+    return (
+      <View style={[styles.mainScreen, { backgroundColor: '#FFFFFF' }]}>
+        <StatusBar style="dark" />
+        <View style={[headerSafe, { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: '#E8EDF3', backgroundColor: '#FFFFFF' }]}>
+          <Pressable onPress={closeBrowser} hitSlop={8} accessibilityLabel="Close and go back to Nexora"><Ionicons name="close" size={24} color="#0B1220" /></Pressable>
+          <View style={{ flex: 1 }}>
+            <Text numberOfLines={1} style={{ fontSize: 15, fontWeight: '700', color: '#0B1220' }}>{browserNav.title || hostOf(browserUrl)}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 1 }}>
+              <Ionicons name={secure ? 'lock-closed' : 'warning-outline'} size={11} color={secure ? '#1E9E6D' : '#C2760C'} />
+              <Text numberOfLines={1} style={{ fontSize: 12, color: '#6B7A8C' }}>{hostOf(browserNav.url || browserUrl)}</Text>
+            </View>
+          </View>
+          {!!WebView && (
+            <Pressable onPress={() => { const next = !readerMode; setReaderMode(next); if (next) { const cur = browserNav.url || browserUrl; setReaderHistory({ list: [cur], idx: 0 }); loadReader(cur); } }} hitSlop={8} accessibilityLabel={readerMode ? 'Show the live page' : 'Show in reader view'}>
+              <Ionicons name={readerMode ? 'globe-outline' : 'reader-outline'} size={22} color="#0B1220" />
+            </Pressable>
+          )}
+          <Pressable onPress={() => (reader ? loadReader(browserNav.url || browserUrl) : webRef.current?.reload())} hitSlop={8} accessibilityLabel="Reload page"><Ionicons name="refresh-outline" size={22} color="#0B1220" /></Pressable>
+          <Pressable onPress={() => Alert.alert(browserNav.title || 'This page', hostOf(browserNav.url || browserUrl), [
+            { text: 'Ask Nexora about this page', onPress: askAboutPage },
+            { text: 'Share link', onPress: () => shareLink(browserNav.url || browserUrl, browserNav.title) },
+            { text: IS_WEB ? 'Open the original site in a new tab' : 'Open in phone browser', onPress: openOriginal },
+            { text: 'Cancel', style: 'cancel' },
+          ])} hitSlop={8} accessibilityLabel="More options"><Ionicons name="ellipsis-vertical" size={20} color="#0B1220" /></Pressable>
+        </View>
+        {(reader ? readerLoading : browserNav.loading) && (
+          <View style={{ height: 3, backgroundColor: '#EAF1FB' }}>
+            <View style={{ height: 3, width: `${Math.max(8, Math.round(browserNav.progress * 100))}%`, backgroundColor: '#1E56A0' }} />
+          </View>
+        )}
+        {reader ? (
+          <ScrollView style={{ flex: 1, backgroundColor: '#FFFFFF' }} contentContainerStyle={{ padding: 20, paddingBottom: 40, maxWidth: 760, width: '100%', alignSelf: 'center' }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, backgroundColor: '#EAF1FB', marginBottom: 12 }}>
+              <Ionicons name="reader-outline" size={13} color="#1E56A0" />
+              <Text style={{ fontSize: 12, color: '#1E56A0', fontWeight: '600' }}>Nexora reader{readerPage?.site ? ` · ${readerPage.site}` : ''}</Text>
+            </View>
+            {readerLoading && !readerPage && (
+              <View style={{ paddingVertical: 40, alignItems: 'center', gap: 10 }}>
+                <ActivityIndicator color="#1E56A0" />
+                <Text style={styles.attentionSubtitle}>Nexora is opening the page…</Text>
+              </View>
+            )}
+            {!!readerError && !readerLoading && (
+              <View style={[styles.detailCard, { marginTop: 4 }]}>
+                <Text style={styles.attentionTitle}>This page didn't open</Text>
+                <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}>{readerError}</Text>
+                <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                  <Pressable onPress={() => loadReader(browserUrl)} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1, minHeight: 40 }]}><Text style={styles.resetButtonText}>Try again</Text></Pressable>
+                  <Pressable onPress={openOriginal} style={[styles.resetButton, { flex: 1, minHeight: 40, backgroundColor: '#EAF1FB' }]}><Text style={[styles.resetButtonText, { color: '#1E56A0' }]}>Open original</Text></Pressable>
+                </View>
+              </View>
+            )}
+            {readerPage && (
+              <>
+                <Text style={{ fontSize: 22, fontWeight: '800', color: '#0B1220', lineHeight: 29 }}>{readerPage.title}</Text>
+                {!!readerPage.description && <Text style={{ fontSize: 15, color: '#5C6B7A', marginTop: 8, lineHeight: 22 }}>{readerPage.description}</Text>}
+                {!!readerPage.image && <ExpoImage source={{ uri: readerPage.image }} style={{ width: '100%', aspectRatio: 1.9, borderRadius: 14, marginTop: 14, backgroundColor: '#F2F4F7' }} contentFit="cover" />}
+                <View style={{ marginTop: 14, gap: 12 }}>
+                  {readerPage.blocks.map((b, i) => (
+                    b.type === 'img' ? <ExpoImage key={i} source={{ uri: b.src }} style={{ width: '100%', aspectRatio: 1.6, borderRadius: 12, backgroundColor: '#F2F4F7' }} contentFit="contain" />
+                    : b.type === 'h' ? <Text key={i} style={{ fontSize: 18, fontWeight: '700', color: '#0B1220', marginTop: 6 }}>{b.text}</Text>
+                    : b.type === 'li' ? <View key={i} style={{ flexDirection: 'row', gap: 8 }}><Text style={{ color: '#1E56A0', fontSize: 15 }}>•</Text><Text style={{ flex: 1, fontSize: 15, color: '#1F2937', lineHeight: 23 }}>{b.text}</Text></View>
+                    : b.type === 'quote' ? <Text key={i} style={{ fontSize: 15, color: '#334155', lineHeight: 23, fontStyle: 'italic', borderLeftWidth: 3, borderLeftColor: '#1E56A0', paddingLeft: 12 }}>{b.text}</Text>
+                    : <Text key={i} style={{ fontSize: 15, color: '#1F2937', lineHeight: 23 }}>{b.text}</Text>
+                  ))}
+                </View>
+                {readerPage.links.length > 0 && (
+                  <View style={{ marginTop: 24 }}>
+                    <Text style={styles.channelSectionLabel}>Links on this page</Text>
+                    {readerPage.links.slice(0, 20).map(l => (
+                      <Pressable key={l.url} onPress={() => openInApp(l.url, l.text)} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: '#F0F2F5' }}>
+                        <Ionicons name="link-outline" size={14} color="#1E56A0" />
+                        <Text numberOfLines={1} style={{ flex: 1, color: '#1E56A0', fontSize: 14 }}>{l.text}</Text>
+                        <Text numberOfLines={1} style={{ color: '#8A97A6', fontSize: 12, maxWidth: 130 }}>{hostOf(l.url)}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                )}
+                <Pressable onPress={openOriginal} style={{ marginTop: 20, alignSelf: 'center', padding: 8 }}>
+                  <Text style={{ color: '#5C6B7A', fontSize: 13 }}>Something missing? Open the original page ↗</Text>
+                </Pressable>
+              </>
+            )}
+          </ScrollView>
+        ) : (
+        <WebView
+          ref={webRef}
+          source={{ uri: browserUrl }}
+          style={{ flex: 1 }}
+          startInLoadingState
+          renderLoading={() => <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}><ActivityIndicator color="#1E56A0" /></View>}
+          setSupportMultipleWindows={false}
+          allowsBackForwardNavigationGestures
+          onNavigationStateChange={(n: any) => setBrowserNav(prev => ({ ...prev, title: n.title && !/^https?:/.test(n.title) ? n.title : prev.title, url: n.url || prev.url, canGoBack: !!n.canGoBack, canGoForward: !!n.canGoForward, loading: !!n.loading }))}
+          onLoadProgress={(e: any) => setBrowserNav(prev => ({ ...prev, progress: e.nativeEvent.progress, loading: e.nativeEvent.progress < 1 }))}
+          onShouldStartLoadWithRequest={(req: any) => {
+            // Web pages stay inside Nexora; phone numbers, email, WhatsApp, maps and app links go to the right app.
+            if (/^(https?|about|data|blob):/i.test(req.url)) return true;
+            Linking.openURL(req.url).catch(() => flash("There's no app on this phone for that link."));
+            return false;
+          }}
+          onError={() => flash("This page didn't load. Check your connection and tap reload.")}
+        />
+        )}
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', paddingTop: 10, paddingBottom: Math.max(12, insets.bottom), borderTopWidth: 1, borderTopColor: '#E8EDF3', backgroundColor: '#FFFFFF' }}>
+          <Pressable disabled={!canBack} onPress={() => (reader ? readerStep(-1) : webRef.current?.goBack())} hitSlop={10} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color={canBack ? '#0B1220' : '#C3CCD6'} /></Pressable>
+          <Pressable disabled={!canFwd} onPress={() => (reader ? readerStep(1) : webRef.current?.goForward())} hitSlop={10} accessibilityLabel="Forward"><Ionicons name="chevron-forward" size={24} color={canFwd ? '#0B1220' : '#C3CCD6'} /></Pressable>
+          <Pressable onPress={askAboutPage} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 16, paddingVertical: 9, borderRadius: 20, backgroundColor: '#1E56A0' }}>
+            <Ionicons name="sparkles" size={15} color="#FFFFFF" /><Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 13 }}>Ask Nexora</Text>
+          </Pressable>
+          <Pressable onPress={() => shareLink(browserNav.url || browserUrl, browserNav.title)} hitSlop={10} accessibilityLabel="Share"><Ionicons name="share-social-outline" size={22} color="#0B1220" /></Pressable>
+          <Pressable onPress={() => setScreen('explore')} hitSlop={10} accessibilityLabel="Search the web"><Ionicons name="search-outline" size={22} color="#0B1220" /></Pressable>
+        </View>
+      </View>
+    );
+  }
+
+  if (screen === 'explore') {
+    const quick = ['Suppliers near me', 'Cheap delivery / logistics', 'Business registration (CAC)', 'Payment & POS options', 'Printing & packaging', 'Ad & marketing tools'];
+    return (
+      <View style={styles.mainScreen}>
+        <StatusBar style="dark" />
+        <View style={[styles.knowledgeHeader, headerSafe]}>
+          <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); }} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={styles.knowledgeHeaderTitle}>Find online</Text>
+          <Pressable onPress={openTrends} hitSlop={8} accessibilityLabel="Trending for you"><Ionicons name="trending-up-outline" size={22} color="#0B1220" /></Pressable>
+        </View>
+        <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40 }]} keyboardShouldPersistTaps="handled">
+          <Text style={[styles.attentionSubtitle, { marginBottom: 12 }]}>Tell Nexora what you need — a supplier, a service, a tool, an official form. It searches the web and opens what it finds right here.</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderColor: '#D5DEE8', borderRadius: 14, paddingHorizontal: 12, backgroundColor: '#FFFFFF' }}>
+            <Ionicons name="search" size={18} color="#6B7A8C" />
+            <TextInput value={exploreQuery} onChangeText={setExploreQuery} onSubmitEditing={() => runExplore()} returnKeyType="search" placeholder="e.g. wholesale phone accessories in Lagos" placeholderTextColor="#9AA6B4" style={{ flex: 1, paddingVertical: 12, fontSize: 15, color: '#0B1220' }} />
+            {!!exploreQuery && <Pressable onPress={() => setExploreQuery('')} hitSlop={8} accessibilityLabel="Clear"><Ionicons name="close-circle" size={18} color="#9AA6B4" /></Pressable>}
+          </View>
+          <Pressable disabled={!exploreQuery.trim() || exploreLoading} onPress={() => runExplore()} style={[styles.resetButton, exploreQuery.trim() ? styles.resetButtonEnabled : null, { marginTop: 10, minHeight: 44 }]}>
+            {exploreLoading ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.resetButtonText}>Search with Nexora</Text>}
+          </Pressable>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14 }}>
+            {quick.map(q => (
+              <Pressable key={q} onPress={() => { setExploreQuery(q); runExplore(q); }} style={{ paddingHorizontal: 12, paddingVertical: 7, borderRadius: 16, backgroundColor: '#EAF1FB' }}>
+                <Text style={{ color: '#1E56A0', fontSize: 13, fontWeight: '600' }}>{q}</Text>
+              </Pressable>
+            ))}
+          </View>
+          {exploreLoading && (
+            <View style={[styles.detailCard, { marginTop: 16, alignItems: 'center', gap: 8 }]}>
+              <ActivityIndicator color="#1E56A0" />
+              <Text style={styles.attentionSubtitle}>Nexora is searching the web…</Text>
+            </View>
+          )}
+          {!!exploreError && !exploreLoading && (
+            <View style={[styles.detailCard, { marginTop: 16 }]}>
+              <Text style={styles.attentionTitle}>Search didn't finish</Text>
+              <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}>{exploreError}</Text>
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
+                <Pressable onPress={() => runExplore()} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1, minHeight: 40 }]}><Text style={styles.resetButtonText}>Try again</Text></Pressable>
+                <Pressable onPress={() => openInApp(`https://www.google.com/search?q=${encodeURIComponent(exploreQuery)}`, `Search: ${exploreQuery}`)} style={[styles.resetButton, { flex: 1, minHeight: 40, backgroundColor: '#EAF1FB' }]}><Text style={[styles.resetButtonText, { color: '#1E56A0' }]}>Open Google here</Text></Pressable>
+              </View>
+            </View>
+          )}
+          {exploreResult && !exploreLoading && (
+            <>
+              {!!exploreResult.summary && (
+                <View style={[styles.detailCard, { marginTop: 16, backgroundColor: '#F2F8FD' }]}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}><Ionicons name="sparkles" size={15} color="#1E56A0" /><Text style={[styles.attentionTitle, { color: '#1E56A0' }]}>Nexora found</Text></View>
+                  <Text style={[styles.attentionSubtitle, { marginTop: 6, fontSize: 14, lineHeight: 20 }]}>{exploreResult.summary}</Text>
+                </View>
+              )}
+              {exploreResult.results.map(r => (
+                <Pressable key={r.url} onPress={() => openInApp(r.url, r.title)} style={[styles.detailCard, { flexDirection: 'row', gap: 12, alignItems: 'flex-start' }]}>
+                  {renderWebThumb(r.url, 72, 12)}
+                  <View style={styles.attentionTextWrap}>
+                    <Text style={styles.attentionTitle} numberOfLines={2}>{r.title}</Text>
+                    <Text style={{ color: '#1E9E6D', fontSize: 12, marginTop: 2 }} numberOfLines={1}>{r.domain || hostOf(r.url)}</Text>
+                    {!!r.why && <Text style={[styles.attentionSubtitle, { marginTop: 4 }]} numberOfLines={3}>{r.why}</Text>}
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color="#8A97A6" />
+                </Pressable>
+              ))}
+              {exploreResult.results.length === 0 && <Text style={[styles.attentionSubtitle, { marginTop: 12 }]}>No trustworthy links came back. Try different words.</Text>}
+              <Pressable onPress={() => openInApp(`https://www.google.com/search?q=${encodeURIComponent(exploreResult.query)}`, `Search: ${exploreResult.query}`)} style={{ marginTop: 8, alignSelf: 'center', padding: 8 }}>
+                <Text style={{ color: '#1E56A0', fontWeight: '600' }}>See more results for “{exploreResult.query}”</Text>
+              </Pressable>
+            </>
+          )}
+          {recentLinks.length > 0 && !exploreLoading && (
+            <>
+              <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>Recently opened</Text>
+              {recentLinks.map(l => (
+                <Pressable key={l.url} onPress={() => openInApp(l.url, l.title)} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10 }}>
+                  <Ionicons name="time-outline" size={16} color="#8A97A6" />
+                  <Text numberOfLines={1} style={{ flex: 1, color: '#0B1220', fontSize: 14 }}>{l.title}</Text>
+                  <Text numberOfLines={1} style={{ color: '#8A97A6', fontSize: 12, maxWidth: 120 }}>{hostOf(l.url)}</Text>
+                </Pressable>
+              ))}
+            </>
+          )}
+        </ScrollView>
+      </View>
+    );
+  }
+
+  if (screen === 'trends') {
+    const focuses = [{ k: '', label: 'For you' }, { k: 'demand', label: 'What people buy' }, { k: 'social', label: 'Social media' }, { k: 'competitor', label: 'Competitors' }, { k: 'price', label: 'Prices' }, { k: 'regulation', label: 'Rules & tax' }, { k: 'event', label: 'Events' }];
+    const updated = trendsData?.generated_at ? relTime(trendsData.generated_at) : '';
+    return (
+      <View style={styles.mainScreen}>
+        <StatusBar style="dark" />
+        <View style={[styles.knowledgeHeader, headerSafe]}>
+          <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); }} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={styles.knowledgeHeaderTitle}>Trending for you</Text>
+          <Pressable disabled={trendsLoading} onPress={() => loadTrends({ force: true })} hitSlop={8} accessibilityLabel="Check again"><Ionicons name="refresh-outline" size={22} color={trendsLoading ? '#C3CCD6' : '#0B1220'} /></Pressable>
+        </View>
+        <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40 }]}>
+          <Text style={[styles.attentionSubtitle, { marginBottom: 10 }]}>
+            {trendsData ? `What's moving online for ${trendsData.business || 'your business'}${trendsData.country ? ` in ${trendsData.country}` : ''}${updated ? ` · updated ${updated}` : ''}. Refreshes automatically every 6 hours.` : 'Nexora reads the web for your industry every 6 hours and tells you what to do about it.'}
+          </Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 6 }}>
+            {focuses.map(f => {
+              const on = trendsFocus === f.k;
+              return (
+                <Pressable key={f.label} disabled={trendsLoading} onPress={() => { setTrendsFocus(f.k); loadTrends({ focus: f.k, force: !!f.k }); }} style={{ paddingHorizontal: 13, paddingVertical: 7, borderRadius: 16, backgroundColor: on ? '#1E56A0' : '#EAF1FB' }}>
+                  <Text style={{ color: on ? '#FFFFFF' : '#1E56A0', fontSize: 13, fontWeight: '600' }}>{f.label}</Text>
                 </Pressable>
               );
             })}
-          </View>
-
-          <View style={styles.sectionHeaderRow}>
-            <Text style={styles.sectionLabel}>
-              {selectedScheduleDate === todayIso ? 'Today' : new Date(selectedScheduleDate + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
-            </Text>
-          </View>
-          <View style={styles.attentionCard}>
-            {dayEvents.length === 0 ? (
-              <Text style={styles.attentionSubtitle}>No appointments on this day.</Text>
-            ) : dayEvents.map((e, i) => (
-              <View key={i} style={styles.recentDocRow}>
-                <View style={styles.attentionIconWrap}>
-                  <Ionicons name="calendar-outline" size={18} color="#1E56A0" />
+          </ScrollView>
+          {trendsLoading && (
+            <View style={[styles.detailCard, { marginTop: 12, alignItems: 'center', gap: 8, paddingVertical: 22 }]}>
+              <ActivityIndicator color="#1E56A0" />
+              <Text style={styles.attentionTitle}>Nexora is reading the web…</Text>
+              <Text style={styles.attentionSubtitle}>Checking news, social media and markets for your business. This takes about 20 seconds.</Text>
+            </View>
+          )}
+          {!!trendsError && !trendsLoading && (
+            <View style={[styles.detailCard, { marginTop: 12 }]}>
+              <Text style={styles.attentionTitle}>Couldn't check trends</Text>
+              <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}>{trendsError}</Text>
+              <Pressable onPress={() => loadTrends({ force: true })} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 10, minHeight: 40 }]}><Text style={styles.resetButtonText}>Try again</Text></Pressable>
+            </View>
+          )}
+          {!trendsLoading && trendsData?.trends.map((t, i) => {
+            const look = TREND_LOOK[t.type] || TREND_LOOK.news;
+            return (
+              <View key={`${t.title}-${i}`} style={[styles.detailCard, { marginTop: 12 }]}>
+                {renderWebHero(t.sources?.[0]?.url)}
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, backgroundColor: look.bg }}>
+                    <Ionicons name={look.icon as any} size={12} color={look.color} /><Text style={{ color: look.color, fontSize: 11, fontWeight: '700' }}>{look.label}</Text>
+                  </View>
                 </View>
-                <View style={styles.attentionTextWrap}>
-                  <Text style={styles.attentionTitle}>{e.title}</Text>
-                  <Text style={styles.recentDocMeta}>{e.time}  ·  {e.withWhom}</Text>
+                <Text style={[styles.attentionTitle, { marginTop: 8, fontSize: 16 }]}>{t.title}</Text>
+                <Text style={[styles.attentionSubtitle, { marginTop: 4, fontSize: 14, lineHeight: 20 }]}>{t.summary}</Text>
+                {!!t.why_it_matters && <Text style={{ marginTop: 8, fontSize: 13, color: '#334155', lineHeight: 19 }}><Text style={{ fontWeight: '700' }}>Why it matters: </Text>{t.why_it_matters}</Text>}
+                {!!t.action && (
+                  <View style={{ marginTop: 10, padding: 10, borderRadius: 12, backgroundColor: '#E6F4ED', flexDirection: 'row', gap: 8 }}>
+                    <Ionicons name="flash-outline" size={16} color="#1E9E6D" />
+                    <Text style={{ flex: 1, fontSize: 13, color: '#14532D', lineHeight: 19 }}><Text style={{ fontWeight: '700' }}>Try this week: </Text>{t.action}</Text>
+                  </View>
+                )}
+                {t.sources?.length > 0 && (
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+                    {t.sources.slice(0, 3).map(src => (
+                      <Pressable key={src.url} onPress={() => openInApp(src.url, src.title)} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 9, paddingVertical: 5, borderRadius: 12, borderWidth: 1, borderColor: '#D5DEE8' }}>
+                        <Ionicons name="link-outline" size={12} color="#1E56A0" /><Text numberOfLines={1} style={{ color: '#1E56A0', fontSize: 12, maxWidth: 150 }}>{hostOf(src.url)}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                )}
+                <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                  <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); sendChatMessage(`About this trend: "${t.title}" — ${t.summary}. What exactly should my business do about it this week? Give me a short, practical plan.`); }} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1, minHeight: 38 }]}>
+                    <Text style={styles.resetButtonText}>Ask Nexora</Text>
+                  </Pressable>
+                  <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); sendChatMessage(`Write a short social media post for my business that rides this trend: "${t.title}" — ${t.summary}. Include a call to action and 3 hashtags.`); }} style={[styles.resetButton, { flex: 1, minHeight: 38, backgroundColor: '#EAF1FB' }]}>
+                    <Text style={[styles.resetButtonText, { color: '#1E56A0' }]}>Write a post</Text>
+                  </Pressable>
                 </View>
               </View>
-            ))}
-          </View>
+            );
+          })}
+          {!trendsLoading && !trendsData?.focus && (trendsData?.businesses?.length ?? 0) > 0 && (
+            <>
+              <Text style={[styles.channelSectionLabel, { marginTop: 20 }]}>Trending businesses{trendsData?.country ? ` in ${trendsData.country}` : ''}</Text>
+              {trendsData!.businesses!.map((b, i) => (
+                <View key={`${b.name}-${i}`} style={[styles.detailCard, { marginTop: 10 }]}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    {b.sources?.[0]?.url ? renderWebThumb(b.sources[0].url, 56, 12) : <View style={{ width: 56, height: 56, borderRadius: 12, backgroundColor: '#FFF6E5', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="rocket-outline" size={22} color="#B7791F" /></View>}
+                    <Text style={[styles.attentionTitle, { flex: 1, fontSize: 15 }]}>{b.name}</Text>
+                  </View>
+                  <Text style={[styles.attentionSubtitle, { marginTop: 6, fontSize: 14, lineHeight: 20 }]}>{b.summary}</Text>
+                  {!!b.opportunity && <Text style={{ marginTop: 8, fontSize: 13, color: '#334155', lineHeight: 19 }}><Text style={{ fontWeight: '700' }}>Your opportunity: </Text>{b.opportunity}</Text>}
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+                    {b.sources?.slice(0, 2).map(src => (
+                      <Pressable key={src.url} onPress={() => openInApp(src.url, src.title)} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 9, paddingVertical: 5, borderRadius: 12, borderWidth: 1, borderColor: '#D5DEE8' }}>
+                        <Ionicons name="link-outline" size={12} color="#1E56A0" /><Text numberOfLines={1} style={{ color: '#1E56A0', fontSize: 12, maxWidth: 150 }}>{hostOf(src.url)}</Text>
+                      </Pressable>
+                    ))}
+                    <Pressable onPress={() => { openNetwork().catch(() => {}); }} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 9, paddingVertical: 5, borderRadius: 12, backgroundColor: '#EAF1FB' }}>
+                      <Ionicons name="people-outline" size={12} color="#1E56A0" /><Text style={{ color: '#1E56A0', fontSize: 12, fontWeight: '600' }}>Find partners in this</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              ))}
+            </>
+          )}
+          {!trendsLoading && trendsData && trendsData.trends.length === 0 && <Text style={[styles.attentionSubtitle, { marginTop: 14 }]}>Nothing clear came back this time. Tap refresh, or add more about your business in Train AI so Nexora knows what to look for.</Text>}
         </ScrollView>
-        {renderBottomNav()}
+      </View>
+    );
+  }
+
+  if (screen === 'connectChannels') {
+    const isOwner = workspace?.role === 'owner';
+    return (
+      <View style={styles.mainScreen}>
+        <StatusBar style="dark" />
+        <View style={[styles.knowledgeHeader, headerSafe]}>
+          <Pressable onPress={() => goTab('inbox')} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={styles.knowledgeHeaderTitle}>Connect Apps</Text>
+          <Pressable onPress={() => loadChannels().then(() => flash('Up to date')).catch(() => flash("Couldn't refresh."))} hitSlop={8} accessibilityLabel="Refresh"><Ionicons name="refresh-outline" size={22} color="#0B1220" /></Pressable>
+        </View>
+        <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40 }]} keyboardShouldPersistTaps="handled">
+          <Text style={[styles.attentionSubtitle, { marginBottom: 14 }]}>Link your real business accounts. Customer messages arrive in your Inbox, and Nexora can answer them for you in Away mode.</Text>
+          {workspaceChecked && !isOwner && (
+            <Pressable onPress={() => openBilling(() => setScreen('connectChannels'))} style={[styles.detailCard, { flexDirection: 'row', alignItems: 'center', gap: 12 }]}>
+              <Ionicons name="business-outline" size={22} color="#1E56A0" />
+              <View style={styles.attentionTextWrap}>
+                <Text style={styles.attentionTitle}>{workspace ? 'Only the owner can connect channels' : 'Set up your company first'}</Text>
+                <Text style={styles.attentionSubtitle}>{workspace ? `Ask ${workspace.owner_name || 'the business owner'} to connect your accounts.` : 'Create your company to start your free trial and connect channels.'}</Text>
+              </View>
+              {!workspace && <Ionicons name="chevron-forward" size={18} color="#8A97A6" />}
+            </Pressable>
+          )}
+          {CONNECT_CHANNELS.map(ch => {
+            const row = channelRows[ch.key];
+            const on = !!connectedChannels[ch.key];
+            const live = LIVE_CHANNELS.includes(ch.key);
+            const busy = channelBusy === ch.key;
+            return (
+              <View key={ch.key} style={[styles.detailCard, { paddingVertical: 14 }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                  <BrandIcon platform={CHANNEL_PLATFORM[ch.key] ?? 'All'} size={42} />
+                  <View style={styles.attentionTextWrap}>
+                    <Text style={styles.attentionTitle}>{ch.name}</Text>
+                    <Text style={[styles.attentionSubtitle, on && { color: '#1E9E6D' }]} numberOfLines={1}>
+                      {!live ? 'Coming soon' : on ? `Connected${row?.handle ? ` · ${row.handle}` : ''}` : ch.desc}
+                    </Text>
+                  </View>
+                  {busy ? <ActivityIndicator color="#1E56A0" /> : live && !on ? (
+                    <Pressable
+                      disabled={!isOwner}
+                      onPress={() => (ch.key === 'whatsapp' ? (requireOwnerBusiness('connect channels') && setWaForm({ phoneNumberId: '', token: '' })) : connectMetaChannel(ch.key))}
+                      style={{ backgroundColor: isOwner ? '#1E56A0' : '#A5AFBB', borderRadius: 16, paddingHorizontal: 16, paddingVertical: 8 }}
+                      accessibilityRole="button" accessibilityLabel={`Connect ${ch.name}`}>
+                      <Text style={{ color: '#FFF', fontWeight: '700', fontSize: 13 }}>Connect</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+                {live && on && (
+                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                    <Pressable onPress={() => { setSettingsChannelKey(ch.key); setScreen('channelSettings'); }} style={[styles.resetButton, { flex: 1, minHeight: 38, borderWidth: 1, borderColor: '#5381BB' }]}>
+                      <Text style={[styles.resetButtonText, { color: '#1E56A0', fontSize: 13 }]}>AI settings</Text>
+                    </Pressable>
+                    {isOwner && (
+                      <Pressable onPress={() => disconnectChannel(ch.key)} style={[styles.resetButton, { flex: 1, minHeight: 38, borderWidth: 1, borderColor: '#F3B4B4' }]}>
+                        <Text style={[styles.resetButtonText, { color: '#D64545', fontSize: 13 }]}>Disconnect</Text>
+                      </Pressable>
+                    )}
+                  </View>
+                )}
+              </View>
+            );
+          })}
+          <Text style={[styles.attentionSubtitle, { marginTop: 8 }]}>Facebook and Instagram open Facebook's own login so you approve access there; Nexora never sees your password. Instagram must be a Business or Creator account linked to your Facebook Page.</Text>
+        </ScrollView>
+        <Modal visible={!!waForm} transparent animationType="slide" onRequestClose={() => setWaForm(null)} statusBarTranslucent>
+          <Pressable style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)' }} onPress={() => setWaForm(null)} accessibilityLabel="Close" />
+          <View style={{ backgroundColor: '#FFF', borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 20, paddingBottom: 20 + insets.bottom }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+              <BrandIcon platform="Whatsapp" size={34} />
+              <Text style={{ fontSize: 18, fontWeight: '700', color: '#0B1220' }}>Connect WhatsApp Business</Text>
+            </View>
+            <Text style={[styles.attentionSubtitle, { marginTop: 8 }]}>From Meta Business Suite open WhatsApp Manager, then API Setup. Copy your Phone number ID and a permanent access token (System User token with whatsapp_business_messaging permission).</Text>
+            <Text style={[styles.detailFieldLabel, { marginTop: 14 }]}>Phone number ID</Text>
+            <TextInput value={waForm?.phoneNumberId ?? ''} onChangeText={t => setWaForm(f => (f ? { ...f, phoneNumberId: t.replace(/\D/g, '') } : f))} keyboardType="number-pad" placeholder="e.g. 109876543210987" placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={20} />
+            <Text style={[styles.detailFieldLabel, { marginTop: 12 }]}>Access token</Text>
+            <TextInput value={waForm?.token ?? ''} onChangeText={t => setWaForm(f => (f ? { ...f, token: t } : f))} placeholder="EAAG..." placeholderTextColor="#A5AFBB" autoCapitalize="none" autoCorrect={false} secureTextEntry style={styles.editInput} />
+            <Pressable onPress={() => { setWaForm(null); openInApp('https://developers.facebook.com/docs/whatsapp/cloud-api/get-started', 'WhatsApp Cloud API setup'); }} style={{ marginTop: 10 }}>
+              <Text style={{ color: '#1E56A0', fontWeight: '600', fontSize: 13 }}>How do I get these?</Text>
+            </Pressable>
+            <Pressable disabled={channelBusy === 'whatsapp'} onPress={submitWhatsApp} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 16 }]}>
+              {channelBusy === 'whatsapp' ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>Verify and connect</Text>}
+            </Pressable>
+          </View>
+        </Modal>
+      </View>
+    );
+  }
+
+  if (screen === 'billing') {
+    const ws = workspace;
+    const isOwner = ws?.role === 'owner';
+    const trialLeft = ws?.trial_ends_at ? Math.ceil((new Date(ws.trial_ends_at).getTime() - Date.now()) / 86400000) : null;
+    const statusLabel = !ws ? '' : ws.subscription_status === 'trialing'
+      ? (trialLeft !== null && trialLeft > 0 ? `Free trial · ${trialLeft} day${trialLeft === 1 ? '' : 's'} left` : 'Free trial ended')
+      : ws.subscription_status === 'active' ? 'Active' : ws.subscription_status === 'past_due' ? 'Payment overdue' : 'Canceled';
+    const statusColor = !ws ? '#5C6B7A' : ws.subscription_status === 'active' || (ws.subscription_status === 'trialing' && (trialLeft ?? 0) > 0) ? '#1E9E6D' : '#D64545';
+    return (
+      <View style={styles.mainScreen}>
+        <StatusBar style="dark" />
+        <View style={[styles.knowledgeHeader, headerSafe]}>
+          <Pressable onPress={() => billingReturnRef.current()} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={styles.knowledgeHeaderTitle}>Plans & billing</Text>
+          <View style={{ width: 24 }} />
+        </View>
+        <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40 }]} keyboardShouldPersistTaps="handled">
+          {!workspaceChecked ? <ActivityIndicator style={{ marginTop: 40 }} color="#1E56A0" /> : !ws ? (
+            <>
+              <Text style={[styles.attentionTitle, { fontSize: 18 }]}>Set up your company</Text>
+              <Text style={[styles.attentionSubtitle, { marginTop: 4, marginBottom: 12 }]}>Every company gets its own Nexora workspace with everything unlocked for 14 days, free. No card needed, and you're only asked to choose a plan after the trial ends.</Text>
+              <View style={styles.detailCard}>
+                <Text style={styles.detailFieldLabel}>Company name</Text>
+                <TextInput value={bizForm.name} onChangeText={t => setBizForm(f => ({ ...f, name: t }))} placeholder="e.g. Jekamix Ltd" placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={120} />
+                <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Industry</Text>
+                <TextInput value={bizForm.industry} onChangeText={t => setBizForm(f => ({ ...f, industry: t }))} placeholder="e.g. Electronics retail" placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={80} />
+                <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Country</Text>
+                <TextInput value={bizForm.country} onChangeText={t => setBizForm(f => ({ ...f, country: t }))} placeholder="e.g. Nigeria" placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={60} />
+                <Pressable disabled={billingBusy === 'create'} onPress={() => { createBusiness().catch(() => {}); }} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 14 }]}>
+                  {billingBusy === 'create' ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>Start my free 14-day trial</Text>}
+                </Pressable>
+              </View>
+              <Text style={[styles.attentionTitle, { marginTop: 22 }]}>Joining your company's Nexora?</Text>
+              <Text style={[styles.attentionSubtitle, { marginTop: 4, marginBottom: 10 }]}>Ask the owner for an invite code.</Text>
+              <View style={[styles.detailCard, { flexDirection: 'row', gap: 10, alignItems: 'center' }]}>
+                <TextInput value={joinCode} onChangeText={t => setJoinCode(t.toUpperCase())} placeholder="INVITE CODE" placeholderTextColor="#A5AFBB" autoCapitalize="characters" autoCorrect={false} style={[styles.editInput, { flex: 1 }]} maxLength={16} />
+                <Pressable disabled={billingBusy === 'join'} onPress={joinBusiness} style={{ backgroundColor: '#1E56A0', borderRadius: 14, paddingHorizontal: 16, paddingVertical: 12 }}>
+                  {billingBusy === 'join' ? <ActivityIndicator color="#FFF" /> : <Text style={{ color: '#FFF', fontWeight: '700' }}>Join</Text>}
+                </Pressable>
+              </View>
+            </>
+          ) : (
+            <>
+              <View style={styles.detailCard}>
+                <Text style={[styles.attentionTitle, { fontSize: 18 }]}>{ws.name}</Text>
+                <Text style={styles.attentionSubtitle}>{[ws.industry, ws.country].filter(Boolean).join(' · ') || (isOwner ? 'You own this workspace' : `Owner: ${ws.owner_name}`)}</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 }}>
+                  <Text style={styles.attentionTitle}>{plans.find(p => p.key === ws.plan)?.name ?? ws.plan} plan</Text>
+                  <Text style={{ color: statusColor, fontWeight: '700', fontSize: 12 }}>{statusLabel}</Text>
+                </View>
+                {ws.monthly_ai_messages !== null && (
+                  <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}>{(ws.ai_messages_used ?? 0).toLocaleString()} of {ws.monthly_ai_messages.toLocaleString()} AI tasks used this month</Text>
+                )}
+                <Text style={[styles.attentionSubtitle, { marginTop: 2 }]}>{ws.staff_seats === null ? 'Custom user limit' : `Up to ${ws.staff_seats + 1} user${ws.staff_seats === 0 ? '' : 's'}`} · You are the {ws.role}</Text>
+              </View>
+              {!isOwner ? (
+                <Text style={[styles.attentionSubtitle, { marginTop: 8 }]}>{ws.owner_name || 'The business owner'} manages your company's plan.</Text>
+              ) : (
+                <>
+                  {ws.subscription_status === 'active' && !!paidUntil && (
+                    <Text style={[styles.attentionSubtitle, { marginTop: 8 }]}>Paid until {new Date(paidUntil).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}. Pay again any time to add another month or year.</Text>
+                  )}
+                  {ws.subscription_status === 'past_due' && (
+                    <View style={{ marginTop: 12, padding: 12, borderRadius: 14, backgroundColor: '#FDECEC' }}>
+                      <Text style={{ color: '#B42318', fontWeight: '700' }}>Your paid month has ended</Text>
+                      <Text style={{ color: '#7A271A', fontSize: 13, marginTop: 2 }}>Renew below to keep Nexora replying to your customers.</Text>
+                    </View>
+                  )}
+                  {IN_APP_SUBSCRIBE_ENABLED && payConfig && !payConfig.ready && (
+                    <View style={{ marginTop: 12, padding: 12, borderRadius: 14, backgroundColor: '#FFF6E5' }}>
+                      <Text style={{ color: '#92400E', fontWeight: '700' }}>Online payments aren't switched on yet</Text>
+                      <Text style={{ color: '#92400E', fontSize: 13, marginTop: 2, lineHeight: 18 }}>{payConfig.reason === 'no_rate'
+                        ? "Nexora couldn't get today's exchange rate. Add PAYSTACK_USD_RATE in Supabase function secrets."
+                        : 'Add your Paystack secret key in Supabase: Edge Functions › Secrets › PAYSTACK_SECRET_KEY. Your free trial keeps working meanwhile.'}</Text>
+                    </View>
+                  )}
+                  {IN_APP_SUBSCRIBE_ENABLED && payConfig?.ready && payConfig.test_mode && (
+                    <View style={{ marginTop: 12, padding: 10, borderRadius: 12, backgroundColor: '#EAF1FB' }}>
+                      <Text style={{ color: '#1E56A0', fontSize: 13 }}>Test mode: no real money is charged. Use Paystack's test card 4084 0840 8408 4081, any future date, CVV 408.</Text>
+                    </View>
+                  )}
+                  {ws.subscription_status === 'trialing' && (trialLeft ?? 0) > 0 && (
+                    <View style={{ marginTop: 12, padding: 16, borderRadius: 16, backgroundColor: '#E9F8EE', borderWidth: 1, borderColor: '#BFE8CD' }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        <Ionicons name="gift-outline" size={20} color="#15803D" />
+                        <Text style={{ color: '#14532D', fontWeight: '800', fontSize: 16 }}>Your free trial is active</Text>
+                      </View>
+                      <Text style={{ color: '#166534', fontSize: 13.5, marginTop: 6, lineHeight: 20 }}>
+                        {trialLeft} day{trialLeft === 1 ? '' : 's'} left, until {new Date(ws.trial_ends_at as string).toLocaleDateString(undefined, { day: 'numeric', month: 'long' })}. Everything in Nexora is unlocked and there is nothing to pay now. We'll remind you to pick a plan when the trial ends.
+                      </Text>
+                      <Pressable onPress={() => billingReturnRef.current()} style={{ marginTop: 12, alignSelf: 'flex-start', paddingHorizontal: 16, height: 40, borderRadius: 10, backgroundColor: '#15803D', justifyContent: 'center' }}>
+                        <Text style={{ color: '#FFFFFF', fontWeight: '700' }}>Continue to Nexora</Text>
+                      </Pressable>
+                    </View>
+                  )}
+                  {ws.subscription_status === 'trialing' && (trialLeft ?? 0) > 0 && !billingShowPlans ? (
+                    <Pressable onPress={() => setBillingShowPlans(true)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 16 }}>
+                      <Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13.5 }}>See plans for after your trial (optional)</Text>
+                      <Ionicons name="chevron-down" size={16} color="#1E56A0" />
+                    </Pressable>
+                  ) : (
+                  <>
+                  <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>{ws.subscription_status === 'trialing' && (trialLeft ?? 0) > 0 ? 'Plans for after your trial' : 'Choose a plan'}</Text>
+                  <View style={{ flexDirection: 'row', backgroundColor: '#EEF2F7', borderRadius: 12, padding: 4, marginBottom: 10 }}>
+                    {(['month', 'year'] as const).map(iv => (
+                      <Pressable key={iv} onPress={() => setBillingInterval(iv)} accessibilityRole="button" accessibilityState={{ selected: billingInterval === iv }}
+                        style={{ flex: 1, alignItems: 'center', paddingVertical: 8, borderRadius: 9, backgroundColor: billingInterval === iv ? '#FFFFFF' : 'transparent' }}>
+                        <Text style={{ fontWeight: '700', fontSize: 13, color: billingInterval === iv ? '#0B1220' : '#5C6B7A' }}>{iv === 'month' ? 'Monthly' : 'Yearly · 2 months free'}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                  {plans.map((p, idx) => {
+                    const current = p.key === ws.plan;
+                    const paidCurrent = current && ws.subscription_status === 'active';
+                    const yearly = billingInterval === 'year';
+                    // Naira prices are fixed per plan; other currencies show the USD price (converted at checkout if needed).
+                    const showNgn = (payConfig?.currency ?? (/nigeria/i.test(ws.country || '') ? 'NGN' : 'USD')) === 'NGN';
+                    const ngn = yearly ? p.price_ngn_year : p.price_ngn;
+                    const usd = yearly ? p.price_usd_year : p.price_usd;
+                    const per = yearly ? '/year' : '/month';
+                    const mainPrice = p.contact_sales ? `From $${p.price_usd.toLocaleString()}` : showNgn && ngn != null ? `₦${ngn.toLocaleString()}` : usd != null ? `$${usd.toLocaleString()}` : '';
+                    const otherPrice = p.contact_sales ? 'Custom quote' : showNgn && usd != null ? `$${usd.toLocaleString()}${per}` : !showNgn && ngn != null ? `₦${ngn.toLocaleString()}${per}` : '';
+                    const checkoutPrice = (yearly ? payConfig?.prices_year : payConfig?.prices)?.[p.key];
+                    const msgs = (n: number | null) => (n === null ? 'Custom' : n.toLocaleString());
+                    // Older databases without a feature list fall back to the plan limits.
+                    const included = p.features.length ? p.features : [
+                      `${p.max_users ?? (p.staff_seats ?? 0) + 1} user${(p.max_users ?? (p.staff_seats ?? 0) + 1) === 1 ? '' : 's'}`,
+                      `${msgs(p.monthly_ai_messages)} AI tasks a month`,
+                    ];
+                    const tag = p.contact_sales ? 'Custom for large organizations' : p.key === 'starter' ? 'Best for getting started' : p.key === 'pro' ? 'Most popular' : p.key === 'business' ? 'Best for teams' : '';
+                    const payLabel = paidCurrent ? `Pay for another ${yearly ? 'year' : 'month'}` : current && ws.subscription_status === 'past_due' ? `Renew ${p.name}` : ws.subscription_status === 'active' ? `Switch to ${p.name}` : `Subscribe to ${p.name}`;
+                    const payBlocked = !p.contact_sales && !!payConfig && !payConfig.ready;
+                    return (
+                      <View key={p.key} style={[styles.detailCard, current && { borderWidth: 1.5, borderColor: '#1E56A0' }, p.key === 'pro' && !current && { borderWidth: 1.5, borderColor: '#F2C17D' }]}>
+                        <View style={{ flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
+                          <Text style={[styles.attentionTitle, { fontSize: 16, flexShrink: 1 }]}>{p.name}{current ? '  ·  Current' : ''}</Text>
+                          <Text style={{ fontSize: 18, fontWeight: '800', color: '#0B1220' }}>{mainPrice}<Text style={{ fontSize: 12, fontWeight: '500', color: '#5C6B7A' }}>{p.contact_sales ? '/month' : per}</Text></Text>
+                        </View>
+                        {!!tag && <Text style={{ fontSize: 11, fontWeight: '700', color: p.key === 'pro' ? '#C2760C' : '#1E56A0', marginTop: 2 }}>{tag.toUpperCase()}</Text>}
+                        {!!otherPrice && <Text style={{ fontSize: 12, color: '#5C6B7A', marginTop: 2 }}>{otherPrice}</Text>}
+                        {!p.contact_sales && payConfig?.ready && checkoutPrice != null && payConfig.currency !== 'NGN' && payConfig.currency !== 'USD' && (
+                          <Text style={{ fontSize: 12, color: '#5C6B7A', marginTop: 2 }}>You pay {fmtMoney(checkoutPrice, payConfig.currency)} {yearly ? 'a year' : 'a month'} at checkout</Text>
+                        )}
+                        {!!p.blurb && <Text style={{ fontSize: 13, color: '#0B1220', marginTop: 8, lineHeight: 18 }}>{p.blurb}</Text>}
+                        <View style={{ marginTop: 10 }}>
+                          {included.map(f => (
+                            <View key={f} style={{ flexDirection: 'row', gap: 6, marginTop: 4 }}>
+                              <Ionicons name="checkmark-circle" size={14} color="#1E56A0" style={{ marginTop: 1 }} />
+                              <Text style={{ flex: 1, fontSize: 13, color: '#4B5563' }}>{f}</Text>
+                            </View>
+                          ))}
+                        </View>
+                        {(IN_APP_SUBSCRIBE_ENABLED || p.contact_sales) && (
+                          <Pressable disabled={!!billingBusy || payBlocked} onPress={() => startCheckout(p)} style={[styles.resetButton, payBlocked ? null : styles.resetButtonEnabled, { marginTop: 12, minHeight: 42 }, payBlocked ? { backgroundColor: '#C7D2DE' } : null]}>
+                            {billingBusy === p.key ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>{p.contact_sales ? 'Contact sales' : payLabel}</Text>}
+                          </Pressable>
+                        )}
+                        {ws.subscription_status === 'trialing' && !current && !p.contact_sales && (trialLeft ?? 0) > 0 && (
+                          <Pressable disabled={!!billingBusy} onPress={() => tryPlanDuringTrial(p)} style={{ alignItems: 'center', marginTop: 10 }}>
+                            <Text style={{ color: '#1E56A0', fontWeight: '600', fontSize: 13 }}>{billingBusy === `trial-${p.key}` ? 'Switching…' : 'Try this plan during your trial'}</Text>
+                          </Pressable>
+                        )}
+                      </View>
+                    );
+                  })}
+                  {IN_APP_SUBSCRIBE_ENABLED && <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}>Payments are processed securely by Paystack (card, bank transfer or USSD) and charged in your local currency at checkout. Monthly payments cover 30 days and yearly payments cover 365 days (paying early adds the time to your current period), and your plan updates as soon as Paystack confirms it.</Text>}
+                  </>
+                  )}
+                  <Text style={[styles.channelSectionLabel, { marginTop: 20 }]}>Your team</Text>
+                  <View style={styles.detailCard}>
+                    <Text style={styles.attentionSubtitle}>Invite staff to use Nexora with your company's knowledge. Each invite code works once.</Text>
+                    {!!staffInviteCode && <Text selectable style={{ fontSize: 22, fontWeight: '800', letterSpacing: 3, color: '#0B1220', textAlign: 'center', marginTop: 12 }}>{staffInviteCode}</Text>}
+                    <Pressable disabled={billingBusy === 'invite'} onPress={inviteStaff} style={[styles.resetButton, { marginTop: 12, minHeight: 42, borderWidth: 1, borderColor: '#5381BB' }]}>
+                      {billingBusy === 'invite' ? <ActivityIndicator color="#1E56A0" /> : <Text style={[styles.resetButtonText, { color: '#1E56A0' }]}>{staffInviteCode ? 'Create another invite' : 'Invite a staff member'}</Text>}
+                    </Pressable>
+                  </View>
+                </>
+              )}
+            </>
+          )}
+        </ScrollView>
+      </View>
+    );
+  }
+
+  if (screen === 'channelSettings' || screen === 'aiPermissions') {
+    const ch = CONNECT_CHANNELS.find(c => c.key === settingsChannelKey) ?? CONNECT_CHANNELS[1];
+    const chRow = channelRows[ch.key];
+    const chOn = !!connectedChannels[ch.key];
+    const chSince = chRow?.connected_at ? new Date(chRow.connected_at) : null;
+    const isPermissions = screen === 'aiPermissions';
+    return (
+      <View style={styles.mainScreen}>
+        <StatusBar style="dark" />
+        <View style={[styles.knowledgeHeader, headerSafe]}>
+          <Pressable onPress={() => setScreen(isPermissions ? 'channelSettings' : 'connectChannels')} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={styles.knowledgeHeaderTitle}>{isPermissions ? 'AI Permissions' : `${ch.name} settings`}</Text>
+          <View style={{ width: 24 }} />
+        </View>
+        <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 90 }]}>
+          <View style={styles.channelSettingsHeaderRow}>
+            <BrandIcon platform={CHANNEL_PLATFORM[ch.key] ?? 'All'} size={48} />
+            <View style={styles.attentionTextWrap}>
+              <Text style={styles.attentionTitle}>{ch.name}</Text>
+              {chOn ? (
+                <View style={[styles.channelConnectedPill, { marginTop: 2 }]}><Ionicons name="checkmark" size={12} color="#1E9E6D" /><Text style={styles.channelConnectedText}>Connected</Text></View>
+              ) : (
+                <Text style={[styles.attentionSubtitle, { marginTop: 2, color: '#D64545' }]}>Not connected</Text>
+              )}
+              {!!chSince && <Text style={[styles.attentionSubtitle, { marginTop: 2 }]}>Connected on {chSince.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} &bull; {chSince.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}</Text>}
+            </View>
+          </View>
+          {!isPermissions ? (
+            <>
+              <Text style={[styles.sectionLabel, { marginTop: 16 }]}>Channel details</Text>
+              <View style={styles.detailCard}>
+                <View style={styles.channelDetailRow}>
+                  <View style={styles.channelMenuIconWrap}><Ionicons name="person-outline" size={18} color="#0B1220" /></View>
+                  <View style={styles.attentionTextWrap}>
+                    <Text style={styles.attentionTitle}>Business account</Text>
+                    <Text style={styles.attentionSubtitle}>{workspace?.name || businessName || '—'}</Text>
+                  </View>
+                </View>
+                <View style={styles.channelDetailRow}>
+                  <View style={styles.channelMenuIconWrap}><Ionicons name={ch.key === 'whatsapp' ? 'call-outline' : 'at-outline'} size={18} color="#0B1220" /></View>
+                  <View style={styles.attentionTextWrap}>
+                    <Text style={styles.attentionTitle}>{ch.handleLabel}</Text>
+                    <Text style={styles.attentionSubtitle}>{chRow?.handle || '—'}</Text>
+                  </View>
+                </View>
+                <View style={[styles.channelDetailRow, { borderBottomWidth: 0 }]}>
+                  <View style={styles.channelMenuIconWrap}><Ionicons name="cellular-outline" size={18} color="#0B1220" /></View>
+                  <View style={styles.attentionTextWrap}>
+                    <Text style={styles.attentionTitle}>Connection status</Text>
+                    <Text style={[styles.attentionSubtitle, { color: chOn ? '#1E9E6D' : '#D64545' }]}>{chOn ? 'Active' : 'Not connected'}</Text>
+                  </View>
+                </View>
+              </View>
+              <Text style={[styles.sectionLabel, { marginTop: 16 }]}>AI behavior</Text>
+              {AI_BEHAVIOR_TOGGLES.map(t => (
+                <View key={t.key} style={styles.toggleRow}>
+                  <View style={styles.attentionTextWrap}>
+                    <Text style={styles.attentionTitle}>{t.title}</Text>
+                    <Text style={styles.attentionSubtitle}>{t.subtitle}</Text>
+                  </View>
+                  <Switch
+                    value={aiBehaviorToggles[t.key]}
+                    onValueChange={v => { const next = { ...aiBehaviorToggles, [t.key]: v }; setAiBehaviorToggles(next); if (settingsChannelKey) persistChannel(settingsChannelKey, { ai_behavior: next }); }}
+                    trackColor={{ false: '#D8DCE1', true: '#1E56A0' }}
+                    thumbColor="#FFF"
+                  />
+                </View>
+              ))}
+            </>
+          ) : (
+            <>
+              <Text style={[styles.attentionSubtitle, { marginTop: 12 }]}>Manage what NEXORA AI can do automatically on this channel</Text>
+              <Text style={[styles.sectionLabel, { marginTop: 16 }]}>What can AI do?</Text>
+              {AI_PERMISSION_TOGGLES.map(t => (
+                <View key={t.key} style={styles.toggleRow}>
+                  <View style={styles.channelMenuIconWrap}><Ionicons name={t.icon as any} size={18} color="#0B1220" /></View>
+                  <View style={styles.attentionTextWrap}>
+                    <Text style={styles.attentionTitle}>{t.title}</Text>
+                    <Text style={styles.attentionSubtitle}>{t.subtitle}</Text>
+                  </View>
+                  <Switch
+                    value={aiPermissionToggles[t.key]}
+                    onValueChange={v => { const next = { ...aiPermissionToggles, [t.key]: v }; setAiPermissionToggles(next); if (settingsChannelKey) persistChannel(settingsChannelKey, { ai_permissions: next }); }}
+                    trackColor={{ false: '#D8DCE1', true: '#1E56A0' }}
+                    thumbColor="#FFF"
+                  />
+                </View>
+              ))}
+              <View style={styles.privacyBanner}>
+                <Text style={[styles.attentionTitle, { fontSize: 13 }]}>AI boundaries <Ionicons name="information-circle-outline" size={14} color="#8A97A6" /></Text>
+                <Text style={styles.privacyBannerText}>NEXORA will never process payments, make refunds outside policy, or share sensitive customer data without your consent</Text>
+              </View>
+            </>
+          )}
+        </ScrollView>
+        <View style={styles.channelSettingsFooter}>
+          <Pressable onPress={() => { flash('Settings saved'); setScreen('connectChannels'); }} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1 }]}>
+            <Text style={styles.resetButtonText}>Save changes</Text>
+          </Pressable>
+          <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); }} style={styles.channelAskNexoraBtn}>
+            <Ionicons name="sparkles" size={14} color="#FFF" />
+            <Text style={styles.resetButtonText}>Ask NEXORA</Text>
+          </Pressable>
+        </View>
       </View>
     );
   }
@@ -3201,7 +12545,7 @@ export default function HomeScreen(){
     return(
       <View style={styles.mainScreen}>
         <StatusBar style="dark"/>
-        <View style={styles.knowledgeHeader}>
+        <View style={[styles.knowledgeHeader, headerSafe]}>
           {/* Don't force mainTab back to 'profile' here — this screen can now
               be opened from the Brain tab's floating button too, and forcing
               'profile' would strand a Brain-tab visitor on the wrong tab. */}
@@ -3244,7 +12588,7 @@ export default function HomeScreen(){
     return(
       <View style={styles.mainScreen}>
         <StatusBar style="dark"/>
-        <View style={styles.knowledgeHeader}>
+        <View style={[styles.knowledgeHeader, headerSafe]}>
           {/* Don't force mainTab back to 'home' — this can now be opened from
               Inbox or Home (Connect Apps), and forcing 'home' would strand
               an Inbox-tab visitor on the wrong tab, same fix as brainGallery. */}
@@ -3281,34 +12625,53 @@ export default function HomeScreen(){
     // Ionicons/one shared avatar rather than the exact exported bytes —
     // this sandbox can't reach figma.com to download those, only the
     // short-lived URLs the tool itself returns.
-    const conv = conversations.find(c => c.id === activeConversationId) || conversations[0];
+    const conv = conversations.find(c => c.id === activeConversationId);
+    if (!conv) {
+      return (
+        <View style={[styles.mainScreen, { alignItems: 'center', justifyContent: 'center' }]}>
+          <Text style={styles.attentionSubtitle}>This conversation is no longer available.</Text>
+          <Pressable onPress={() => goTab('inbox')} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 16, paddingHorizontal: 24 }]}><Text style={styles.resetButtonText}>Back to Inbox</Text></Pressable>
+        </View>
+      );
+    }
     const isHandling = humanHandling[conv.id];
-    const showSuggestion = !!conv.aiSuggestion && !isHandling;
-    const sendSuggestion = () => {
-      const isDemoFailure = conv.id === 'david-brown';
+    const showSuggestion = !!conv.aiSuggestion && !isHandling && !conv.blocked;
+    const offlineLike = (msg: string) => /network request failed|took too long|timed? ?out/i.test(msg);
+    // Real delivery through the send-message edge function (WhatsApp Cloud
+    // API / Messenger / Instagram). Demo conversations only update locally.
+    const deliver = async (text: string, sender: 'owner' | 'ai', onDone: () => void) => {
+      const body = text.trim();
+      if (!body) return;
+      inboxRetryRef.current = () => { deliver(body, sender, onDone); };
+      setInboxSendError('');
       setInboxModal('sending');
-      setTimeout(() => {
-        if (isDemoFailure) {
-          // No real network layer exists in this app to detect an actual
-          // offline state, so this alternates failed/offline on each retry
-          // — the most honest way to make both truth screens reachable
-          // without faking a network condition that isn't really there.
-          setDemoFailCount(n => n + 1);
-          setInboxModal(demoFailCount % 2 === 0 ? 'failed' : 'offline');
-          return;
+      try {
+        if (conv.live) {
+          await callFn('send-message', { conversation_id: conv.id, text: body, sender }, 30000);
         }
-        setInboxModal(null);
         setConversations(prev => prev.map(c => c.id === conv.id
-          ? { ...c, messages: [...c.messages, { id: `ai-${Date.now()}`, from: 'business', text: c.aiSuggestion!.text, time: 'Just now' }], aiSuggestion: undefined, needInfo: undefined }
+          ? { ...c, messages: [...c.messages, { id: `out-${Date.now()}`, from: 'business', text: body, time: sender === 'ai' ? 'Just now  \u00b7  Nexora AI' : 'Just now' }], lastMessage: body, lastTime: 'Just now', aiSuggestion: sender === 'ai' ? undefined : c.aiSuggestion, needInfo: sender === 'ai' ? undefined : c.needInfo }
           : c));
-      }, 1600);
+        onDone();
+        setInboxModal(null);
+        if (conv.live) loadConversationMessages(conv.id).catch(() => {});
+      } catch (e: any) {
+        const msg = String(e?.message || '');
+        setInboxSendError(msg);
+        setInboxModal(offlineLike(msg) ? 'offline' : 'failed');
+      }
     };
+    const sendSuggestion = () => { if (conv.aiSuggestion) deliver(conv.aiSuggestion.text, 'ai', () => {}); };
     const sendDraft = () => {
       if (!inboxDraft.trim()) return;
-      setConversations(prev => prev.map(c => c.id === conv.id
-        ? { ...c, messages: [...c.messages, { id: `u-${Date.now()}`, from: 'business', text: inboxDraft.trim(), time: 'Just now' }] }
-        : c));
-      setInboxDraft('');
+      if (conv.blocked) { flash('Unblock this contact to reply.'); return; }
+      const draft = inboxDraft;
+      deliver(draft, 'owner', () => setInboxDraft(''));
+    };
+    const shareConversation = async () => {
+      setInboxModal(null);
+      const transcript = conv.messages.map(m => `${m.from === 'customer' ? conv.name : 'You'}: ${m.text}`).join('\n') || conv.lastMessage;
+      try { await Share.share({ message: `Conversation with ${conv.name} (${conv.platform})\n\n${transcript}` }); } catch { /* user closed the sheet */ }
     };
     return(
       <View style={styles.mainScreen}>
@@ -3319,30 +12682,79 @@ export default function HomeScreen(){
               <Ionicons name="chevron-back" size={20*scale} color="#0B1220"/>
             </Pressable>
             <View style={{flexDirection:'row',alignItems:'center',gap:8*scale}}>
-              <ExpoImage source={{uri:INBOX_AVATAR_URL}} style={{width:40*scale,height:40*scale,borderRadius:20*scale,backgroundColor:'#E7EAEC'}} contentFit="cover" cachePolicy="memory-disk"/>
+              <View>
+                <View style={[styles.conversationAvatar,{width:40*scale,height:40*scale,borderRadius:20*scale}]}><Text style={styles.conversationAvatarText}>{conv.name.split(' ').filter(Boolean).slice(0,2).map(n=>n[0]).join('').toUpperCase()||'?'}</Text></View>
+                <View style={{position:'absolute',right:-3,bottom:-3,borderRadius:10,borderWidth:1.5,borderColor:'#FFF',backgroundColor:'#FFF'}}><BrandIcon platform={conv.platform} size={16}/></View>
+              </View>
               <View>
                 <Text style={{fontSize:14*scale,color:'#000'}}>{conv.name}</Text>
-                <Text style={{fontSize:12*scale,color:'#6B7280'}}>{conv.platform}</Text>
+                <Text style={{fontSize:12*scale,color:'#6B7280'}} numberOfLines={1}>{conv.handle && conv.handle !== conv.name ? `${conv.platform} \u00b7 ${conv.handle}` : conv.platform}{conv.blocked ? '  \u00b7  Blocked' : ''}</Text>
               </View>
             </View>
           </View>
-          <Pressable hitSlop={8} onPress={()=>setInboxModal('share')}>
+          <Pressable hitSlop={8} onPress={()=>setInboxModal('menu')} accessibilityLabel="Conversation options">
             <Ionicons name="ellipsis-vertical" size={18*scale} color="#0B1220"/>
           </Pressable>
         </View>
 
         <ScrollView style={{flex:1,backgroundColor:'#FFF'}} contentContainerStyle={{paddingHorizontal:16*scale,paddingTop:16*scale,paddingBottom:8*scale}}>
+          {/* NEW: orange "Refund request needs approval" banner — Request
+              Refund Needs Approval truth. */}
+          {conv.refundRequest && (
+            <Pressable onPress={() => setScreen('activeCall')} style={styles.refundBanner}>
+              <Ionicons name="warning" size={20} color="#E5A63A" />
+              <View style={styles.attentionTextWrap}>
+                <Text style={styles.refundBannerTitle}>Refund request needs approval</Text>
+                <Text style={styles.attentionSubtitle}>{conv.name.split(' ')[0]} requested {conv.refundRequest.amount} refund.</Text>
+                <Pressable onPress={() => setScreen('activeCall')} style={styles.refundBannerBtn}>
+                  <Text style={styles.refundBannerBtnText}>Review &amp; Approve</Text>
+                  <Ionicons name="arrow-forward" size={13} color="#C2760C" />
+                </Pressable>
+              </View>
+            </Pressable>
+          )}
+          {conv.live && !conv.messagesLoaded && <ActivityIndicator style={{ marginVertical: 16 }} color="#1E56A0" />}
           {conv.messages.map(m => (
             <View key={m.id}>
-              {m.from === 'business' && <Text style={{alignSelf:'flex-end',fontSize:12*scale,color:'#6B7280',marginBottom:4*scale}}>You</Text>}
-              <View style={m.from === 'customer'
-                ? {alignSelf:'flex-start',maxWidth:308*scale,backgroundColor:'#E7EAEC',borderRadius:12*scale,borderTopLeftRadius:0,padding:12*scale}
-                : {alignSelf:'flex-end',maxWidth:313*scale,backgroundColor:'#1E56A0',borderRadius:12*scale,borderTopRightRadius:0,padding:12*scale}}>
-                <Text style={{fontSize:14*scale,color:m.from==='customer'?'#000':'#FFF'}}>{m.text}</Text>
-              </View>
-              <Text style={{alignSelf:m.from==='customer'?'flex-start':'flex-end',fontSize:12*scale,color:'#6B7280',marginTop:4*scale,marginBottom:12*scale}}>{m.time}</Text>
+              {m.from === 'business' && !m.checklist && <Text style={{alignSelf:'flex-end',fontSize:12*scale,color:'#6B7280',marginBottom:4*scale}}>You</Text>}
+              {m.checklist ? (
+                // NEW: "NEXORA — Checking availability..." progress-checklist
+                // bubble — Nexora is checking available stock truth. Reuses
+                // the business-message bubble color/shape, with a checklist
+                // body instead of plain text.
+                <View style={[styles.checklistBubble]}>
+                  <Text style={styles.checklistTitle}>NEXORA — Checking availability...</Text>
+                  {m.checklist.map((c, i) => (
+                    <View key={i} style={styles.checklistRow}>
+                      <Ionicons name={c.done ? 'checkmark-circle' : 'ellipse-outline'} size={16} color={c.done ? '#6FCF97' : 'rgba(255,255,255,0.5)'} />
+                      <Text style={[styles.checklistLabel, !c.done && { color: 'rgba(255,255,255,0.6)' }]}>{c.label}</Text>
+                    </View>
+                  ))}
+                  <Text style={styles.checklistFooter}>This may take few minutes.</Text>
+                </View>
+              ) : (
+                <View style={m.from === 'customer'
+                  ? {alignSelf:'flex-start',maxWidth:308*scale,backgroundColor:'#E7EAEC',borderRadius:12*scale,borderTopLeftRadius:0,padding:12*scale}
+                  : {alignSelf:'flex-end',maxWidth:313*scale,backgroundColor:'#1E56A0',borderRadius:12*scale,borderTopRightRadius:0,padding:12*scale}}>
+                  <Text style={{fontSize:14*scale,color:m.from==='customer'?'#000':'#FFF'}}>{m.text}</Text>
+                </View>
+              )}
+              <Text style={{alignSelf:m.from==='customer'?'flex-start':'flex-end',fontSize:12*scale,color:'#6B7280',marginTop:4*scale,marginBottom:12*scale}}>{m.time}{m.viaBroadcast ? '  \u00B7  Sent to all channels' : ''}</Text>
             </View>
           ))}
+
+          {/* NEW: static "<name> is typing..." bubble — both new truth
+              screens show it under the last message. */}
+          {conv.customerTyping && (
+            <View style={styles.typingBubble}>
+              <View style={styles.typingDotsRow}>
+                <View style={[styles.typingDot, { opacity: 1 }]} />
+                <View style={[styles.typingDot, { opacity: 0.6 }]} />
+                <View style={[styles.typingDot, { opacity: 0.3 }]} />
+              </View>
+              <Text style={styles.typingText}>{conv.name} is typing...</Text>
+            </View>
+          )}
 
           {showSuggestion && (
             <View style={styles.suggestCard}>
@@ -3355,8 +12767,8 @@ export default function HomeScreen(){
               </View>
               <Text style={styles.suggestBodyText}>{conv.aiSuggestion!.text}</Text>
               <View style={styles.suggestActionRow}>
-                <Pressable style={styles.suggestActionBtn}><Ionicons name="create-outline" size={14} color="#1E56A0" /><Text style={styles.suggestActionText}>Edit</Text></Pressable>
-                <Pressable style={styles.suggestActionBtn}><Ionicons name="refresh-outline" size={14} color="#1E56A0" /><Text style={styles.suggestActionText}>Regenerate</Text></Pressable>
+                <Pressable onPress={() => { setInboxDraft(conv.aiSuggestion!.text); flash('Suggestion copied to the message box'); }} style={styles.suggestActionBtn}><Ionicons name="create-outline" size={14} color="#1E56A0" /><Text style={styles.suggestActionText}>Edit</Text></Pressable>
+                <Pressable onPress={() => regenerateSuggestion(conv.id)} style={styles.suggestActionBtn}><Ionicons name="refresh-outline" size={14} color="#1E56A0" /><Text style={styles.suggestActionText}>Regenerate</Text></Pressable>
               </View>
               <Text style={styles.suggestReasonHeader}>AI message</Text>
               <Text style={styles.suggestReasonSub}>This message was generated because :</Text>
@@ -3389,28 +12801,54 @@ export default function HomeScreen(){
           )}
         </ScrollView>
 
-        <Pressable style={{position:'absolute',right:16*scale,bottom:96*scale,width:34*scale,height:34*scale,borderRadius:16*scale,backgroundColor:'#0F2942',alignItems:'center',justifyContent:'center'}}>
+        {/* NEW: "Waiting for owner input" banner — Nexora is checking
+            available stock truth, shown just above the composer. */}
+        {conv.waitingForOwner && (
+          <View style={styles.waitingOwnerBanner}>
+            <View style={styles.waitingOwnerIconWrap}><Ionicons name="chatbubble" size={14} color="#FFF" /></View>
+            <View style={styles.attentionTextWrap}>
+              <Text style={styles.waitingOwnerTitle}>Waiting for owner input</Text>
+              <Text style={styles.attentionSubtitle} numberOfLines={1}>{conv.waitingForOwner}</Text>
+            </View>
+            <View style={styles.waitingOwnerSparkle}><Ionicons name="sparkles" size={14} color="#FFF" /></View>
+          </View>
+        )}
+        <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); }} accessibilityLabel="Ask Nexora" style={{position:'absolute',right:16*scale,bottom:96*scale,width:34*scale,height:34*scale,borderRadius:16*scale,backgroundColor:'#0F2942',alignItems:'center',justifyContent:'center'}}>
           <Ionicons name="sparkles" size={16*scale} color="#FFF"/>
         </Pressable>
 
-        <View style={{flexDirection:'row',alignItems:'center',marginHorizontal:16*scale,marginBottom:16*scale,height:48*scale,borderRadius:24*scale,backgroundColor:'#F5F6F8',paddingHorizontal:12*scale}}>
-          <Ionicons name="attach-outline" size={20*scale} color="#5C6B7A"/>
+        {conv.blocked ? (
+          <View style={{flexDirection:'row',alignItems:'center',gap:12,marginHorizontal:16*scale,marginBottom:16*scale+insets.bottom,padding:14,borderRadius:16,backgroundColor:'#FDEDED'}}>
+            <Ionicons name="ban-outline" size={20} color="#D64545"/>
+            <Text style={{flex:1,fontSize:13,color:'#0B1220'}}>You blocked {conv.name}. Their messages won't reach you.</Text>
+            <Pressable onPress={()=>toggleBlock(conv)} hitSlop={8}><Text style={{color:'#1E56A0',fontWeight:'700'}}>Unblock</Text></Pressable>
+          </View>
+        ) : (
+        <View style={{flexDirection:'row',alignItems:'center',marginHorizontal:16*scale,marginBottom:16*scale+insets.bottom,height:48*scale,borderRadius:24*scale,backgroundColor:'#F5F6F8',paddingHorizontal:12*scale}}>
           <TextInput
             value={inboxDraft}
             onChangeText={setInboxDraft}
             placeholder="Type your message..."
             placeholderTextColor="#94A3B8"
-            style={{flex:1,fontSize:12*scale,marginLeft:8*scale,color:'#0B1220'}}
+            style={{flex:1,fontSize:12*scale,marginLeft:4*scale,color:'#0B1220'}}
+            maxLength={4000}
           />
-          <Pressable hitSlop={8}>
+          {/* NEW: send this message to every connected channel at once. */}
+          <Pressable hitSlop={8} onPress={() => openBroadcast(inboxDraft)} style={{marginRight:10*scale}} accessibilityLabel="Send to all channels">
+            <Ionicons name="megaphone-outline" size={18*scale} color="#1E56A0"/>
+          </Pressable>
+          <Pressable hitSlop={8} onPress={() => flash('Voice input is coming soon.')} accessibilityLabel="Voice input">
             <Ionicons name="mic-outline" size={18*scale} color="#5C6B7A"/>
           </Pressable>
           <Pressable
             onPress={sendDraft}
-            style={{width:32*scale,height:32*scale,borderRadius:16*scale,backgroundColor:'#0F2942',alignItems:'center',justifyContent:'center',marginLeft:8*scale}}>
+            disabled={!inboxDraft.trim()}
+            accessibilityLabel="Send message"
+            style={{opacity:inboxDraft.trim()?1:0.5,width:32*scale,height:32*scale,borderRadius:16*scale,backgroundColor:'#0F2942',alignItems:'center',justifyContent:'center',marginLeft:8*scale}}>
             <Ionicons name="send" size={14*scale} color="#FFF"/>
           </Pressable>
         </View>
+        )}
 
         {inboxModal === 'takeover' && (
           <View style={styles.modalOverlay}>
@@ -3445,8 +12883,8 @@ export default function HomeScreen(){
             <View style={styles.modalCard}>
               <View style={[styles.modalIconCircle, { backgroundColor: '#FDEDED' }]}><Ionicons name="warning" size={22} color="#D32F2F" /></View>
               <Text style={styles.modalTitle}>Message Failed</Text>
-              <Text style={styles.modalSubtitle}>We couldn't send your message. Please check your connection and try again.</Text>
-              <Pressable onPress={sendSuggestion} style={[styles.resetButton, styles.resetButtonEnabled, { width: '100%', marginTop: 16 }]}>
+              <Text style={styles.modalSubtitle}>{inboxSendError || "We couldn't send your message. Please check your connection and try again."}</Text>
+              <Pressable onPress={() => inboxRetryRef.current?.()} style={[styles.resetButton, styles.resetButtonEnabled, { width: '100%', marginTop: 16 }]}>
                 <Text style={styles.resetButtonText}>Retry</Text>
               </Pressable>
               <Pressable onPress={() => setInboxModal(null)} style={[styles.resetButton, { width: '100%', marginTop: 10 }]}>
@@ -3461,36 +12899,38 @@ export default function HomeScreen(){
             <View style={styles.modalCard}>
               <View style={styles.modalIconCircle}><Ionicons name="cloud-offline-outline" size={22} color="#1E56A0" /></View>
               <Text style={styles.modalTitle}>You are offline</Text>
-              <Text style={styles.modalSubtitle}>New messages will appear when you are connected to the internet.</Text>
-              <Pressable onPress={sendSuggestion} style={[styles.resetButton, styles.resetButtonEnabled, { width: '100%', marginTop: 16 }]}>
+              <Text style={styles.modalSubtitle}>Your message wasn't sent. New messages will appear when you are connected to the internet.</Text>
+              <Pressable onPress={() => inboxRetryRef.current?.()} style={[styles.resetButton, styles.resetButtonEnabled, { width: '100%', marginTop: 16 }]}>
                 <Text style={styles.resetButtonText}>Try Again</Text>
               </Pressable>
             </View>
           </View>
         )}
 
-        {inboxModal === 'share' && (
+        {inboxModal === 'menu' && (
           <View style={styles.modalOverlay}>
+            <Pressable style={StyleSheet.absoluteFill} onPress={() => setInboxModal(null)} accessibilityLabel="Close" />
             <View style={styles.shareSheet}>
-              <Text style={styles.shareSheetTitle}>Share link</Text>
-              <View style={styles.shareGrid}>
-                {SHARE_TARGETS.map(t => (
-                  <Pressable key={t.name} onPress={() => setInboxModal(null)} style={styles.shareTarget}>
-                    <View style={[styles.shareTargetIcon, { backgroundColor: t.color }]}><Ionicons name={t.icon as any} size={20} color={(t as any).iconColor ?? '#FFF'} /></View>
-                    <Text style={styles.shareTargetLabel}>{t.name}</Text>
-                  </Pressable>
-                ))}
-              </View>
-              <View style={styles.shareBottomRow}>
-                <Pressable onPress={() => setInboxModal(null)} style={styles.shareBottomBtn}><Ionicons name="link-outline" size={20} color="#0B1220" /><Text style={styles.shareBottomLabel}>Copy link</Text></Pressable>
-                <Pressable onPress={() => setInboxModal(null)} style={styles.shareBottomBtn}><Ionicons name="share-social-outline" size={20} color="#0B1220" /><Text style={styles.shareBottomLabel}>Share via...</Text></Pressable>
-              </View>
-              <Pressable onPress={() => setInboxModal(null)} style={{ alignItems: 'center', marginTop: 12 }}>
+              <Text style={styles.shareSheetTitle}>{conv.name}</Text>
+              {[
+                { icon: 'share-social-outline', label: 'Share conversation', color: '#0B1220', onPress: shareConversation },
+                { icon: 'person-outline', label: humanHandling[conv.id] ? 'Let Nexora suggest replies again' : 'Take over from Nexora', color: '#0B1220', onPress: () => { if (humanHandling[conv.id]) { setHumanHandling(prev => ({ ...prev, [conv.id]: false })); setInboxModal(null); } else setInboxModal('takeover'); } },
+                { icon: 'person-add-outline', label: 'Save as lead', color: '#0B1220', onPress: () => saveConversationAsLead(conv) },
+                { icon: 'flag-outline', label: 'Report contact', color: '#D64545', onPress: () => openReport({ kind: 'contact', convId: conv.id }) },
+                { icon: conv.blocked ? 'checkmark-circle-outline' : 'ban-outline', label: conv.blocked ? 'Unblock contact' : 'Block contact', color: '#D64545', onPress: () => toggleBlock(conv) },
+              ].map(o => (
+                <Pressable key={o.label} onPress={o.onPress} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 14 }}>
+                  <Ionicons name={o.icon as any} size={20} color={o.color} />
+                  <Text style={{ fontSize: 15, fontWeight: '600', color: o.color }}>{o.label}</Text>
+                </Pressable>
+              ))}
+              <Pressable onPress={() => setInboxModal(null)} style={{ alignItems: 'center', marginTop: 8 }}>
                 <Text style={{ color: '#8A97A6', fontWeight: '600' }}>Cancel</Text>
               </Pressable>
             </View>
           </View>
         )}
+        {renderReportModal()}
       </View>
     );
   }
@@ -3983,13 +13423,19 @@ export default function HomeScreen(){
               <Pressable onPress={()=>setSignupIndex(6)} hitSlop={4} style={[styles.signupControl,{left:SIGNUP_TERMS_X*scale,top:SIGNUP_TERMS_Y*scale,width:SIGNUP_TERMS_WIDTH*scale,height:SIGNUP_TERMS_HEIGHT*scale}]}/>
               <Pressable onPress={()=>setSignupIndex(7)} hitSlop={4} style={[styles.signupControl,{left:SIGNUP_PRIVACY_X*scale,top:SIGNUP_PRIVACY_Y*scale,width:SIGNUP_PRIVACY_WIDTH*scale,height:SIGNUP_PRIVACY_HEIGHT*scale}]}/>
 
-              <Pressable
-                disabled={!signupEnabled||loading}
-                onPress={handleSignUp}
-                onPressIn={handleButtonPressIn}
-                onPressOut={handleButtonPressOut}
-                style={{position:'absolute',zIndex:130,left:SIGNUP_BUTTON_X*scale,top:SIGNUP_BUTTON_Y*scale,width:SIGNUP_BUTTON_WIDTH*scale,height:SIGNUP_BUTTON_HEIGHT*scale}}
-              />
+              {/* Drawn (not baked into the image) so it turns blue the moment the form is complete, on phones and on the web. */}
+              <Animated.View style={[styles.nativeButtonWrapper,{zIndex:130,left:SIGNUP_BUTTON_X*scale,top:SIGNUP_BUTTON_Y*scale,width:SIGNUP_BUTTON_WIDTH*scale,height:SIGNUP_BUTTON_HEIGHT*scale,transform:[{scale:buttonScale}],opacity:buttonOpacity}]}>
+                <Pressable
+                  disabled={!signupEnabled||loading}
+                  onPress={handleSignUp}
+                  onPressIn={handleButtonPressIn}
+                  onPressOut={handleButtonPressOut}
+                  accessibilityRole="button"
+                  accessibilityState={{disabled:!signupEnabled||loading}}
+                  style={[styles.nativeButton,{backgroundColor:signupEnabled&&!loading?BUTTON_COLOR:'#94A3BB',borderColor:signupEnabled&&!loading?BUTTON_BORDER:'#94A3BB'}]}>
+                  <Text style={[styles.nativeButtonText,{fontSize:14*scale}]}>Sign Up</Text>
+                </Pressable>
+              </Animated.View>
 
               {loading&&(
                 <View pointerEvents="none" style={[styles.loadingOverlay,{left:INPUT_X*scale,width:INPUT_WIDTH*scale,top:(SIGNUP_BUTTON_Y+SIGNUP_BUTTON_HEIGHT+6)*scale}]}>
@@ -4044,6 +13490,34 @@ export default function HomeScreen(){
       <View style={[styles.svgFrame,{width,height:scaledHeight}]}>
         {renderOnboardingSVG()}
         <Pressable onPress={skip} hitSlop={10} style={[styles.skipTouchArea,{left:SKIP_X*scale,top:SKIP_Y*scale,width:SKIP_WIDTH*scale,height:SKIP_HEIGHT*scale}]}/>
+        {onboardingIndex===3&&INTEREST_TILES.map(t=>{
+          const on=interestPicks.includes(t.key);
+          return(
+            <Pressable key={t.key} accessibilityRole="checkbox" accessibilityState={{checked:on}} accessibilityLabel={t.label}
+              onPress={()=>{
+                const next=on?interestPicks.filter(k=>k!==t.key):[...interestPicks,t.key];
+                setInterestPicks(next);
+                // The first tile picked is what Nexora opens right after the user signs in.
+                savePendingFeature(next[0]??null);
+                if(!on)flash('Sign in to get that information');
+              }}
+              style={(st:any)=>({position:'absolute',zIndex:25,left:t.x*scale,top:t.y*scale,width:INTEREST_TILE_W*scale,height:INTEREST_TILE_H*scale,borderRadius:8*scale,
+                backgroundColor:on?'#1E56A0':st.hovered?'#7C8A9B':'#6E7C8C',borderWidth:on?3*scale:1.5*scale,borderColor:on?'#9CC3FF':'#FFFFFF',
+                alignItems:'center',justifyContent:'center',transform:[{scale:st.pressed?0.97:1}],cursor:'pointer'} as any)}>
+              <Text style={{color:'#FFFFFF',fontSize:17*scale,fontWeight:on?'700':'500'}}>{t.label}</Text>
+              {on&&(
+                <View style={{position:'absolute',top:6*scale,right:6*scale,width:20*scale,height:20*scale,borderRadius:10*scale,backgroundColor:'#FFFFFF',alignItems:'center',justifyContent:'center'}}>
+                  <Ionicons name="checkmark" size={14*scale} color="#1E56A0" />
+                </View>
+              )}
+            </Pressable>
+          );
+        })}
+        {onboardingIndex===3&&interestPicks.length>0&&(
+          <View pointerEvents="none" style={{position:'absolute',zIndex:25,left:22*scale,width:349*scale,top:618*scale,alignItems:'center'}}>
+            <Text style={{color:'#1E56A0',fontSize:12.5*scale,fontWeight:'600',textAlign:'center'}}>{interestPicks.length} selected · Sign in to get that information</Text>
+          </View>
+        )}
         <Animated.View style={[styles.nativeButtonWrapper,{left:BUTTON_X*scale,top:BUTTON_Y*scale,width:BUTTON_WIDTH*scale,height:BUTTON_HEIGHT*scale,transform:[{scale:buttonScale}],opacity:buttonOpacity}]}>
           <Pressable onPress={next} onPressIn={handleButtonPressIn} onPressOut={handleButtonPressOut} style={styles.nativeButton}>
             <Text style={[styles.nativeButtonText,{fontSize:14*scale}]}>{buttonLabel}</Text>
@@ -4056,6 +13530,12 @@ export default function HomeScreen(){
 
 const styles=StyleSheet.create({
   fullScreen:{flex:1,backgroundColor:'#FFF',overflow:'hidden'},
+  truthChip:{backgroundColor:'#0F2942',borderRadius:13,alignItems:'center',justifyContent:'center'},
+  truthChipText:{color:'#FFF',fontSize:11,fontWeight:'600'},
+  truthToast:{position:'absolute',left:24,right:24,bottom:110,backgroundColor:'rgba(15,41,66,0.94)',borderRadius:14,paddingVertical:12,paddingHorizontal:16,alignItems:'center',zIndex:50},
+  truthToastText:{color:'#FFF',fontSize:13,fontWeight:'600',textAlign:'center'},
+  truthMissing:{position:'absolute',left:16,right:16,top:90,backgroundColor:'#FDEDED',borderRadius:12,padding:12,zIndex:50},
+  truthMissingText:{color:'#D32F2F',fontSize:12,fontWeight:'600',textAlign:'center'},
   svgFrame:{position:'relative',overflow:'hidden'},
   skipTouchArea:{position:'absolute',backgroundColor:'transparent',zIndex:20},
   nativeButtonWrapper:{position:'absolute',zIndex:30},
@@ -4130,6 +13610,12 @@ const styles=StyleSheet.create({
   brainScreenDark:{backgroundColor:'#0F2942'},
   brainHeroIconWrap:{width:220,height:145,alignItems:'center',justifyContent:'center'},
   brainHeroImage:{width:220,height:145},
+  // Floating black + button on the AI Brain Train screen (overlays the scroll view; does not scroll with it)
+  knowledgeFab:{position:'absolute',right:16,width:56,height:56,borderRadius:28,backgroundColor:'#0B1220',alignItems:'center',justifyContent:'center',zIndex:30,elevation:8,shadowColor:'#000',shadowOpacity:0.25,shadowRadius:8,shadowOffset:{width:0,height:4}},
+  fabBackdrop:{position:'absolute',top:0,left:0,right:0,bottom:0,backgroundColor:'rgba(11,18,32,0.35)',zIndex:20,elevation:8},
+  fabMenu:{position:'absolute',right:16,backgroundColor:'#FFF',borderRadius:16,paddingVertical:6,minWidth:200,zIndex:25,elevation:9,shadowColor:'#000',shadowOpacity:0.2,shadowRadius:10,shadowOffset:{width:0,height:4}},
+  fabMenuItem:{flexDirection:'row',alignItems:'center',gap:12,paddingHorizontal:16,paddingVertical:14},
+  fabMenuText:{fontSize:14,fontWeight:'600',color:'#0B1220'},
   brainFloatingBtn:{position:'absolute',right:16,bottom:88,width:38,height:38,borderRadius:19,backgroundColor:'#1E56A0',alignItems:'center',justifyContent:'center',borderWidth:2,borderColor:'rgba(255,255,255,0.3)'},
   aiListItem:{marginBottom:4},
   aiListNumber:{fontWeight:'700'},
@@ -4140,7 +13626,7 @@ const styles=StyleSheet.create({
 topBarTitleWrap:{flex:1,marginLeft:12},
 topBarTitle:{fontSize:15,fontWeight:'700',color:'#0B1220'},
 topBarSubtitle:{fontSize:11,color:'#8A97A6'},
-topBarRight:{flexDirection:'row',alignItems:'center',gap:12},
+topBarRight:{flexDirection:'row',alignItems:'center',gap:12,marginLeft:'auto'},
 bellWrap:{position:'relative'},
 bellDot:{position:'absolute',top:-1,right:-1,width:7,height:7,borderRadius:4,backgroundColor:'#D32F2F'},
 bottomNav:{flexDirection:'row',alignItems:'center',justifyContent:'space-around',paddingVertical:10,backgroundColor:'#FFF',borderTopWidth:1,borderTopColor:'#EEF1F4'},
@@ -4204,8 +13690,8 @@ attachMenu:{marginHorizontal:16,marginBottom:8,backgroundColor:'#16324F',borderR
 attachOption:{flexDirection:'row',alignItems:'center',gap:10,paddingVertical:10,paddingHorizontal:8},
 attachOptionText:{fontSize:13,color:'#FFF'},
 chatInputBar:{flexDirection:'row',alignItems:'center',gap:10,backgroundColor:'#FFF',borderRadius:26,marginHorizontal:16,marginBottom:12,paddingHorizontal:14,paddingVertical:8},
-chatTextInput:{flex:1,fontSize:13,color:'#0B1220'},
-chatSendButton:{width:30,height:30,borderRadius:15,alignItems:'center',justifyContent:'center'},
+chatTextInput:{flex:1,minWidth:0,width:0,fontSize:13,color:'#0B1220'},
+chatSendButton:{width:30,height:30,borderRadius:15,alignItems:'center',justifyContent:'center',flexShrink:0},
 waveformRow:{flex:1,flexDirection:'row',alignItems:'center',gap:3},
 waveformBar:{width:3,borderRadius:2,backgroundColor:'#1E56A0'},
 stopButton:{width:24,height:24,borderRadius:6,backgroundColor:'#0B1220',alignItems:'center',justifyContent:'center'},
@@ -4382,6 +13868,80 @@ stopButton:{width:24,height:24,borderRadius:6,backgroundColor:'#0B1220',alignIte
   channelConnectBtn:{backgroundColor:'#EAF1FB',borderRadius:12,paddingHorizontal:14,paddingVertical:7},
   channelConnectBtnText:{fontSize:12,fontWeight:'600',color:'#1E56A0'},
   channelSummaryBar:{flexDirection:'row',alignItems:'center',justifyContent:'center',gap:8,backgroundColor:'#EAF1FB',borderRadius:12,padding:12,marginTop:8},
+  // NEW: channel "..." bottom sheet + Channel settings/AI Permissions screens
+  channelMenuSheet:{position:'absolute',bottom:0,left:0,right:0,backgroundColor:'#FFF',borderTopLeftRadius:24,borderTopRightRadius:24,paddingTop:20,paddingHorizontal:20,paddingBottom:32},
+  channelMenuHeader:{flexDirection:'row',alignItems:'center',gap:12,paddingBottom:16,marginBottom:8,borderBottomWidth:1,borderBottomColor:'#EEF0F2'},
+  channelMenuRow:{flexDirection:'row',alignItems:'center',gap:12,paddingVertical:14,borderBottomWidth:1,borderBottomColor:'#F0F2F4'},
+  channelMenuIconWrap:{width:36,height:36,borderRadius:18,backgroundColor:'#F0F2F4',alignItems:'center',justifyContent:'center'},
+  channelSettingsHeaderRow:{flexDirection:'row',alignItems:'flex-start',gap:12,marginTop:8},
+  channelDetailRow:{flexDirection:'row',alignItems:'center',gap:12,paddingVertical:12,borderBottomWidth:1,borderBottomColor:'#F0F2F4'},
+  toggleRow:{flexDirection:'row',alignItems:'center',gap:12,backgroundColor:'#FFF',borderRadius:14,padding:14,marginBottom:10},
+  channelSettingsFooter:{flexDirection:'row',gap:10,padding:16,borderTopWidth:1,borderTopColor:'#EEF0F2',backgroundColor:'#FFF'},
+  channelAskNexoraBtn:{flexDirection:'row',alignItems:'center',justifyContent:'center',gap:6,backgroundColor:'#0B1220',borderRadius:24,paddingHorizontal:16,minHeight:48},
+  // NEW: Call Summary screen
+  callSummaryBanner:{flexDirection:'row',alignItems:'center',gap:12,backgroundColor:'#E5EBF3',borderRadius:16,padding:16,marginBottom:16},
+  callSummaryOrb:{width:36,height:36,borderRadius:18,backgroundColor:'#0F2942',alignItems:'center',justifyContent:'center'},
+  callSummaryHeading:{fontSize:15,fontWeight:'700',color:'#1E56A0'},
+  callSummaryGoToConvo:{flexDirection:'row',alignItems:'center',justifyContent:'center',gap:8,backgroundColor:'#EAF1FB',borderRadius:14,paddingVertical:14,marginTop:16},
+  callSummaryGoToConvoText:{fontSize:14,fontWeight:'600',color:'#1E56A0'},
+  callSummaryAskNexora:{position:'absolute',right:16,bottom:88,flexDirection:'row',alignItems:'center',gap:6,backgroundColor:'#0B1220',borderRadius:24,paddingHorizontal:16,paddingVertical:12},
+  // NEW: refund-approval banner, stock-check checklist bubble, typing
+  // indicator, "waiting for owner" banner (all inboxChat additions)
+  refundBanner:{flexDirection:'row',gap:10,backgroundColor:'#FDEFE0',borderRadius:14,padding:14,marginBottom:16},
+  refundBannerTitle:{fontSize:14,fontWeight:'700',color:'#0B1220'},
+  refundBannerBtn:{flexDirection:'row',alignItems:'center',gap:4,alignSelf:'flex-start',marginTop:8},
+  refundBannerBtnText:{fontSize:13,fontWeight:'700',color:'#C2760C'},
+  checklistBubble:{alignSelf:'flex-end',maxWidth:313,backgroundColor:'#1E56A0',borderRadius:12,borderTopRightRadius:0,padding:14},
+  checklistTitle:{fontSize:13,fontWeight:'700',color:'#FFF',marginBottom:10},
+  checklistRow:{flexDirection:'row',alignItems:'center',gap:8,marginBottom:8},
+  checklistLabel:{fontSize:13,color:'#FFF'},
+  checklistFooter:{fontSize:11,color:'rgba(255,255,255,0.5)',marginTop:2},
+  typingBubble:{alignSelf:'flex-start',flexDirection:'row',alignItems:'center',gap:8,backgroundColor:'#EAF1FB',borderRadius:14,paddingHorizontal:14,paddingVertical:10,marginBottom:12},
+  typingDotsRow:{flexDirection:'row',gap:3},
+  typingDot:{width:6,height:6,borderRadius:3,backgroundColor:'#1E56A0'},
+  typingText:{fontSize:12,color:'#5C6B7A'},
+  waitingOwnerBanner:{flexDirection:'row',alignItems:'center',gap:10,backgroundColor:'#F5F6F8',marginHorizontal:16,marginBottom:12,borderRadius:14,padding:12},
+  waitingOwnerIconWrap:{width:32,height:32,borderRadius:16,backgroundColor:'#0F2942',alignItems:'center',justifyContent:'center'},
+  waitingOwnerTitle:{fontSize:13,fontWeight:'700',color:'#0B1220'},
+  waitingOwnerSparkle:{width:28,height:28,borderRadius:14,backgroundColor:'#1E56A0',alignItems:'center',justifyContent:'center'},
+  // NEW: "Nexora calls owner" full-screen call UI
+  activeCallTitle:{fontSize:20,fontWeight:'700',color:'#FFF'},
+  activeCallSubtitle:{fontSize:13,color:'rgba(255,255,255,0.6)',marginTop:2},
+  activeCallBanner:{backgroundColor:'rgba(255,255,255,0.08)',borderRadius:16,marginHorizontal:16,marginTop:20,paddingVertical:14,alignItems:'center'},
+  activeCallBannerTitle:{fontSize:14,fontWeight:'600',color:'#FFF'},
+  activeCallBannerSubtitle:{fontSize:12,color:'rgba(255,255,255,0.6)',marginTop:4},
+  activeCallOrb:{width:120,height:120,borderRadius:60,backgroundColor:'rgba(255,255,255,0.08)',alignItems:'center',justifyContent:'center',marginBottom:20},
+  activeCallName:{fontSize:20,fontWeight:'700',color:'#FFF'},
+  activeCallTimer:{fontSize:14,color:'rgba(255,255,255,0.6)',marginTop:6},
+  activeCallControlsRow:{flexDirection:'row',justifyContent:'space-evenly',paddingHorizontal:16},
+  activeCallControlBtn:{width:64,height:64,borderRadius:32,backgroundColor:'rgba(255,255,255,0.1)',alignItems:'center',justifyContent:'center',marginBottom:8},
+  activeCallControlLabel:{fontSize:12,color:'rgba(255,255,255,0.7)'},
+  activeCallHangup:{width:64,height:64,borderRadius:32,backgroundColor:'#E5484D',alignItems:'center',justifyContent:'center'},
+  // NEW: Customers CRM (Customers / Customer Profile / Add Customer / Interaction History)
+  customerRow:{flexDirection:'row',alignItems:'center',gap:12,backgroundColor:'#FFF',borderRadius:14,padding:14,marginBottom:10},
+  customerAvatarPhoto:{width:44,height:44,borderRadius:22,backgroundColor:'#E7EAEC'},
+  customerAvatarInitials:{width:44,height:44,borderRadius:22,alignItems:'center',justifyContent:'center'},
+  customerAvatarInitialsText:{color:'#FFF',fontWeight:'700',fontSize:15},
+  customerSegmentPill:{borderRadius:10,paddingHorizontal:10,paddingVertical:4},
+  customerSegmentPillText:{fontSize:11,fontWeight:'700'},
+  customerProfileTabRow:{flexDirection:'row',marginTop:16,borderBottomWidth:1,borderBottomColor:'#EEF0F2'},
+  customerProfileTabItem:{marginRight:24,paddingBottom:10},
+  customerProfileTabText:{fontSize:13,color:'#8A97A6',fontWeight:'600'},
+  customerProfileTabTextActive:{color:'#1E56A0'},
+  customerProfileTabUnderline:{height:2,backgroundColor:'#1E56A0',marginTop:8,borderRadius:1},
+  customerStatsGrid:{flexDirection:'row',flexWrap:'wrap',gap:10,marginTop:16},
+  customerStatCell:{width:'47%',backgroundColor:'#FFF',borderRadius:14,padding:14,gap:4},
+  aiRecommendationCard:{flexDirection:'row',gap:12,backgroundColor:'#FFF',borderRadius:16,padding:16,marginTop:16},
+  aiRecommendationIconWrap:{width:36,height:36,borderRadius:18,backgroundColor:'#1E9ED0',alignItems:'center',justifyContent:'center'},
+  aiRecommendationTitle:{fontSize:14,fontWeight:'700',color:'#1E9ED0',marginBottom:2},
+  aiRecommendationBtn:{flexDirection:'row',alignItems:'center',justifyContent:'center',gap:6,backgroundColor:'#1E9ED0',borderRadius:20,paddingVertical:10,marginTop:10},
+  aiRecommendationBtnText:{fontSize:13,fontWeight:'700',color:'#FFF'},
+  customerTagRow:{flexDirection:'row',flexWrap:'wrap',gap:8,marginTop:8},
+  customerSegTag:{backgroundColor:'#EAF1FB',borderRadius:10,paddingHorizontal:10,paddingVertical:5},
+  customerSegTagText:{fontSize:12,fontWeight:'600',color:'#1E56A0'},
+  historyRow:{backgroundColor:'#FFF',borderRadius:14,padding:14,marginBottom:10},
+  historyTime:{fontSize:11,color:'#8A97A6'},
+  historyIconWrap:{width:36,height:36,borderRadius:18,alignItems:'center',justifyContent:'center'},
   channelSummaryText:{fontSize:12,color:'#1E56A0',fontWeight:'600'},
   connectFlowIconWrap:{width:88,height:88,borderRadius:44,backgroundColor:'#F5F6F8',alignItems:'center',justifyContent:'center',alignSelf:'center',marginTop:24,marginBottom:16},
   connectFlowTitle:{fontSize:18,fontWeight:'700',color:'#0B1220',textAlign:'center',marginBottom:8},
