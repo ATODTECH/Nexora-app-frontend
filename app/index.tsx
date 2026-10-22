@@ -3517,41 +3517,119 @@ function HomeScreenInner(){
   // the browser (Groq web-search sources) and **bold** text.
   const renderInline = (line: string) => {
     const parts: React.ReactNode[] = [];
-    const re = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|\*\*([^*]+)\*\*/g;
+    // links, **bold**, __bold__, `code`, *italic*, and [n] source numbers
+    const re = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|\*\*([^*]+)\*\*|__([^_]+)__|`([^`]+)`|\*([^*\s][^*]*?)\*|\[(\d+(?:,\s*\d+)*)\]/g;
     let last = 0; let m: RegExpExecArray | null; let n = 0;
     while ((m = re.exec(line))) {
       if (m.index > last) parts.push(line.slice(last, m.index));
       if (m[1]) {
         const url = m[2]; const label = m[1];
-        parts.push(<Text key={`l${n++}`} style={{ color: '#7FB2FF', textDecorationLine: 'underline' }} onPress={() => openInApp(url, label)} accessibilityRole="link">{m[1]}</Text>);
-      } else {
-        parts.push(<Text key={`b${n++}`} style={{ fontWeight: '700' }}>{m[3]}</Text>);
+        parts.push(<Text key={`l${n++}`} style={{ color: '#9CC3FF', textDecorationLine: 'underline' }} onPress={() => openInApp(url, label)} accessibilityRole="link">{m[1]}</Text>);
+      } else if (m[3] || m[4]) {
+        parts.push(<Text key={`b${n++}`} style={{ fontWeight: '700', color: '#FFFFFF' }}>{m[3] || m[4]}</Text>);
+      } else if (m[5]) {
+        parts.push(<Text key={`c${n++}`} style={{ fontFamily: IS_WEB ? 'ui-monospace, Menlo, Consolas, monospace' : undefined, backgroundColor: 'rgba(255,255,255,0.1)', color: '#E5E9EF', fontSize: 12.5 }}>{` ${m[5]} `}</Text>);
+      } else if (m[6]) {
+        parts.push(<Text key={`i${n++}`} style={{ fontStyle: 'italic' }}>{m[6]}</Text>);
+      } else if (m[7]) {
+        parts.push(<Text key={`s${n++}`} style={{ fontSize: 10.5, color: '#9CC3FF', fontWeight: '700' }}>{` [${m[7].replace(/\s+/g, '')}]`}</Text>);
       }
       last = m.index + m[0].length;
     }
     if (last < line.length) parts.push(line.slice(last));
     return parts.length ? parts : line;
   };
+  // Nexora's answers come back as markdown. This turns it into proper typography: headings, paragraphs,
+  // bulleted and numbered lists, real tables, quotes and dividers (no raw "|", "*" or "#" on screen).
   const renderFormattedAiText = (text: string) => {
-    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-    const nextIdx = lines.findIndex(l => /what would you like to do next\??$/i.test(l.replace(/\*\*/g, '')));
-    const bodyLines = nextIdx === -1 ? lines : lines.slice(0, nextIdx);
-    const followUpHeader = nextIdx === -1 ? null : lines[nextIdx].replace(/\*\*/g, '');
-    const chipLines = nextIdx === -1 ? [] : lines.slice(nextIdx + 1).filter(l => l.length < 40).map(l => l.replace(/^[-•\d.]+\s*/, ''));
+    const raw = text.replace(/\r/g, '').replace(/([0-9])️?⃣/g, '$1');   // 1️⃣ -> 1
+    const trimmed = raw.split('\n').map(l => l.trim());
+    const nextIdx = trimmed.findIndex(l => /what would you like to do next\??$/i.test(l.replace(/[*_#]/g, '')));
+    const body = nextIdx === -1 ? trimmed : trimmed.slice(0, nextIdx);
+    const followUpHeader = nextIdx === -1 ? null : trimmed[nextIdx].replace(/[*_#]/g, '').trim();
+    const chipLines = nextIdx === -1 ? [] : trimmed.slice(nextIdx + 1).filter(l => l && l.length < 40).map(l => l.replace(/^[-•*\d.)]+\s*/, '').replace(/\*\*/g, ''));
+    type Block = { k: 'h' | 'p' | 'ul' | 'ol' | 'table' | 'hr' | 'quote'; text?: string; level?: number; items?: { n?: string; text: string }[]; rows?: string[][] };
+    const blocks: Block[] = [];
+    const isTableLine = (l: string) => l.startsWith('|') && l.indexOf('|', 1) > 0;
+    const isSeparator = (l: string) => /^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$/.test(l);
+    const cells = (l: string) => l.replace(/^\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim());
+    for (let i = 0; i < body.length; i++) {
+      const l = body[i];
+      if (!l) continue;
+      if (isTableLine(l)) {
+        const rows: string[][] = [];
+        while (i < body.length && body[i] && (isTableLine(body[i]) || isSeparator(body[i]))) { if (!isSeparator(body[i])) rows.push(cells(body[i])); i++; }
+        i--;
+        if (rows.length) blocks.push({ k: 'table', rows });
+        continue;
+      }
+      if (/^(-{3,}|\*{3,}|_{3,})$/.test(l)) { blocks.push({ k: 'hr' }); continue; }
+      const h = l.match(/^(#{1,6})\s+(.*)$/);
+      if (h) { blocks.push({ k: 'h', text: h[2].replace(/\*\*/g, ''), level: h[1].length }); continue; }
+      const wholeEmph = l.match(/^(?:\*\*|__)(.+?)(?:\*\*|__):?$/) || l.match(/^\*([^*]+)\*:?$/);
+      if (wholeEmph && wholeEmph[1].length < 80) { blocks.push({ k: 'h', text: wholeEmph[1].replace(/:$/, ''), level: 3 }); continue; }
+      if (/^>\s?/.test(l)) { blocks.push({ k: 'quote', text: l.replace(/^>\s?/, '') }); continue; }
+      const ol = l.match(/^(\d+)[.)]\s+(.*)$/);
+      if (ol) {
+        const prev = blocks[blocks.length - 1];
+        if (prev?.k === 'ol') prev.items!.push({ n: ol[1], text: ol[2] }); else blocks.push({ k: 'ol', items: [{ n: ol[1], text: ol[2] }] });
+        continue;
+      }
+      const ul = l.match(/^[-•*]\s+(.*)$/);
+      if (ul) {
+        const prev = blocks[blocks.length - 1];
+        if (prev?.k === 'ul') prev.items!.push({ text: ul[1] }); else blocks.push({ k: 'ul', items: [{ text: ul[1] }] });
+        continue;
+      }
+      if (/:$/.test(l) && l.length < 48 && !/[.!?]\s/.test(l)) { blocks.push({ k: 'h', text: l.replace(/:$/, ''), level: 3 }); continue; }
+      blocks.push({ k: 'p', text: l });
+    }
+    const T = IS_WEB ? 14.5 : 13.5, LH = IS_WEB ? 23 : 20;
+    const txt = { fontSize: T, lineHeight: LH, color: '#E5E9EF' };
     return (
       <View>
-        {bodyLines.map((line, i) => {
-          const numbered = line.match(/^(\d+)\.\s+(.*)/);
-          const boldHeader = line.match(/^\*\*(.+?)\*\*:?$/);
-          const shortHeader = !numbered && !boldHeader && /:$/.test(line) && line.length < 40;
-          if (numbered) {
-            return <Text key={i} style={[styles.bubbleText, styles.aiListItem]}><Text style={styles.aiListNumber}>{numbered[1]}. </Text>{renderInline(numbered[2])}</Text>;
+        {blocks.map((b, i) => {
+          const top = i === 0 ? 0 : b.k === 'h' ? 14 : 8;
+          if (b.k === 'h') return <Text key={i} style={{ marginTop: top, marginBottom: 2, fontSize: (b.level ?? 3) <= 2 ? T + 3 : T + 1, fontWeight: '800', color: '#FFFFFF' }}>{renderInline(b.text!)}</Text>;
+          if (b.k === 'hr') return <View key={i} style={{ height: 1, backgroundColor: 'rgba(255,255,255,0.12)', marginVertical: 12 }} />;
+          if (b.k === 'quote') return <View key={i} style={{ marginTop: top, borderLeftWidth: 3, borderLeftColor: '#7FB2FF', paddingLeft: 12, paddingVertical: 2 }}><Text style={[txt, { fontStyle: 'italic', color: '#C9D6E6' }]}>{renderInline(b.text!)}</Text></View>;
+          if (b.k === 'ul' || b.k === 'ol') {
+            return (
+              <View key={i} style={{ marginTop: top, gap: 6 }}>
+                {b.items!.map((it, j) => (
+                  <View key={j} style={{ flexDirection: 'row', gap: 10, alignItems: 'flex-start' }}>
+                    {b.k === 'ol'
+                      ? <View style={{ minWidth: 22, height: 22, borderRadius: 11, paddingHorizontal: 6, backgroundColor: 'rgba(127,178,255,0.18)', alignItems: 'center', justifyContent: 'center', marginTop: (LH - 22) / 2 }}><Text style={{ fontSize: 11.5, fontWeight: '800', color: '#9CC3FF' }}>{it.n}</Text></View>
+                      : <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#7FB2FF', marginTop: (LH - 6) / 2, marginLeft: 4, marginRight: 2 }} />}
+                    <Text style={[txt, { flex: 1 }]}>{renderInline(it.text)}</Text>
+                  </View>
+                ))}
+              </View>
+            );
           }
-          if (boldHeader || shortHeader) {
-            return <Text key={i} style={styles.aiSectionHeader}>{(boldHeader ? boldHeader[1] : line)}</Text>;
+          if (b.k === 'table') {
+            const [head, ...rest] = b.rows!;
+            const colCount = Math.max(...b.rows!.map(r => r.length));
+            const cellW = Math.max(120, Math.min(260, Math.floor(720 / Math.max(1, colCount))));
+            const row = (r: string[], header: boolean, ri: number) => (
+              <View key={ri} style={{ flexDirection: 'row', backgroundColor: header ? 'rgba(127,178,255,0.14)' : ri % 2 ? 'rgba(255,255,255,0.03)' : 'transparent', borderTopWidth: header ? 0 : 1, borderTopColor: 'rgba(255,255,255,0.08)' }}>
+                {Array.from({ length: colCount }).map((_, ci) => (
+                  <View key={ci} style={{ width: cellW, flexGrow: 1, paddingHorizontal: 12, paddingVertical: 9, borderLeftWidth: ci ? 1 : 0, borderLeftColor: 'rgba(255,255,255,0.08)' }}>
+                    <Text style={{ fontSize: T - 1, lineHeight: LH - 3, color: header ? '#FFFFFF' : '#DCE4EE', fontWeight: header ? '700' : '400' }}>{renderInline(r[ci] ?? '')}</Text>
+                  </View>
+                ))}
+              </View>
+            );
+            return (
+              <ScrollView key={i} horizontal showsHorizontalScrollIndicator style={{ marginTop: top + 4, marginBottom: 4 }} contentContainerStyle={{ flexGrow: 1 }}>
+                <View style={{ flexGrow: 1, minWidth: '100%', borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)', overflow: 'hidden' }}>
+                  {row(head, true, 0)}
+                  {rest.map((r, ri) => row(r, false, ri + 1))}
+                </View>
+              </ScrollView>
+            );
           }
-          const bullet = line.match(/^[-\u2022*]\s+(.*)/);
-          return <Text key={i} style={styles.bubbleText}>{bullet ? '\u2022 ' : ''}{renderInline(bullet ? bullet[1] : line)}</Text>;
+          return <Text key={i} style={[txt, { marginTop: top }]}>{renderInline(b.text!)}</Text>;
         })}
         {followUpHeader && (
           <>
@@ -8205,7 +8283,13 @@ function HomeScreenInner(){
             ) : (
               chatMessages.map((m, mi) => (
                 <View key={m.id} style={[styles.bubbleRow, m.role === 'user' ? styles.bubbleRowUser : [styles.bubbleRowAi, { flexDirection: 'column', alignItems: 'flex-start' }]]}>
-                  <View style={[styles.bubble, m.role === 'user' ? styles.bubbleUser : styles.bubbleAi]}>
+                  <View style={[styles.bubble, m.role === 'user' ? styles.bubbleUser : [styles.bubbleAi, { maxWidth: IS_WEB ? '94%' : '90%', paddingHorizontal: 16, paddingVertical: 14, borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' }]]}>
+                    {m.role === 'ai' && !!m.text && (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                        <View style={{ width: 20, height: 20, borderRadius: 6, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="sparkles" size={11} color="#FFFFFF" /></View>
+                        <Text style={{ fontSize: 12, fontWeight: '800', color: '#9CC3FF', letterSpacing: 0.3 }}>Nexora</Text>
+                      </View>
+                    )}
                     {m.imageUri && (
                       <ExpoImage
                         source={{ uri: m.imageUri }}
