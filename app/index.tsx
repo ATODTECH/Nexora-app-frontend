@@ -7981,9 +7981,9 @@ function HomeScreenInner(){
                 <Ionicons name="log-out-outline" size={18} color="#0B1220" />
                 <Text style={{ fontSize: 14, fontWeight: '700', color: '#0B1220' }}>Log out</Text>
               </Pressable>
-              <Pressable onPress={deleteMyAccount} accessibilityRole="button" style={(st: any) => ({ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 18, height: 44, borderRadius: 12, borderWidth: 1, borderColor: '#F5C2C2', backgroundColor: st.hovered || st.pressed ? '#FAD9D9' : '#FDECEC', cursor: 'pointer' } as any)}>
-                <Ionicons name="trash-outline" size={17} color="#B42318" />
-                <Text style={{ fontSize: 14, fontWeight: '700', color: '#B42318' }}>Delete account</Text>
+              {/* Deliberately faint so it blends into the page and isn't tapped by accident. */}
+              <Pressable onPress={deleteMyAccount} accessibilityRole="button" style={{ paddingHorizontal: 10, height: 44, justifyContent: 'center', cursor: 'pointer' } as any}>
+                {(st: any) => <Text style={{ fontSize: 12, fontWeight: '500', color: st.hovered || st.pressed ? '#C98F8F' : '#D9C4C4' }}>Delete account</Text>}
               </Pressable>
             </View>
             {__DEV__ && (
