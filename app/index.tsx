@@ -43,10 +43,15 @@ const AUTH_TIMEOUT_MS=15000;
 const SUPABASE_URL=process.env.EXPO_PUBLIC_SUPABASE_URL!;
 const IS_WEB = Platform.OS === 'web';
 // ---- Web version support ----
-// React Native's Alert does nothing in a browser, so confirmations use the browser's own dialogs there.
+// React Native's Alert does nothing in a browser, so on the web confirmations and choice menus open Nexora's own
+// dialog (WebDialogHost). The browser's plain dialogs are only a fallback before that dialog is on screen.
+type WebDialogButton = { text?: string; style?: string; onPress?: () => void };
+type WebDialog = { title: string; message?: string; buttons: WebDialogButton[] };
+let showWebDialog: ((d: WebDialog) => void) | null = null;
 if (IS_WEB) {
   const w: any = globalThis as any;
-  (Alert as any).alert = (title: string, message?: string, buttons?: { text?: string; style?: string; onPress?: () => void }[]) => {
+  (Alert as any).alert = (title: string, message?: string, buttons?: WebDialogButton[]) => {
+    if (showWebDialog) { showWebDialog({ title, message, buttons: (buttons ?? []).filter(Boolean) }); return; }
     const text = [title, message].filter(Boolean).join('\n\n');
     const list = (buttons ?? []).filter(Boolean);
     if (list.length <= 1) { w.alert?.(text); list[0]?.onPress?.(); return; }
@@ -1509,9 +1514,10 @@ type SchedForm = {
   touchedWho: boolean; touchedRelated: boolean; touchedReminder: boolean; touchedParticipants: boolean;
 };
 const initialSched = (kind: SchedKind = 'follow_up'): SchedForm => ({
-  kind, who: 'Enola Williams', whoMeta: 'Lead \u2022 Interested in blue headphone', title: '', desc: '', related: '',
+  // Starts empty: the design's sample contact ("Enola Williams") is covered on screen and never saved.
+  kind, who: '', whoMeta: '', title: '', desc: '', related: '',
   priority: 'Medium', date: addDaysIso(localIsoDate(), 1), time: '10:00 AM', duration: 30, reminder: '10 minutes before',
-  participants: [{ name: 'Enola Williams', meta: 'Lead' }, { name: 'Enola Williams', meta: 'Lead' }],
+  participants: [],
   touchedWho: false, touchedRelated: false, touchedReminder: false, touchedParticipants: false,
 });
 const schedFrameFor = (k: SchedKind): TruthKey => (k === 'meeting' ? 'scheduleMeeting' : k === 'task' ? 'scheduleTask' : 'createSchedule');
@@ -1521,6 +1527,50 @@ const initialPost = (): PostForm => ({
   text: POST_DEFAULT_TEXT, tags: [true, false, false], mediaUri: null,
   platforms: { Facebook: false, Instagram: true, Tiktok: true, WhatsApp: true, X: false }, adaptTab: 'Instagram',
 });
+// Web: Nexora-styled confirmation / choice dialog behind Alert.alert (see the Alert patch at the top of the file).
+function WebDialogHost() {
+  const [dlg, setDlg] = useState<WebDialog | null>(null);
+  useEffect(() => { showWebDialog = d => setDlg(d); return () => { showWebDialog = null; }; }, []);
+  useEffect(() => {
+    if (!dlg || typeof window === 'undefined') return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(dlg.buttons.find(b => b.style === 'cancel')); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [dlg]);
+  if (!dlg) return null;
+  const close = (b?: WebDialogButton) => { setDlg(null); if (b?.onPress) setTimeout(() => b.onPress?.(), 0); };
+  const buttons = dlg.buttons.length ? dlg.buttons : [{ text: 'OK' }];
+  const cancel = buttons.find(b => b.style === 'cancel');
+  const actions = buttons.filter(b => b.style !== 'cancel');
+  const menu = actions.length > 2;   // a list of choices (e.g. "Post options"), not a yes/no question
+  const btnStyle = (b: WebDialogButton, solid: boolean) => (st: any) => ({
+    height: 42, paddingHorizontal: 18, borderRadius: 12, alignItems: 'center', justifyContent: menu ? 'flex-start' : 'center', flexDirection: 'row', cursor: 'pointer',
+    backgroundColor: b.style === 'destructive' ? (st.hovered ? '#FAD9D9' : '#FDECEC') : solid ? (st.hovered ? '#184A8B' : '#1E56A0') : st.hovered ? '#F4F7FB' : '#FFFFFF',
+    borderWidth: b.style === 'destructive' ? 1 : solid ? 0 : 1, borderColor: b.style === 'destructive' ? '#F5C2C2' : '#D5DEE8',
+  } as any);
+  const btnText = (b: WebDialogButton, solid: boolean) => ({ fontSize: 14.5, fontWeight: '700' as const, color: b.style === 'destructive' ? '#B42318' : solid ? '#FFFFFF' : '#0B1220' });
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={() => close(cancel)}>
+      <Pressable onPress={() => close(cancel)} style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)', alignItems: 'center', justifyContent: 'center', padding: 20 }} accessibilityLabel="Close">
+        <Pressable onPress={() => {}} accessibilityRole="alert" style={{ width: '100%', maxWidth: 420, backgroundColor: '#FFFFFF', borderRadius: 18, padding: 22, shadowColor: '#0B1220', shadowOpacity: 0.2, shadowRadius: 24, shadowOffset: { width: 0, height: 10 }, cursor: 'auto' } as any}>
+          <Text style={{ fontSize: 18, fontWeight: '800', color: '#0B1220' }}>{dlg.title}</Text>
+          {!!dlg.message && <Text style={{ fontSize: 14.5, lineHeight: 21, color: '#5C6B7A', marginTop: 8 }}>{dlg.message}</Text>}
+          {menu ? (
+            <View style={{ gap: 8, marginTop: 18 }}>
+              {actions.map((b, i) => <Pressable key={`${b.text}-${i}`} onPress={() => close(b)} accessibilityRole="button" style={btnStyle(b, false)}><Text style={btnText(b, false)}>{b.text}</Text></Pressable>)}
+              {cancel && <Pressable onPress={() => close(cancel)} accessibilityRole="button" style={(st: any) => ({ height: 40, alignItems: 'center', justifyContent: 'center', marginTop: 2, borderRadius: 12, backgroundColor: st.hovered ? '#F4F7FB' : 'transparent', cursor: 'pointer' } as any)}><Text style={{ fontSize: 14.5, fontWeight: '700', color: '#5C6B7A' }}>{cancel.text || 'Cancel'}</Text></Pressable>}
+            </View>
+          ) : (
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 10, marginTop: 22 }}>
+              {cancel && <Pressable onPress={() => close(cancel)} accessibilityRole="button" style={btnStyle(cancel, false)}><Text style={btnText(cancel, false)}>{cancel.text || 'Cancel'}</Text></Pressable>}
+              {actions.map((b, i) => <Pressable key={`${b.text}-${i}`} onPress={() => close(b)} accessibilityRole="button" style={btnStyle(b, i === actions.length - 1)}><Text style={btnText(b, i === actions.length - 1)}>{b.text || 'OK'}</Text></Pressable>)}
+            </View>
+          )}
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
 // App-wide toast, callable from anywhere (including module-level helpers).
 let pushToast: (msg: string) => void = () => {};
 function ToastHost() {
@@ -2399,7 +2449,7 @@ export default function HomeScreen() {
   const epoch = useAccountEpoch();
   if (PUBLIC_SHOP_SLUG) return <PublicShop slug={PUBLIC_SHOP_SLUG} />;
   if (PUBLIC_PAGE === 'terms') return <LegalTermsPage onBack={IS_WEB && typeof window !== 'undefined' && window.history.length > 1 ? () => window.history.back() : undefined} />;
-  const app = (<><HomeScreenInner key={`account-${epoch}`} /><ToastHost /><DrawerHost /></>);
+  const app = (<><HomeScreenInner key={`account-${epoch}`} /><ToastHost /><DrawerHost />{IS_WEB && <WebDialogHost />}</>);
   if (!IS_WEB) return app;
   // Web layout. Signed in on a desktop-sized window: a sidebar plus full-width working screens (Home and other
   // phone-design screens stay a phone-shaped card). Before signing in: the phone card between two feature panels.
@@ -6321,6 +6371,7 @@ function HomeScreenInner(){
   };
   const stageSchedule = async () => {
     const f = sched;
+    if (f.kind === 'follow_up' && !f.who.trim()) { showTruthToast('Choose who to follow up with'); return; }
     const title = f.kind === 'follow_up' ? `Follow up with ${f.who}` : f.title.trim();
     if (!title) { showTruthToast(f.kind === 'meeting' ? 'Enter a meeting title' : 'Enter a task title'); return; }
     if (!userId) { showTruthToast('Please sign in again'); return; }
@@ -7067,10 +7118,11 @@ function HomeScreenInner(){
     if (key === 'createSchedule') {
       out.push(box('d-date', 60, 507, 150, 26, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 14 * sc, color: '#000' }}>{dateLabel}</Text>));
       out.push(box('d-time', 290, 507, 78, 26, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 14 * sc, color: '#000' }}>{sched.time}</Text>));
-      if (sched.touchedWho) out.push(box('d-who', 84, 397, 250, 46, { backgroundColor: '#FFF' }, <>
+      // Always drawn: covers the design's sample contact until a real one is chosen.
+      out.push(box('d-who', 84, 397, 250, 46, { backgroundColor: '#FFF', justifyContent: 'center' }, sched.who ? <>
         <Text numberOfLines={1} style={{ fontSize: 16 * sc, fontWeight: '700', color: '#0B1220' }}>{sched.who}</Text>
         <Text numberOfLines={1} style={{ fontSize: 13 * sc, color: '#6B7280', marginTop: 3 * sc }}>{sched.whoMeta}</Text>
-      </>));
+      </> : <Text numberOfLines={1} style={{ fontSize: 15 * sc, color: '#8A97A6' }}>Choose a customer or lead</Text>));
     }
     if (key === 'addCustomer' && truthFields.newSegment) {
       out.push(box('ac-seg', 42, 472, 270, 26, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 13 * sc, color: '#0B1220' }}>{truthFields.newSegment}</Text>));
@@ -7087,7 +7139,7 @@ function HomeScreenInner(){
     if (key === 'scheduleMeeting') {
       priorityRing(672);
       if (sched.touchedRelated) out.push(box('m-rel', 56, 594, 262, 22, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 14 * sc, color: '#0B1220' }}>{sched.related}</Text>));
-      if (sched.touchedParticipants) {
+      {   // always drawn: empty slots cover the design's sample participants
         [0, 1].forEach(i => {
           const pp = sched.participants[i];
           const x = i === 0 ? 16 : 202, w = i === 0 ? 174 : 175;
@@ -7929,8 +7981,9 @@ function HomeScreenInner(){
                 <Ionicons name="log-out-outline" size={18} color="#0B1220" />
                 <Text style={{ fontSize: 14, fontWeight: '700', color: '#0B1220' }}>Log out</Text>
               </Pressable>
-              <Pressable onPress={deleteMyAccount} accessibilityRole="button" style={{ paddingHorizontal: 12, height: 44, justifyContent: 'center' }}>
-                <Text style={{ color: '#D64545', fontSize: 13, fontWeight: '600' }}>Delete account</Text>
+              <Pressable onPress={deleteMyAccount} accessibilityRole="button" style={(st: any) => ({ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 18, height: 44, borderRadius: 12, borderWidth: 1, borderColor: '#F5C2C2', backgroundColor: st.hovered || st.pressed ? '#FAD9D9' : '#FDECEC', cursor: 'pointer' } as any)}>
+                <Ionicons name="trash-outline" size={17} color="#B42318" />
+                <Text style={{ fontSize: 14, fontWeight: '700', color: '#B42318' }}>Delete account</Text>
               </Pressable>
             </View>
             {__DEV__ && (
@@ -8369,11 +8422,11 @@ function HomeScreenInner(){
       const tw = valid.filter(o => ageMs(o) < WEEK).reduce((n, o) => n + Number(o.total || 0), 0);
       const lw = valid.filter(o => ageMs(o) >= WEEK && ageMs(o) < 2 * WEEK).reduce((n, o) => n + Number(o.total || 0), 0);
       const pct = lw > 0 ? Math.round(((tw - lw) / lw) * 100) : null;
-      const openOrders = orders.filter(o => o.status === 'pending' || o.status === 'processing');
+      const pendingOrders = orders.filter(o => o.status === 'pending' || o.status === 'processing');
       const unread = conversations.filter(c => c.unread > 0);
       const kpis: { label: string; value: string; sub: string; icon: string; color: string; onPress: () => void }[] = [
         { label: 'Sales this week', value: Math.round(tw).toLocaleString(), sub: pct === null ? (tw ? 'First week of data' : 'No orders yet') : `${pct >= 0 ? '▲' : '▼'} ${Math.abs(pct)}% vs last week`, icon: 'trending-up', color: pct !== null && pct < 0 ? '#D64545' : '#1E9E6D', onPress: () => askChat('Give me an analysis of how my business did this week compared with last week.') },
-        { label: 'Open orders', value: String(openOrders.length), sub: openOrders.length ? 'Waiting to be shipped' : 'All shipped', icon: 'cube-outline', color: '#1E56A0', onPress: () => openOrders('Unshipped') },
+        { label: 'Open orders', value: String(pendingOrders.length), sub: pendingOrders.length ? 'Waiting to be shipped' : 'All shipped', icon: 'cube-outline', color: '#1E56A0', onPress: () => openOrders('Unshipped') },
         { label: 'Unread chats', value: String(unread.length), sub: unread.length ? 'Customers waiting' : 'Inbox clear', icon: 'chatbubbles-outline', color: '#7C3AED', onPress: () => goTab('inbox') },
         { label: 'Needs your decision', value: String(escalations.length), sub: escalations.length ? 'Nexora needs you' : 'Nothing urgent', icon: 'hand-left-outline', color: escalations.length ? '#C2760C' : '#5C6B7A', onPress: () => { refreshEscalations().catch(() => {}); setScreen('agendaPriority'); } },
       ];
@@ -9633,9 +9686,9 @@ function HomeScreenInner(){
             <Ionicons name="create-outline" size={16} color="#1E56A0" />
             <Text style={styles.insightLink}>Edit</Text>
           </Pressable>
-          <Pressable onPress={deleteActiveItem} style={[styles.editLink, { marginTop: 4 }]} accessibilityRole="button">
-            <Ionicons name="trash-outline" size={16} color="#D64545" />
-            <Text style={[styles.insightLink, { color: '#D64545' }]}>Delete</Text>
+          <Pressable onPress={deleteActiveItem} style={[styles.dangerSoft, { marginTop: 10 }]} accessibilityRole="button">
+            <Ionicons name="trash-outline" size={15} color="#B42318" />
+            <Text style={styles.dangerSoftText}>Delete</Text>
           </Pressable>
         </ScrollView>
       </View>
@@ -10811,7 +10864,7 @@ function HomeScreenInner(){
                 <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
                   {!draft && <Pressable onPress={() => approveLearned(it.id)} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1, minHeight: 38 }]}><Text style={styles.resetButtonText}>Confirm</Text></Pressable>}
                   <Pressable onPress={() => setLearnEdit({ id: it.id, name: it.name, content: draft ? '' : it.overview })} style={[styles.resetButton, { flex: 1, minHeight: 38, backgroundColor: '#EAF1FB' }]}><Text style={[styles.resetButtonText, { color: '#1E56A0' }]}>{draft ? 'Add answer' : 'Edit'}</Text></Pressable>
-                  <Pressable onPress={() => dismissLearned(it.id)} style={[styles.resetButton, { flex: 1, minHeight: 38, backgroundColor: '#FDEDED' }]}><Text style={[styles.resetButtonText, { color: '#D64545' }]}>Remove</Text></Pressable>
+                  <Pressable onPress={() => dismissLearned(it.id)} style={[styles.resetButton, { flex: 1, minHeight: 38, backgroundColor: '#FDECEC', borderWidth: 1, borderColor: '#F5C2C2' }]}><Text style={[styles.resetButtonText, { color: '#B42318', fontWeight: '700' }]}>Remove</Text></Pressable>
                 </View>
               </View>
             );
@@ -11092,7 +11145,7 @@ function HomeScreenInner(){
                 </View>
                 <Switch value={!!r.enabled} onValueChange={(v) => toggleRule(r.id, v)} accessibilityLabel="Rule on" trackColor={{ true: '#5381BB', false: '#D5DEE8' }} thumbColor="#FFFFFF" />
               </View>
-              <Pressable onPress={() => deleteRule(r.id)} hitSlop={6} style={{ marginTop: 8, alignSelf: 'flex-start' }}><Text style={{ fontSize: 12.5, color: '#D64545', fontWeight: '700' }}>Remove</Text></Pressable>
+              <Pressable onPress={() => deleteRule(r.id)} accessibilityRole="button" style={[styles.dangerSoft, { marginTop: 10, minHeight: 32 }]}><Ionicons name="trash-outline" size={14} color="#B42318" /><Text style={styles.dangerSoftText}>Remove</Text></Pressable>
             </View>
           ))}
         </ScrollView>
@@ -12508,8 +12561,8 @@ function HomeScreenInner(){
                       <Text style={[styles.resetButtonText, { color: '#1E56A0', fontSize: 13 }]}>AI settings</Text>
                     </Pressable>
                     {isOwner && (
-                      <Pressable onPress={() => disconnectChannel(ch.key)} style={[styles.resetButton, { flex: 1, minHeight: 38, borderWidth: 1, borderColor: '#F3B4B4' }]}>
-                        <Text style={[styles.resetButtonText, { color: '#D64545', fontSize: 13 }]}>Disconnect</Text>
+                      <Pressable onPress={() => disconnectChannel(ch.key)} style={[styles.resetButton, { flex: 1, minHeight: 38, borderWidth: 1, borderColor: '#F5C2C2', backgroundColor: '#FDECEC' }]}>
+                        <Text style={[styles.resetButtonText, { color: '#B42318', fontSize: 13, fontWeight: '700' }]}>Disconnect</Text>
                       </Pressable>
                     )}
                   </View>
@@ -13912,6 +13965,9 @@ const styles=StyleSheet.create({
   // Web: buttons never stretch across wide screens (they stop at 400px, like a normal web form button).
   resetButton:{minHeight:48,borderRadius:24,alignItems:'center',justifyContent:'center',...(IS_WEB?{maxWidth:400,paddingHorizontal:24}:{})},
   resetButtonEnabled:{backgroundColor:'#1E56A0'},
+  // Delete / Remove / Disconnect: one faint red style everywhere.
+  dangerSoft:{flexDirection:'row',alignItems:'center',justifyContent:'center',gap:6,alignSelf:'flex-start',minHeight:36,paddingHorizontal:14,borderRadius:12,borderWidth:1,borderColor:'#F5C2C2',backgroundColor:'#FDECEC'},
+  dangerSoftText:{color:'#B42318',fontSize:13,fontWeight:'700'},
   resetButtonDisabled:{backgroundColor:'#94A3BB'},
   resetButtonText:{color:'#FFF',fontSize:15,fontWeight:'600'},
   resetError:{marginTop:14,color:'#D32F2F',fontSize:13,textAlign:'center'},
@@ -14146,9 +14202,9 @@ stopButton:{width:24,height:24,borderRadius:6,backgroundColor:'#0B1220',alignIte
   suggestReasonSub:{fontSize:11,color:'#5C6B7A',marginBottom:4},
   suggestReasonItem:{fontSize:11,color:'#5C6B7A',marginBottom:2},
   suggestSendRow:{flexDirection:'row',gap:10,marginTop:12},
-  suggestSendBtn:{flex:1,flexDirection:'row',alignItems:'center',justifyContent:'center',gap:6,backgroundColor:'#1E56A0',borderRadius:20,paddingVertical:10},
+  suggestSendBtn:{flex:1,flexDirection:'row',alignItems:'center',justifyContent:'center',gap:6,backgroundColor:'#1E56A0',borderRadius:20,paddingVertical:10,...(IS_WEB?{maxWidth:260}:{})},
   suggestSendText:{color:'#FFF',fontSize:13,fontWeight:'700'},
-  suggestTakeoverBtn:{flex:1,flexDirection:'row',alignItems:'center',justifyContent:'center',gap:6,borderRadius:20,paddingVertical:10,borderWidth:1,borderColor:'#1E56A0'},
+  suggestTakeoverBtn:{flex:1,flexDirection:'row',alignItems:'center',justifyContent:'center',gap:6,borderRadius:20,paddingVertical:10,borderWidth:1,borderColor:'#1E56A0',...(IS_WEB?{maxWidth:260}:{})},
   suggestTakeoverText:{color:'#1E56A0',fontSize:13,fontWeight:'700'},
   needInfoBanner:{backgroundColor:'#FDF3E7',borderRadius:14,padding:14,marginBottom:16},
   needInfoHeaderRow:{flexDirection:'row',alignItems:'center',gap:6,marginBottom:6},
@@ -14193,7 +14249,7 @@ stopButton:{width:24,height:24,borderRadius:6,backgroundColor:'#0B1220',alignIte
   channelDetailRow:{flexDirection:'row',alignItems:'center',gap:12,paddingVertical:12,borderBottomWidth:1,borderBottomColor:'#F0F2F4'},
   toggleRow:{flexDirection:'row',alignItems:'center',gap:12,backgroundColor:'#FFF',borderRadius:14,padding:14,marginBottom:10},
   channelSettingsFooter:{flexDirection:'row',gap:10,padding:16,borderTopWidth:1,borderTopColor:'#EEF0F2',backgroundColor:'#FFF'},
-  channelAskNexoraBtn:{flexDirection:'row',alignItems:'center',justifyContent:'center',gap:6,backgroundColor:'#0B1220',borderRadius:24,paddingHorizontal:16,minHeight:48},
+  channelAskNexoraBtn:{flexDirection:'row',alignItems:'center',justifyContent:'center',gap:6,backgroundColor:'#0B1220',borderRadius:24,paddingHorizontal:16,minHeight:48,...(IS_WEB?{maxWidth:400}:{})},
   // NEW: Call Summary screen
   callSummaryBanner:{flexDirection:'row',alignItems:'center',gap:12,backgroundColor:'#E5EBF3',borderRadius:16,padding:16,marginBottom:16},
   callSummaryOrb:{width:36,height:36,borderRadius:18,backgroundColor:'#0F2942',alignItems:'center',justifyContent:'center'},
@@ -14250,7 +14306,7 @@ stopButton:{width:24,height:24,borderRadius:6,backgroundColor:'#0B1220',alignIte
   aiRecommendationCard:{flexDirection:'row',gap:12,backgroundColor:'#FFF',borderRadius:16,padding:16,marginTop:16},
   aiRecommendationIconWrap:{width:36,height:36,borderRadius:18,backgroundColor:'#1E9ED0',alignItems:'center',justifyContent:'center'},
   aiRecommendationTitle:{fontSize:14,fontWeight:'700',color:'#1E9ED0',marginBottom:2},
-  aiRecommendationBtn:{flexDirection:'row',alignItems:'center',justifyContent:'center',gap:6,backgroundColor:'#1E9ED0',borderRadius:20,paddingVertical:10,marginTop:10},
+  aiRecommendationBtn:{flexDirection:'row',alignItems:'center',justifyContent:'center',gap:6,backgroundColor:'#1E9ED0',borderRadius:20,paddingVertical:10,marginTop:10,...(IS_WEB?{maxWidth:400,paddingHorizontal:20}:{})},
   aiRecommendationBtnText:{fontSize:13,fontWeight:'700',color:'#FFF'},
   customerTagRow:{flexDirection:'row',flexWrap:'wrap',gap:8,marginTop:8},
   customerSegTag:{backgroundColor:'#EAF1FB',borderRadius:10,paddingHorizontal:10,paddingVertical:5},
