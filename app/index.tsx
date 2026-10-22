@@ -2594,13 +2594,15 @@ function HomeScreenInner(){
   const [workspaceChecked, setWorkspaceChecked] = useState(false);
   const [plans, setPlans] = useState<Plan[]>([]);
   const [billingInterval, setBillingInterval] = useState<'month' | 'year'>('month');
+  // What the business uses of each plan limit (null limit = custom / not capped).
+  type PlanUsage = Record<string, { used: number; limit: number | null }>;
+  const [planUsage, setPlanUsage] = useState<PlanUsage | null>(null);
   type PayConfig = { ready: boolean; currency: string; test_mode: boolean; reason: string; prices: Record<string, number | null>; prices_year?: Record<string, number | null> };
   const [payConfig, setPayConfig] = useState<PayConfig | null>(null);
   const [paidUntil, setPaidUntil] = useState<string | null>(null);
   const pendingPaymentRef = useRef<string>('');
   const [billingBusy, setBillingBusy] = useState<string | null>(null);
   const [bizForm, setBizForm] = useState({ name: '', industry: '', country: '' });
-  const [billingShowPlans, setBillingShowPlans] = useState(false);   // during the free trial the plans stay folded away
   const [joinCode, setJoinCode] = useState('');
   const [staffInviteCode, setStaffInviteCode] = useState('');
   const billingReturnRef = useRef<() => void>(() => {});
@@ -3532,6 +3534,8 @@ function HomeScreenInner(){
     if (error) { if (__DEV__) console.log('[channel save]', error.message); flash("Couldn't save that change. Check your connection."); }
   };
   // ---- Edge-function helper: signed-in call, readable error messages ----
+  // The database refuses rows over the plan's limits with code P0001 and a message saying what to do.
+  const planLimitMessage = (e: any): string => (e?.code === 'P0001' && e?.message ? String(e.message) : '');
   const callFn = async (name: string, body: Record<string, unknown>, ms = 30000): Promise<any> => {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) throw new Error('Please sign in again.');
@@ -3551,10 +3555,12 @@ function HomeScreenInner(){
 
   // ---- Company workspace + plans ----
   const loadWorkspaceInfo = async () => {
-    const [wsR, plR] = await Promise.all([
+    const [wsR, plR, usR] = await Promise.all([
       supabase.rpc('my_workspace'),
       supabase.from('plans').select('*').order('sort'),
+      supabase.rpc('my_plan_usage'),
     ]);
+    setPlanUsage(usR.error ? null : ((usR.data as PlanUsage | null) ?? null));
     if (wsR.error && __DEV__) console.log('[workspace]', wsR.error.message);
     const row = Array.isArray(wsR.data) ? wsR.data[0] : wsR.data;
     setWorkspace((row as any) ?? null);
@@ -3583,7 +3589,7 @@ function HomeScreenInner(){
       if (userId) supabase.from('profiles').update({ business_name: name }).eq('id', userId).then(() => {});
       setBusinessName(name);
       await loadWorkspaceInfo();
-      flash('Company created. Your 14-day free trial has started. Nothing to pay until it ends.');
+      flash('Company created. You are on the Free plan: upgrade any time in Plans & billing.');
       return true;
     } catch (e: any) { flash(rpcError(e, "Couldn't create the company.")); return false; }
     finally { setBillingBusy(null); }
@@ -3673,16 +3679,6 @@ function HomeScreenInner(){
     }, 900);
     return () => clearTimeout(t);
   }, [userId]);
-  const tryPlanDuringTrial = async (plan: Plan) => {
-    setBillingBusy(`trial-${plan.key}`);
-    try {
-      const { error } = await supabase.rpc('set_trial_plan', { p_plan: plan.key });
-      if (error) throw error;
-      await loadWorkspaceInfo();
-      flash(`You're trying ${plan.name} for the rest of your trial`);
-    } catch (e: any) { flash(rpcError(e, "Couldn't change the trial plan.")); }
-    finally { setBillingBusy(null); }
-  };
   const inviteStaff = async () => {
     setBillingBusy('invite');
     try {
@@ -3977,7 +3973,7 @@ function HomeScreenInner(){
     setContactSaving(false);
     if (error) {
       if (__DEV__) console.log('[contact save]', error.message);
-      setContactFormError(/network|fetch/i.test(error.message) ? "Couldn't reach Nexora. Check your connection and try again." : `Couldn't save: ${error.message}`);
+      setContactFormError(planLimitMessage(error) || (/network|fetch/i.test(error.message) ? "Couldn't reach Nexora. Check your connection and try again." : `Couldn't save: ${error.message}`));
       return;
     }
     flash(contactForm.kind === 'lead' ? 'Lead added' : 'Customer added');
@@ -3991,7 +3987,7 @@ function HomeScreenInner(){
     const exists = contacts.some(c => c.name.toLowerCase() === conv.name.toLowerCase() && String(c.channel).toLowerCase() === (conv.channel || conv.platform.toLowerCase()));
     if (exists) { flash(`${conv.name} is already in your contacts`); return; }
     const { error } = await supabase.from('customers').insert({ user_id: userId, name: conv.name, channel: conv.platform, handle: conv.handle || conv.externalId || '', segment: 'Lead', last_interaction_at: conv.lastAt ?? new Date().toISOString(), tags: [], segments: [] });
-    if (error) { flash("Couldn't save the lead."); return; }
+    if (error) { flash(planLimitMessage(error) || "Couldn't save the lead."); return; }
     loadContacts().catch(() => {});
     flash(`${conv.name} saved as a lead`);
   };
@@ -4476,7 +4472,7 @@ function HomeScreenInner(){
   }, [userId, screen]);
 
   // ---- Smart follow-ups: Nexora drafts messages for quiet leads and past customers ----
-  // Business Insights dashboard (charts + AI ideas). Free on every plan, the 14-day trial included.
+  // Business Insights dashboard (charts + AI ideas). Included in every plan, Free too.
   const [insights, setInsights] = useState<any | null>(null);
   const [insightsLoading, setInsightsLoading] = useState(false);
   const [insightsError, setInsightsError] = useState('');
@@ -4611,7 +4607,7 @@ function HomeScreenInner(){
   const toggleRule = async (id: string, enabled: boolean) => {
     setRulesList(l => (l ?? []).map(r => (r.id === id ? { ...r, enabled } : r)));
     const { error } = await supabase.from('owner_rules').update({ enabled }).eq('id', id);
-    if (error) { setRulesList(l => (l ?? []).map(r => (r.id === id ? { ...r, enabled: !enabled } : r))); flash("Couldn't update that rule."); }
+    if (error) { setRulesList(l => (l ?? []).map(r => (r.id === id ? { ...r, enabled: !enabled } : r))); flash(planLimitMessage(error) || "Couldn't update that rule."); }
   };
   const deleteRule = async (id: string) => {
     const before = rulesList;
@@ -5578,6 +5574,10 @@ function HomeScreenInner(){
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) throw new Error('Please sign in again.');
+      // Check the plan's knowledge document limit before uploading anything.
+      const { data: usage } = await supabase.rpc('my_plan_usage');
+      const docs = (usage as any)?.knowledge_sources;
+      if (docs?.limit != null && docs.used >= docs.limit) throw new Error(`Your plan allows ${docs.limit} knowledge documents. Remove one or upgrade to add more.`);
       const path = `${session.user.id}/${Date.now()}-${file.name.replace(/[^\w.\-]+/g, '_')}`;
       const contentType = ext === 'pdf' ? 'application/pdf' : ext === 'csv' ? 'text/csv' : 'text/plain';
       const up = await uploadBinary(`${SUPABASE_URL}/storage/v1/object/knowledge-files/${path}`, file.uri,
@@ -5586,6 +5586,10 @@ function HomeScreenInner(){
       const ins = await supabase.from('knowledge_documents')
         .insert({ user_id: session.user.id, name: file.name, status: 'Processing', size_bytes: file.size ?? 0, mime_type: contentType, storage_path: path })
         .select('id').single();
+      if (ins.error && planLimitMessage(ins.error)) {
+        await supabase.storage.from('knowledge-files').remove([path]).catch(() => {});
+        throw new Error(planLimitMessage(ins.error));
+      }
       docId = ins.data?.id;
       const res = await withLongTimeout(fetch(`${SUPABASE_FUNCTIONS_URL}/extract-knowledge`, {
         method: 'POST',
@@ -7188,8 +7192,8 @@ function HomeScreenInner(){
 
             {mode === 'signup' && (
               <>
-                <Text style={{ fontSize: 24, fontWeight: '800', color: '#0B1220' }}>Start your free trial</Text>
-                <Text style={{ fontSize: 14, color: '#5C6B7A', marginTop: 4 }}>14 days free. No card needed.</Text>
+                <Text style={{ fontSize: 24, fontWeight: '800', color: '#0B1220' }}>Create your free account</Text>
+                <Text style={{ fontSize: 14, color: '#5C6B7A', marginTop: 4 }}>Start on the Free plan. No card needed.</Text>
                 {label('Full name')}
                 {input({ value: fullName, onChangeText: setFullName, placeholder: 'e.g. Ada Okafor', autoComplete: 'name', maxLength: 80 }, 'person-outline')}
                 {label('Email')}
@@ -7524,7 +7528,7 @@ function HomeScreenInner(){
     if (mainTab === 'profile') {
       const twoCol = IS_WEB && hookWidth >= 1100;
       const planName = workspace ? (plans.find(p => p.key === workspace.plan)?.name ?? workspace.plan) : '';
-      const planSub = workspace ? `${planName} \u00b7 ${workspace.subscription_status === 'trialing' ? 'free trial' : workspace.subscription_status.replace('_', ' ')}` : 'Set up your company';
+      const planSub = workspace ? (workspace.plan === 'free' ? 'Free plan \u00b7 upgrade any time' : `${planName} \u00b7 ${workspace.subscription_status.replace('_', ' ')}`) : 'Set up your company';
       const row = (o: { icon: string; label: string; sub?: string; onPress: () => void; color?: string }, last = false) => (
         <Pressable key={o.label} onPress={o.onPress} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 13, borderBottomWidth: last ? 0 : 1, borderBottomColor: '#EEF1F4' }}>
           <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}>
@@ -10967,7 +10971,7 @@ function HomeScreenInner(){
     const cw = insightsW || Math.min(hookWidth, 1180) - 32;
     const twoCol = cw >= 860, threeCol = cw >= 1080;
     const k = D?.kpis;
-    const trial = D?.business?.status === 'trialing';
+    const onFree = D?.business?.plan === 'free';
     const kpiTiles: { label: string; value: string; change?: number | null; note?: string; spark?: number[]; icon: string }[] = k ? [
       { label: 'Revenue · 30 days', value: inMoney(k.revenue_30d.value, cur), change: k.revenue_30d.change, spark: k.revenue_30d.spark, icon: 'cash-outline' },
       { label: 'Orders · 30 days', value: String(k.orders_30d.value), change: k.orders_30d.change, spark: k.orders_30d.spark, icon: 'bag-handle-outline' },
@@ -10999,7 +11003,7 @@ function HomeScreenInner(){
                   <Ionicons name="chevron-back" size={22} color="#FFFFFF" />
                 </Pressable>
                 <View style={{ flex: 1 }} />
-                {trial && <View style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, backgroundColor: 'rgba(127,178,255,0.2)', borderWidth: 1, borderColor: 'rgba(127,178,255,0.5)' }}><Text style={{ color: '#D7E7FF', fontSize: 11.5, fontWeight: '700' }}>Included in your free trial</Text></View>}
+                {onFree && <View style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, backgroundColor: 'rgba(127,178,255,0.2)', borderWidth: 1, borderColor: 'rgba(127,178,255,0.5)' }}><Text style={{ color: '#D7E7FF', fontSize: 11.5, fontWeight: '700' }}>Included in your Free plan</Text></View>}
                 {D?.business?.has_business !== false && <Pressable onPress={() => loadInsights(true)} disabled={insightsLoading} accessibilityRole="button" accessibilityLabel="Refresh insights and ideas"
                   style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, height: 36, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.12)' }}>
                   {insightsLoading ? <ActivityIndicator color="#FFFFFF" size="small" /> : <Ionicons name="refresh" size={16} color="#FFFFFF" />}
@@ -11036,7 +11040,7 @@ function HomeScreenInner(){
                 </View>
                 <Text style={{ fontSize: 20, fontWeight: '900', color: IN_INK, marginTop: 14, textAlign: 'center' }}>Register your business to see your insights</Text>
                 <Text style={{ fontSize: 14, color: IN_MUTED, marginTop: 8, textAlign: 'center', lineHeight: 21, maxWidth: 520 }}>
-                  Business Insights is built from your company's own sales, customers and chats. Tell Nexora your business name, what you sell and your country. It takes a minute, starts your 14-day free trial, and Nexora will then draw your charts and suggest ideas made for you.
+                  Business Insights is built from your company's own sales, customers and chats. Tell Nexora your business name, what you sell and your country. It takes a minute, it's free, and Nexora will then draw your charts and suggest ideas made for you.
                 </Text>
                 <View style={{ alignSelf: 'stretch', maxWidth: 440, width: '100%', marginTop: 18, marginHorizontal: 'auto' } as any}>
                   {([['name', 'Business name', 'e.g. Global Foods Ltd', 120], ['industry', 'What do you sell or do?', 'e.g. Foodstuff and groceries', 80], ['country', 'Country', 'e.g. Nigeria', 60]] as const).map(([key, label, ph, max]) => (
@@ -11049,9 +11053,9 @@ function HomeScreenInner(){
                   <Pressable disabled={billingBusy === 'create'} accessibilityRole="button"
                     onPress={async () => { if (await createBusiness()) { setBizForm({ name: '', industry: '', country: '' }); loadInsights(true).catch(() => {}); } }}
                     style={{ marginTop: 16, height: 48, borderRadius: 12, backgroundColor: IN_C[0], justifyContent: 'center', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                    {billingBusy === 'create' ? <ActivityIndicator color="#FFFFFF" /> : <><Ionicons name="gift-outline" size={18} color="#FFFFFF" /><Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 15 }}>Start my free 14-day trial</Text></>}
+                    {billingBusy === 'create' ? <ActivityIndicator color="#FFFFFF" /> : <><Ionicons name="business-outline" size={18} color="#FFFFFF" /><Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 15 }}>Create my business for free</Text></>}
                   </Pressable>
-                  <Text style={{ fontSize: 12, color: IN_MUTED, marginTop: 8, textAlign: 'center' }}>No card needed. Everything is unlocked for 14 days; you choose a plan only after the trial.</Text>
+                  <Text style={{ fontSize: 12, color: IN_MUTED, marginTop: 8, textAlign: 'center' }}>No card needed. You start on the Free plan and can upgrade any time.</Text>
                 </View>
                 <View style={{ gap: 8, marginTop: 18 }}>
                   {['Revenue, orders and customer charts', 'Your business health score', 'Profitable ideas for your industry and country'].map(t => (
@@ -12169,7 +12173,7 @@ function HomeScreenInner(){
               <Ionicons name="business-outline" size={22} color="#1E56A0" />
               <View style={styles.attentionTextWrap}>
                 <Text style={styles.attentionTitle}>{workspace ? 'Only the owner can connect channels' : 'Set up your company first'}</Text>
-                <Text style={styles.attentionSubtitle}>{workspace ? `Ask ${workspace.owner_name || 'the business owner'} to connect your accounts.` : 'Create your company to start your free trial and connect channels.'}</Text>
+                <Text style={styles.attentionSubtitle}>{workspace ? `Ask ${workspace.owner_name || 'the business owner'} to connect your accounts.` : 'Create your company (it\'s free) to connect channels.'}</Text>
               </View>
               {!workspace && <Ionicons name="chevron-forward" size={18} color="#8A97A6" />}
             </Pressable>
@@ -12243,11 +12247,10 @@ function HomeScreenInner(){
   if (screen === 'billing') {
     const ws = workspace;
     const isOwner = ws?.role === 'owner';
-    const trialLeft = ws?.trial_ends_at ? Math.ceil((new Date(ws.trial_ends_at).getTime() - Date.now()) / 86400000) : null;
-    const statusLabel = !ws ? '' : ws.subscription_status === 'trialing'
-      ? (trialLeft !== null && trialLeft > 0 ? `Free trial · ${trialLeft} day${trialLeft === 1 ? '' : 's'} left` : 'Free trial ended')
+    const onFree = ws?.plan === 'free';
+    const statusLabel = !ws ? '' : onFree ? 'Free forever'
       : ws.subscription_status === 'active' ? 'Active' : ws.subscription_status === 'past_due' ? 'Payment overdue' : 'Canceled';
-    const statusColor = !ws ? '#5C6B7A' : ws.subscription_status === 'active' || (ws.subscription_status === 'trialing' && (trialLeft ?? 0) > 0) ? '#1E9E6D' : '#D64545';
+    const statusColor = !ws ? '#5C6B7A' : ws.subscription_status === 'active' ? '#1E9E6D' : '#D64545';
     return (
       <View style={styles.mainScreen}>
         <StatusBar style="dark" />
@@ -12260,7 +12263,7 @@ function HomeScreenInner(){
           {!workspaceChecked ? <ActivityIndicator style={{ marginTop: 40 }} color="#1E56A0" /> : !ws ? (
             <>
               <Text style={[styles.attentionTitle, { fontSize: 18 }]}>Set up your company</Text>
-              <Text style={[styles.attentionSubtitle, { marginTop: 4, marginBottom: 12 }]}>Every company gets its own Nexora workspace with everything unlocked for 14 days, free. No card needed, and you're only asked to choose a plan after the trial ends.</Text>
+              <Text style={[styles.attentionSubtitle, { marginTop: 4, marginBottom: 12 }]}>Every company gets its own Nexora workspace, starting on the Free plan. No card needed: upgrade whenever you need more.</Text>
               <View style={styles.detailCard}>
                 <Text style={styles.detailFieldLabel}>Company name</Text>
                 <TextInput value={bizForm.name} onChangeText={t => setBizForm(f => ({ ...f, name: t }))} placeholder="e.g. Jekamix Ltd" placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={120} />
@@ -12269,7 +12272,7 @@ function HomeScreenInner(){
                 <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Country</Text>
                 <TextInput value={bizForm.country} onChangeText={t => setBizForm(f => ({ ...f, country: t }))} placeholder="e.g. Nigeria" placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={60} />
                 <Pressable disabled={billingBusy === 'create'} onPress={() => { createBusiness().catch(() => {}); }} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 14 }]}>
-                  {billingBusy === 'create' ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>Start my free 14-day trial</Text>}
+                  {billingBusy === 'create' ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>Create my company for free</Text>}
                 </Pressable>
               </View>
               <Text style={[styles.attentionTitle, { marginTop: 22 }]}>Joining your company's Nexora?</Text>
@@ -12290,10 +12293,36 @@ function HomeScreenInner(){
                   <Text style={styles.attentionTitle}>{plans.find(p => p.key === ws.plan)?.name ?? ws.plan} plan</Text>
                   <Text style={{ color: statusColor, fontWeight: '700', fontSize: 12 }}>{statusLabel}</Text>
                 </View>
-                {ws.monthly_ai_messages !== null && (
+                {!planUsage && ws.monthly_ai_messages !== null && (
                   <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}>{(ws.ai_messages_used ?? 0).toLocaleString()} of {ws.monthly_ai_messages.toLocaleString()} AI tasks used this month</Text>
                 )}
                 <Text style={[styles.attentionSubtitle, { marginTop: 2 }]}>{ws.staff_seats === null ? 'Custom user limit' : `Up to ${ws.staff_seats + 1} user${ws.staff_seats === 0 ? '' : 's'}`} · You are the {ws.role}</Text>
+                {!!planUsage && (
+                  <View style={{ marginTop: 12, gap: 10 }}>
+                    {([['ai_tasks', 'AI tasks this month'], ['connected_accounts', 'Connected accounts'], ['customer_records', 'Customer records'], ['active_workflows', 'Active automations'], ['knowledge_sources', 'Knowledge documents']] as const).map(([k, label]) => {
+                      const u = planUsage[k];
+                      if (!u) return null;
+                      const full = u.limit !== null && u.used >= u.limit;
+                      const pct = u.limit ? Math.min(1, u.used / u.limit) : 0;
+                      return (
+                        <View key={k}>
+                          <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                            <Text style={{ fontSize: 12.5, color: '#4B5563' }}>{label}</Text>
+                            <Text style={{ fontSize: 12.5, fontWeight: '700', color: full ? '#D64545' : '#0B1220' }}>{u.used.toLocaleString()}{u.limit !== null ? ` / ${u.limit.toLocaleString()}` : ' · no limit'}</Text>
+                          </View>
+                          {u.limit !== null && (
+                            <View style={{ height: 6, borderRadius: 3, backgroundColor: '#EEF2F7', marginTop: 4, overflow: 'hidden' }}>
+                              <View style={{ width: `${Math.round(pct * 100)}%`, height: 6, backgroundColor: full ? '#D64545' : pct >= 0.8 ? '#C2760C' : '#1E56A0' }} />
+                            </View>
+                          )}
+                        </View>
+                      );
+                    })}
+                    {Object.values(planUsage).some(u => u.limit !== null && u.used >= u.limit) && (
+                      <Text style={{ fontSize: 12.5, color: '#B42318', lineHeight: 18 }}>{isOwner ? 'You have reached a limit on your plan. Upgrade below to keep growing.' : 'Your business has reached a limit on its plan. Ask the owner to upgrade.'}</Text>
+                    )}
+                  </View>
+                )}
               </View>
               {!isOwner ? (
                 <Text style={[styles.attentionSubtitle, { marginTop: 8 }]}>{ws.owner_name || 'The business owner'} manages your company's plan.</Text>
@@ -12305,7 +12334,7 @@ function HomeScreenInner(){
                   {ws.subscription_status === 'past_due' && (
                     <View style={{ marginTop: 12, padding: 12, borderRadius: 14, backgroundColor: '#FDECEC' }}>
                       <Text style={{ color: '#B42318', fontWeight: '700' }}>Your paid month has ended</Text>
-                      <Text style={{ color: '#7A271A', fontSize: 13, marginTop: 2 }}>Renew below to keep Nexora replying to your customers.</Text>
+                      <Text style={{ color: '#7A271A', fontSize: 13, marginTop: 2 }}>Your business is on the Free plan's limits until you renew. Your data is safe: renew below to get your full plan back.</Text>
                     </View>
                   )}
                   {IN_APP_SUBSCRIBE_ENABLED && payConfig && !payConfig.ready && (
@@ -12313,7 +12342,7 @@ function HomeScreenInner(){
                       <Text style={{ color: '#92400E', fontWeight: '700' }}>Online payments aren't switched on yet</Text>
                       <Text style={{ color: '#92400E', fontSize: 13, marginTop: 2, lineHeight: 18 }}>{payConfig.reason === 'no_rate'
                         ? "Nexora couldn't get today's exchange rate. Add PAYSTACK_USD_RATE in Supabase function secrets."
-                        : 'Add your Paystack secret key in Supabase: Edge Functions › Secrets › PAYSTACK_SECRET_KEY. Your free trial keeps working meanwhile.'}</Text>
+                        : 'Add your Paystack secret key in Supabase: Edge Functions › Secrets › PAYSTACK_SECRET_KEY. The Free plan keeps working meanwhile.'}</Text>
                     </View>
                   )}
                   {IN_APP_SUBSCRIBE_ENABLED && payConfig?.ready && payConfig.test_mode && (
@@ -12321,28 +12350,18 @@ function HomeScreenInner(){
                       <Text style={{ color: '#1E56A0', fontSize: 13 }}>Test mode: no real money is charged. Use Paystack's test card 4084 0840 8408 4081, any future date, CVV 408.</Text>
                     </View>
                   )}
-                  {ws.subscription_status === 'trialing' && (trialLeft ?? 0) > 0 && (
-                    <View style={{ marginTop: 12, padding: 16, borderRadius: 16, backgroundColor: '#E9F8EE', borderWidth: 1, borderColor: '#BFE8CD' }}>
+                  {onFree && (
+                    <View style={{ marginTop: 12, padding: 16, borderRadius: 16, backgroundColor: '#EAF1FB', borderWidth: 1, borderColor: '#C9DBF2' }}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                        <Ionicons name="gift-outline" size={20} color="#15803D" />
-                        <Text style={{ color: '#14532D', fontWeight: '800', fontSize: 16 }}>Your free trial is active</Text>
+                        <Ionicons name="rocket-outline" size={20} color="#1E56A0" />
+                        <Text style={{ color: '#0B1220', fontWeight: '800', fontSize: 16 }}>You're on the Free plan</Text>
                       </View>
-                      <Text style={{ color: '#166534', fontSize: 13.5, marginTop: 6, lineHeight: 20 }}>
-                        {trialLeft} day{trialLeft === 1 ? '' : 's'} left, until {new Date(ws.trial_ends_at as string).toLocaleDateString(undefined, { day: 'numeric', month: 'long' })}. Everything in Nexora is unlocked and there is nothing to pay now. We'll remind you to pick a plan when the trial ends.
+                      <Text style={{ color: '#334155', fontSize: 13.5, marginTop: 6, lineHeight: 20 }}>
+                        Free has strict limits so you can try Nexora on your own business. Upgrade below for more AI tasks, customers, connected accounts, automations and team members.
                       </Text>
-                      <Pressable onPress={() => billingReturnRef.current()} style={{ marginTop: 12, alignSelf: 'flex-start', paddingHorizontal: 16, height: 40, borderRadius: 10, backgroundColor: '#15803D', justifyContent: 'center' }}>
-                        <Text style={{ color: '#FFFFFF', fontWeight: '700' }}>Continue to Nexora</Text>
-                      </Pressable>
                     </View>
                   )}
-                  {ws.subscription_status === 'trialing' && (trialLeft ?? 0) > 0 && !billingShowPlans ? (
-                    <Pressable onPress={() => setBillingShowPlans(true)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 16 }}>
-                      <Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13.5 }}>See plans for after your trial (optional)</Text>
-                      <Ionicons name="chevron-down" size={16} color="#1E56A0" />
-                    </Pressable>
-                  ) : (
-                  <>
-                  <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>{ws.subscription_status === 'trialing' && (trialLeft ?? 0) > 0 ? 'Plans for after your trial' : 'Choose a plan'}</Text>
+                  <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>{onFree ? 'Upgrade your plan' : 'Choose a plan'}</Text>
                   <View style={{ flexDirection: 'row', backgroundColor: '#EEF2F7', borderRadius: 12, padding: 4, marginBottom: 10 }}>
                     {(['month', 'year'] as const).map(iv => (
                       <Pressable key={iv} onPress={() => setBillingInterval(iv)} accessibilityRole="button" accessibilityState={{ selected: billingInterval === iv }}
@@ -12353,15 +12372,16 @@ function HomeScreenInner(){
                   </View>
                   {plans.map((p, idx) => {
                     const current = p.key === ws.plan;
-                    const paidCurrent = current && ws.subscription_status === 'active';
+                    const isFree = p.key === 'free';
+                    const paidCurrent = current && !isFree && ws.subscription_status === 'active';
                     const yearly = billingInterval === 'year';
                     // Naira prices are fixed per plan; other currencies show the USD price (converted at checkout if needed).
                     const showNgn = (payConfig?.currency ?? (/nigeria/i.test(ws.country || '') ? 'NGN' : 'USD')) === 'NGN';
                     const ngn = yearly ? p.price_ngn_year : p.price_ngn;
                     const usd = yearly ? p.price_usd_year : p.price_usd;
-                    const per = yearly ? '/year' : '/month';
-                    const mainPrice = p.contact_sales ? `From $${p.price_usd.toLocaleString()}` : showNgn && ngn != null ? `₦${ngn.toLocaleString()}` : usd != null ? `$${usd.toLocaleString()}` : '';
-                    const otherPrice = p.contact_sales ? 'Custom quote' : showNgn && usd != null ? `$${usd.toLocaleString()}${per}` : !showNgn && ngn != null ? `₦${ngn.toLocaleString()}${per}` : '';
+                    const per = isFree ? '' : yearly ? '/year' : '/month';
+                    const mainPrice = isFree ? 'Free' : p.contact_sales ? `From $${p.price_usd.toLocaleString()}` : showNgn && ngn != null ? `₦${ngn.toLocaleString()}` : usd != null ? `$${usd.toLocaleString()}` : '';
+                    const otherPrice = isFree ? '₦0 / $0, no card needed' : p.contact_sales ? 'Custom quote' : showNgn && usd != null ? `$${usd.toLocaleString()}${per}` : !showNgn && ngn != null ? `₦${ngn.toLocaleString()}${per}` : '';
                     const checkoutPrice = (yearly ? payConfig?.prices_year : payConfig?.prices)?.[p.key];
                     const msgs = (n: number | null) => (n === null ? 'Custom' : n.toLocaleString());
                     // Older databases without a feature list fall back to the plan limits.
@@ -12369,8 +12389,8 @@ function HomeScreenInner(){
                       `${p.max_users ?? (p.staff_seats ?? 0) + 1} user${(p.max_users ?? (p.staff_seats ?? 0) + 1) === 1 ? '' : 's'}`,
                       `${msgs(p.monthly_ai_messages)} AI tasks a month`,
                     ];
-                    const tag = p.contact_sales ? 'Custom for large organizations' : p.key === 'starter' ? 'Best for getting started' : p.key === 'pro' ? 'Most popular' : p.key === 'business' ? 'Best for teams' : '';
-                    const payLabel = paidCurrent ? `Pay for another ${yearly ? 'year' : 'month'}` : current && ws.subscription_status === 'past_due' ? `Renew ${p.name}` : ws.subscription_status === 'active' ? `Switch to ${p.name}` : `Subscribe to ${p.name}`;
+                    const tag = isFree ? 'Free forever' : p.contact_sales ? 'Custom for large organizations' : p.key === 'starter' ? 'Best for getting started' : p.key === 'pro' ? 'Most popular' : p.key === 'business' ? 'Best for teams' : '';
+                    const payLabel = paidCurrent ? `Pay for another ${yearly ? 'year' : 'month'}` : current && ws.subscription_status === 'past_due' ? `Renew ${p.name}` : onFree || ws.subscription_status !== 'active' ? `Upgrade to ${p.name}` : `Switch to ${p.name}`;
                     const payBlocked = !p.contact_sales && !!payConfig && !payConfig.ready;
                     return (
                       <View key={p.key} style={[styles.detailCard, current && { borderWidth: 1.5, borderColor: '#1E56A0' }, p.key === 'pro' && !current && { borderWidth: 1.5, borderColor: '#F2C17D' }]}>
@@ -12392,22 +12412,18 @@ function HomeScreenInner(){
                             </View>
                           ))}
                         </View>
-                        {(IN_APP_SUBSCRIBE_ENABLED || p.contact_sales) && (
+                        {isFree && !current && (
+                          <Text style={{ fontSize: 12.5, color: '#5C6B7A', marginTop: 10, lineHeight: 18 }}>If your paid plan isn't renewed, your business moves to the Free plan's limits and keeps its data.</Text>
+                        )}
+                        {!isFree && (IN_APP_SUBSCRIBE_ENABLED || p.contact_sales) && (
                           <Pressable disabled={!!billingBusy || payBlocked} onPress={() => startCheckout(p)} style={[styles.resetButton, payBlocked ? null : styles.resetButtonEnabled, { marginTop: 12, minHeight: 42 }, payBlocked ? { backgroundColor: '#C7D2DE' } : null]}>
                             {billingBusy === p.key ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>{p.contact_sales ? 'Contact sales' : payLabel}</Text>}
-                          </Pressable>
-                        )}
-                        {ws.subscription_status === 'trialing' && !current && !p.contact_sales && (trialLeft ?? 0) > 0 && (
-                          <Pressable disabled={!!billingBusy} onPress={() => tryPlanDuringTrial(p)} style={{ alignItems: 'center', marginTop: 10 }}>
-                            <Text style={{ color: '#1E56A0', fontWeight: '600', fontSize: 13 }}>{billingBusy === `trial-${p.key}` ? 'Switching…' : 'Try this plan during your trial'}</Text>
                           </Pressable>
                         )}
                       </View>
                     );
                   })}
-                  {IN_APP_SUBSCRIBE_ENABLED && <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}>Payments are processed securely by Paystack (card, bank transfer or USSD) and charged in your local currency at checkout. Monthly payments cover 30 days and yearly payments cover 365 days (paying early adds the time to your current period), and your plan updates as soon as Paystack confirms it.</Text>}
-                  </>
-                  )}
+                  {IN_APP_SUBSCRIBE_ENABLED && <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}>Payments are processed securely by Paystack (card, bank transfer or USSD) and charged in your local currency at checkout. Monthly payments cover 30 days and yearly payments cover 365 days (paying early adds the time to your current period), and your plan updates as soon as Paystack confirms it. If a paid plan isn't renewed, your business moves to the Free plan's limits and keeps its data.</Text>}
                   <Text style={[styles.channelSectionLabel, { marginTop: 20 }]}>Your team</Text>
                   <View style={styles.detailCard}>
                     <Text style={styles.attentionSubtitle}>Invite staff to use Nexora with your company's knowledge. Each invite code works once.</Text>

@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std/http/server.ts";
+import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -383,6 +384,47 @@ async function callGeminiVision(
   throw new Error(`Gemini vision failed: ${lastError.slice(0, 150)}`);
 }
 
+/* ========================= PLAN LIMIT ========================= */
+
+// Each AI reply is one AI task on the business's plan (use_ai_task in the database).
+// Returns a message when the business has used this month's AI tasks; count 0 only checks.
+async function useAiTask(
+  userId: string,
+  kind: string,
+  count = 0,
+  check = true,
+): Promise<string> {
+  const admin = createClient(
+    Deno.env.get("SUPABASE_URL")!,
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+  );
+  const { data, error } = await admin.rpc("use_ai_task", {
+    p_user: userId,
+    p_kind: kind,
+    p_count: count,
+    p_check: check,
+  });
+  if (error) {
+    console.error("[NEXORA AI] ai usage", error.message);
+    return "";
+  }
+  return data?.ok === false
+    ? String(data.message || "This month's AI tasks are used up.")
+    : "";
+}
+
+async function signedInUser(req: Request): Promise<string> {
+  const auth = req.headers.get("Authorization") ?? "";
+  if (!auth) return "";
+  const db = createClient(
+    Deno.env.get("SUPABASE_URL")!,
+    Deno.env.get("SUPABASE_ANON_KEY")!,
+    { global: { headers: { Authorization: auth } } },
+  );
+  const { data } = await db.auth.getUser();
+  return data?.user?.id ?? "";
+}
+
 /* ========================= MAIN ========================= */
 
 serve(async (req) => {
@@ -441,6 +483,21 @@ serve(async (req) => {
       `[NEXORA AI] image=${Boolean(imageUrl)} text=${Boolean(message)}`,
     );
 
+    // Plan limit: signed-in members use their business's AI tasks.
+    const userId = await signedInUser(req);
+    if (userId) {
+      const quota = await useAiTask(userId, "check");
+      if (quota) {
+        return json({ success: false, code: "quota", message: quota }, 429);
+      }
+    }
+    const done = async (out: Record<string, unknown>) => {
+      if (userId) {
+        await useAiTask(userId, imageUrl ? "image_reply" : "reply", 1, false);
+      }
+      return json(out);
+    };
+
     /* =========================================================
        IMAGE: GEMINI → CLAUDE
        ========================================================= */
@@ -457,7 +514,7 @@ serve(async (req) => {
             geminiKey,
           );
 
-          return json({
+          return await done({
             success: true,
             reply: result.reply,
             model: result.model,
@@ -481,7 +538,7 @@ serve(async (req) => {
             claudeKey,
           );
 
-          return json({
+          return await done({
             success: true,
             reply: result.reply,
             model: result.model,
@@ -520,7 +577,7 @@ serve(async (req) => {
       try {
         const reply = await callGroqText(message, groqKey);
 
-        return json({
+        return await done({
           success: true,
           reply,
           model: GROQ_MODEL,
@@ -542,7 +599,7 @@ serve(async (req) => {
       try {
         const reply = await callClaudeText(message, claudeKey);
 
-        return json({
+        return await done({
           success: true,
           reply,
           model: CLAUDE_MODEL,
@@ -564,7 +621,7 @@ serve(async (req) => {
       try {
         const result = await callGeminiText(message, geminiKey);
 
-        return json({
+        return await done({
           success: true,
           reply: result.reply,
           model: result.model,
