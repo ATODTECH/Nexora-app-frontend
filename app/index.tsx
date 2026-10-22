@@ -1557,7 +1557,8 @@ const WEB_LAST_VIEW_KEY = 'nexora-last-view';
 const WEB_AUTH_SCREENS = ['launch', 'onboarding', 'signup', 'login', 'forgotPassword', 'verifyEmail'];
 const NEXORA_LOGO_URL = `${SUPABASE_URL}/storage/v1/object/public/assets/icon.png`;
 type WebShell = { wide: boolean; signedIn: boolean; active: string };
-let webShell: WebShell = { wide: false, signedIn: false, active: '' };
+// Starts wide: the first screen is the full-window landing page, never the phone card between side panels.
+let webShell: WebShell = { wide: true, signedIn: false, active: '' };
 const webShellSubs = new Set<(s: WebShell) => void>();
 function setWebShell(next: WebShell) {
   if (next.wide === webShell.wide && next.signedIn === webShell.signedIn && next.active === webShell.active) return;
@@ -1575,7 +1576,6 @@ const WEB_NAV: { label: string; icon: string; key: FeatureKey; pages: string[] }
   { label: 'Brain', icon: 'sparkles-outline', key: 'knowledge', pages: ['brain'] },
   { label: 'Inbox', icon: 'chatbubbles-outline', key: 'inbox', pages: ['inbox', 'inboxChat', 'connectChannels', 'channelSettings'] },
   { label: 'Insights', icon: 'stats-chart-outline', key: 'analytics', pages: ['insights'] },
-  { label: 'Leads', icon: 'person-add-outline', key: 'leads', pages: ['leads', 'leadDetail', 'followups'] },
   { label: 'Customers', icon: 'people-outline', key: 'customers', pages: ['customersLive', 'customerDetail'] },
   { label: 'Orders', icon: 'bag-handle-outline', key: 'orders', pages: ['orders'] },
   { label: 'Schedule', icon: 'calendar-outline', key: 'agenda', pages: ['agenda', 'agendaCreate'] },
@@ -1589,7 +1589,6 @@ const WEB_NAV: { label: string; icon: string; key: FeatureKey; pages: string[] }
   { label: 'Community', icon: 'chatbubbles-outline', key: 'community', pages: ['community', 'communityPost'] },
   { label: 'AI shop link', icon: 'storefront-outline', key: 'shop', pages: ['storefront'] },
   { label: 'Plans & billing', icon: 'card-outline', key: 'billing', pages: ['billing'] },
-  { label: 'Profile', icon: 'person-circle-outline', key: 'account', pages: ['profile'] },
 ];
 const WEB_SIDEBAR_W = 248;
 function WebSidebar({ active }: { active: string }) {
@@ -1618,6 +1617,19 @@ function WebSidebar({ active }: { active: string }) {
           );
         })}
       </ScrollView>
+      {/* Account (replaces a Profile menu item): profile, settings and log out live behind it */}
+      <Pressable onPress={() => requestFeature('account')} accessibilityRole="button" accessibilityLabel="Your account"
+        style={(st: any) => ({ flexDirection: 'row', alignItems: 'center', gap: 10, marginHorizontal: -2, marginBottom: 16, marginTop: 8, padding: 10, borderRadius: 12,
+          backgroundColor: active === 'profile' ? 'rgba(127,178,255,0.16)' : st.hovered ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.03)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)', cursor: 'pointer' } as any)}>
+        <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}>
+          <Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '800' }}>{(drawerBridge.name || drawerBridge.email || 'N').trim().charAt(0).toUpperCase()}</Text>
+        </View>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={{ color: '#FFFFFF', fontSize: 13.5, fontWeight: '700' }} numberOfLines={1}>{drawerBridge.name || 'Your account'}</Text>
+          <Text style={{ color: '#7F93AD', fontSize: 11.5 }} numberOfLines={1}>Account and settings</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={14} color="#7F93AD" />
+      </Pressable>
     </View>
   );
 }
@@ -1680,6 +1692,384 @@ function WebSidePanel({ side }: { side: 'left' | 'right' }) {
         </Pressable>
       ))}
       {side === 'right' && <Text style={{ color: '#5E7491', fontSize: 12, marginTop: 6 }}>Click any feature to open it. Not signed in yet? Nexora opens it right after you sign in.</Text>}
+    </View>
+  );
+}
+// ---- Web landing page: the whole first-visit experience on one page (web only) ----
+// Replaces the phone-style onboarding steps: what Nexora does, what to start with (the interest picks),
+// how it works, live plan prices, FAQs, and sign up / log in, like a product website.
+type LandingPlan = { key: string; name: string; price_usd: number; price_ngn: number | null; price_usd_year: number | null; price_ngn_year: number | null; features: string[]; blurb: string; contact_sales: boolean };
+const LANDING_ROTATING = ['WhatsApp', 'Instagram', 'Facebook', 'your shop link'];
+const LANDING_WHY: [string, string, string][] = [
+  ['chatbubbles-outline', 'Replies while you rest', 'Nexora answers customers on WhatsApp, Instagram and Facebook in your voice, day and night.'],
+  ['sparkles-outline', 'Knows your business', 'Teach it your products, prices and policies once. Every answer comes from your own knowledge.'],
+  ['flash-outline', 'Never misses a lead', 'Hot leads, orders and follow-ups are captured and flagged, so no sale slips through.'],
+  ['stats-chart-outline', 'Shows what to do next', 'Clear insights, trends in your market and ideas made for your business.'],
+];
+const LANDING_STEPS: [string, string][] = [
+  ['Create your free account', 'Sign up in a minute. No card needed.'],
+  ['Teach Nexora your business', 'Add products and policies, or upload a price list.'],
+  ['Connect your channels', 'Link WhatsApp, Instagram and Facebook in a few taps.'],
+  ['Let Nexora run the busy work', 'It replies, follows up and reports back to you.'],
+];
+const LANDING_FAQ: [string, string][] = [
+  ['Is there really a free plan?', 'Yes. The Free plan is free forever with 100 AI tasks a month, so you can try Nexora on your own business. Upgrade only when you need more.'],
+  ['What is an AI task?', 'Every reply or action Nexora takes for you, such as answering a customer, booking a meeting or saving a lead, counts as one AI task.'],
+  ['Which channels does Nexora work with?', 'WhatsApp, Instagram and Facebook Messenger today, plus your own AI shop link that customers can chat with.'],
+  ['Will Nexora say things I didn’t approve?', 'Nexora only answers from the knowledge you give it, asks before taking actions you haven’t allowed, and hands anything unusual to you.'],
+  ['How do I pay?', 'Securely through Paystack by card, bank transfer or USSD, monthly or yearly. Yearly plans include two months free.'],
+  ['Can my team use it?', 'Yes. Pro and Business plans add team members, so staff can learn your business and work from one inbox.'],
+];
+function WebLanding({ width, picks, onTogglePick, onStart, onLogin }: {
+  width: number; picks: FeatureKey[]; onTogglePick: (k: FeatureKey) => void; onStart: (feature?: FeatureKey) => void; onLogin: () => void;
+}) {
+  const BLUE = '#1E56A0', INK = '#0B1220', MUTED = '#5C6B7A', SOFT = '#F4F7FB';
+  const wide = width >= 1000, mid = width >= 700, compact = width < 600;
+  const pad = compact ? 20 : 40;
+  const scrollRef = useRef<ScrollView>(null);
+  const anchors = useRef<Record<string, number>>({});
+  const [word, setWord] = useState(0);
+  const [faqOpen, setFaqOpen] = useState<number | null>(0);
+  const [plans, setPlans] = useState<LandingPlan[]>([]);
+  const [yearly, setYearly] = useState(false);
+  const [ngn, setNgn] = useState(true);
+  useEffect(() => { const t = setInterval(() => setWord(w => (w + 1) % LANDING_ROTATING.length), 2200); return () => clearInterval(t); }, []);
+  useEffect(() => { try { document.title = 'Nexora AI · Your AI business manager'; } catch { /* not a browser */ } }, []);
+  useEffect(() => {
+    supabase.from('plans').select('*').order('sort').then(({ data }) => {
+      if (data) setPlans((data as any[]).map(p => ({ ...p, price_usd: Number(p.price_usd), features: Array.isArray(p.features) ? p.features : [], contact_sales: !!p.contact_sales })));
+    }, () => {});
+  }, []);
+  const goTo = (k: string) => scrollRef.current?.scrollTo({ y: Math.max(0, (anchors.current[k] ?? 0) - 72), animated: true });
+  const anchor = (k: string) => (e: any) => { anchors.current[k] = e.nativeEvent.layout.y; };
+  const wrap = { width: '100%', maxWidth: 1160, alignSelf: 'center', paddingHorizontal: pad } as const;
+  const illus = (i: number) => `${SUPABASE_URL}/storage/v1/object/public/assets/onboarding/illustration-${i}.png?v=${ASSET_VERSION}`;
+  const btn = (label: string, onPress: () => void, kind: 'primary' | 'ghost' | 'light' = 'primary', icon?: string) => (
+    <Pressable onPress={onPress} accessibilityRole="button"
+      style={(st: any) => ({ height: 46, paddingHorizontal: 22, borderRadius: 23, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, cursor: 'pointer',
+        backgroundColor: kind === 'primary' ? (st.hovered ? '#184A8B' : BLUE) : kind === 'light' ? (st.hovered ? '#EAF1FB' : '#FFFFFF') : st.hovered ? '#EAF1FB' : 'transparent',
+        borderWidth: kind === 'ghost' ? 1.5 : 0, borderColor: BLUE } as any)}>
+      <Text style={{ color: kind === 'primary' ? '#FFFFFF' : BLUE, fontSize: 15, fontWeight: '700' }}>{label}</Text>
+      {!!icon && <Ionicons name={icon as any} size={16} color={kind === 'primary' ? '#FFFFFF' : BLUE} />}
+    </Pressable>
+  );
+  const eyebrow = (t: string, light = false) => <Text style={{ color: light ? '#9CC3FF' : BLUE, fontSize: 13, fontWeight: '800', letterSpacing: 1.2, textAlign: 'center' }}>{t}</Text>;
+  const h2 = (t: string, light = false) => <Text style={{ color: light ? '#FFFFFF' : INK, fontSize: compact ? 28 : 38, lineHeight: compact ? 36 : 46, fontWeight: '800', textAlign: 'center', marginTop: 8 }}>{t}</Text>;
+  const sub = (t: string, light = false) => <Text style={{ color: light ? '#B8C7DA' : MUTED, fontSize: 16, lineHeight: 24, textAlign: 'center', marginTop: 10, maxWidth: 620, alignSelf: 'center' }}>{t}</Text>;
+  const price = (p: LandingPlan) => {
+    if (p.contact_sales) return { main: `From $${p.price_usd.toLocaleString()}`, per: '/month' };
+    if (p.price_usd === 0) return { main: ngn ? '₦0' : '$0', per: ' forever' };
+    const v = ngn ? (yearly ? p.price_ngn_year : p.price_ngn) : (yearly ? p.price_usd_year : p.price_usd);
+    return { main: v == null ? '' : `${ngn ? '₦' : '$'}${v.toLocaleString()}`, per: yearly ? '/year' : '/month' };
+  };
+  const navLinks: [string, string][] = [['Features', 'features'], ['How it works', 'how'], ['Pricing', 'pricing'], ['FAQ', 'faq']];
+  return (
+    <View style={{ flex: 1, backgroundColor: '#FFFFFF' }}>
+      <ScrollView ref={scrollRef} stickyHeaderIndices={[0]} style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 0 }}>
+        {/* Top bar */}
+        <View style={{ backgroundColor: 'rgba(255,255,255,0.96)', borderBottomWidth: 1, borderBottomColor: '#EEF1F4' }}>
+          <View style={[wrap, { height: 68, flexDirection: 'row', alignItems: 'center', gap: 12 }]}>
+            <Pressable onPress={() => scrollRef.current?.scrollTo({ y: 0, animated: true })} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, cursor: 'pointer' } as any} accessibilityRole="link" accessibilityLabel="Nexora AI home">
+              <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: BLUE, alignItems: 'center', justifyContent: 'center' }}><Ionicons name="sparkles" size={17} color="#FFFFFF" /></View>
+              <Text style={{ fontSize: 18, fontWeight: '800', color: INK }}>Nexora AI</Text>
+            </Pressable>
+            {wide && (
+              <View style={{ flexDirection: 'row', gap: 4, marginLeft: 28 }}>
+                {navLinks.map(([l, k]) => (
+                  <Pressable key={k} onPress={() => goTo(k)} accessibilityRole="link" style={(st: any) => ({ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: st.hovered ? SOFT : 'transparent', cursor: 'pointer' } as any)}>
+                    <Text style={{ fontSize: 14.5, color: '#334155', fontWeight: '600' }}>{l}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+            <View style={{ marginLeft: 'auto', flexDirection: 'row', alignItems: 'center', gap: compact ? 4 : 10 }}>
+              <Pressable onPress={onLogin} accessibilityRole="button" style={(st: any) => ({ paddingHorizontal: 14, height: 40, justifyContent: 'center', borderRadius: 20, backgroundColor: st.hovered ? SOFT : 'transparent', cursor: 'pointer' } as any)}>
+                <Text style={{ fontSize: 15, color: INK, fontWeight: '700' }}>Log in</Text>
+              </Pressable>
+              {!compact && btn('Start free', () => onStart())}
+            </View>
+          </View>
+        </View>
+
+        {/* Hero */}
+        <View style={{ backgroundColor: '#FFFFFF', paddingTop: compact ? 28 : 64, paddingBottom: compact ? 36 : 72 }}>
+          <View style={[wrap, { flexDirection: wide ? 'row' : 'column', alignItems: 'center', gap: wide ? 56 : 36 }]}>
+            <View style={{ flex: wide ? 1.1 : undefined, alignItems: wide ? 'flex-start' : 'center' }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#EAF1FB', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 }}>
+                <Ionicons name="sparkles" size={13} color={BLUE} />
+                <Text style={{ color: BLUE, fontSize: 13, fontWeight: '700' }}>Your AI business manager</Text>
+              </View>
+              <Text style={{ color: INK, fontSize: wide ? 54 : compact ? 34 : 44, lineHeight: wide ? 62 : compact ? 42 : 52, fontWeight: '800', marginTop: 18, textAlign: wide ? 'left' : 'center', letterSpacing: -0.5 }}>
+                Answer every customer on{'\n'}<Text style={{ color: BLUE }}>{LANDING_ROTATING[word]}</Text>, even while you rest.
+              </Text>
+              <Text style={{ color: MUTED, fontSize: compact ? 16 : 18, lineHeight: compact ? 24 : 28, marginTop: 18, maxWidth: 560, textAlign: wide ? 'left' : 'center' }}>
+                Nexora learns your products, prices and policies, replies to customers in your voice, captures every lead and tells you what needs you.
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 28, justifyContent: wide ? 'flex-start' : 'center' }}>
+                {btn('Start free', () => onStart(), 'primary', 'arrow-forward')}
+                {btn('See pricing', () => goTo('pricing'), 'ghost')}
+              </View>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 16, marginTop: 22, justifyContent: wide ? 'flex-start' : 'center' }}>
+                {['Free plan forever', 'No card needed', 'Set up in minutes'].map(t => (
+                  <View key={t} style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Ionicons name="checkmark-circle" size={16} color="#15803D" />
+                    <Text style={{ color: '#334155', fontSize: 14 }}>{t}</Text>
+                  </View>
+                ))}
+              </View>
+            </View>
+            {/* Hero visual: the illustration with a live-looking conversation over it */}
+            <View style={{ flex: wide ? 1 : undefined, width: wide ? undefined : '100%', maxWidth: 540, aspectRatio: 1.08, alignSelf: 'center' }}>
+              <View style={{ position: 'absolute', top: '6%', left: '4%', right: '4%', bottom: '6%', borderRadius: 32, backgroundColor: '#EAF1FB' }} />
+              <Image source={{ uri: illus(1) }} style={{ width: '100%', height: '100%' }} resizeMode="contain" accessibilityLabel="" />
+              <View style={{ position: 'absolute', top: '8%', left: compact ? 0 : '-2%', maxWidth: 250, backgroundColor: '#FFFFFF', borderRadius: 16, padding: 12, shadowColor: '#0B1220', shadowOpacity: 0.12, shadowRadius: 18, shadowOffset: { width: 0, height: 8 } }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}><Ionicons name="logo-whatsapp" size={14} color="#1E9E6D" /><Text style={{ fontSize: 11.5, color: MUTED, fontWeight: '700' }}>Customer · 11:42 PM</Text></View>
+                <Text style={{ fontSize: 13.5, color: INK, marginTop: 4 }}>Do you have the wireless earbuds in black? How much?</Text>
+              </View>
+              <View style={{ position: 'absolute', bottom: '8%', right: compact ? 0 : '-2%', maxWidth: 270, backgroundColor: BLUE, borderRadius: 16, padding: 12, shadowColor: '#0B1220', shadowOpacity: 0.18, shadowRadius: 18, shadowOffset: { width: 0, height: 8 } }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}><Ionicons name="sparkles" size={13} color="#CFE0F7" /><Text style={{ fontSize: 11.5, color: '#CFE0F7', fontWeight: '700' }}>Nexora · replied instantly</Text></View>
+                <Text style={{ fontSize: 13.5, color: '#FFFFFF', marginTop: 4 }}>Yes! The black earbuds are in stock at ₦18,500. Shall I reserve a pair for you?</Text>
+              </View>
+            </View>
+          </View>
+        </View>
+
+        {/* Works with */}
+        <View style={{ backgroundColor: SOFT, paddingVertical: 22 }}>
+          <View style={[wrap, { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: compact ? 16 : 36 }]}>
+            <Text style={{ color: MUTED, fontSize: 13, fontWeight: '700', letterSpacing: 1 }}>WORKS WITH</Text>
+            {([['logo-whatsapp', 'WhatsApp', '#1E9E6D'], ['logo-instagram', 'Instagram', '#C13584'], ['logo-facebook', 'Facebook', '#1877F2'], ['card-outline', 'Paystack', '#0BA4DB'], ['storefront-outline', 'Your shop link', BLUE]] as const).map(([ic, l, c]) => (
+              <View key={l} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name={ic as any} size={20} color={c} />
+                <Text style={{ color: '#334155', fontSize: 15, fontWeight: '700' }}>{l}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+
+        {/* Why Nexora */}
+        <View onLayout={anchor('features')} style={{ paddingVertical: compact ? 48 : 80 }}>
+          <View style={wrap}>
+            {eyebrow('WHY BUSINESSES CHOOSE NEXORA')}
+            {h2('One assistant for your whole business')}
+            {sub('From the first customer message to the final sale, Nexora handles the busy work so you can focus on growing.')}
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 18, marginTop: 36 }}>
+              {LANDING_WHY.map(([ic, t, d]) => (
+                <View key={t} style={{ flexBasis: wide ? '22%' : mid ? '46%' : '100%', flexGrow: 1, backgroundColor: '#FFFFFF', borderRadius: 18, borderWidth: 1, borderColor: '#E6ECF3', padding: 22 }}>
+                  <View style={{ width: 46, height: 46, borderRadius: 14, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}><Ionicons name={ic as any} size={22} color={BLUE} /></View>
+                  <Text style={{ color: INK, fontSize: 17, fontWeight: '800', marginTop: 16 }}>{t}</Text>
+                  <Text style={{ color: MUTED, fontSize: 14.5, lineHeight: 22, marginTop: 8 }}>{d}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        </View>
+
+        {/* What should Nexora help with first? (the onboarding interest picks) */}
+        <View style={{ backgroundColor: SOFT, paddingVertical: compact ? 48 : 80 }}>
+          <View style={wrap}>
+            {eyebrow('MADE FOR YOUR BUSINESS')}
+            {h2('What do you want Nexora to help with?')}
+            {sub('Pick what matters most. Nexora opens it first right after you sign up.')}
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 14, marginTop: 32, justifyContent: 'center' }}>
+              {INTEREST_TILES.map(t => {
+                const on = picks.includes(t.key);
+                const ic: Record<string, string> = { sales: 'cash-outline', orders: 'bag-handle-outline', trends: 'megaphone-outline', operations: 'construct-outline', agenda: 'calendar-outline', analytics: 'stats-chart-outline', automation: 'flash-outline', customers: 'people-outline' };
+                return (
+                  <Pressable key={t.key} onPress={() => onTogglePick(t.key)} accessibilityRole="checkbox" accessibilityState={{ checked: on }} accessibilityLabel={t.label}
+                    style={(st: any) => ({ flexBasis: wide ? '23%' : '46%', flexGrow: 1, maxWidth: wide ? 270 : undefined, height: 76, borderRadius: 16, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 18, cursor: 'pointer',
+                      backgroundColor: on ? BLUE : '#FFFFFF', borderWidth: 1.5, borderColor: on ? BLUE : st.hovered ? '#9CC3FF' : '#E6ECF3' } as any)}>
+                    <Ionicons name={(ic[t.key] ?? 'ellipse-outline') as any} size={22} color={on ? '#FFFFFF' : BLUE} />
+                    <Text style={{ color: on ? '#FFFFFF' : INK, fontSize: 16, fontWeight: '700', flex: 1 }}>{t.label}</Text>
+                    <Ionicons name={on ? 'checkmark-circle' : 'add-circle-outline'} size={20} color={on ? '#FFFFFF' : '#8A97A6'} />
+                  </Pressable>
+                );
+              })}
+            </View>
+            <View style={{ alignItems: 'center', marginTop: 26, gap: 10 }}>
+              {picks.length > 0 && <Text style={{ color: BLUE, fontSize: 14, fontWeight: '700' }}>{`${picks.length} selected · Nexora opens ${FEATURE_LABELS[picks[0]]} first`}</Text>}
+              {btn(picks.length ? 'Continue to sign up' : 'Start free', () => onStart(), 'primary', 'arrow-forward')}
+            </View>
+          </View>
+        </View>
+
+        {/* How it works */}
+        <View onLayout={anchor('how')} style={{ paddingVertical: compact ? 48 : 80 }}>
+          <View style={wrap}>
+            {eyebrow('HOW IT WORKS')}
+            {h2('Up and running in four steps')}
+            <View style={{ flexDirection: wide ? 'row' : 'column', gap: 18, marginTop: 36 }}>
+              {LANDING_STEPS.map(([t, d], i) => (
+                <View key={t} style={{ flex: wide ? 1 : undefined, flexDirection: wide ? 'column' : 'row', gap: 14, padding: 20, borderRadius: 18, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E6ECF3' }}>
+                  <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: BLUE, alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '800' }}>{i + 1}</Text></View>
+                  <View style={{ flex: wide ? undefined : 1 }}>
+                    <Text style={{ color: INK, fontSize: 17, fontWeight: '800' }}>{t}</Text>
+                    <Text style={{ color: MUTED, fontSize: 14.5, lineHeight: 22, marginTop: 6 }}>{d}</Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          </View>
+        </View>
+
+        {/* For owners and teams */}
+        <View style={{ backgroundColor: SOFT, paddingVertical: compact ? 48 : 80 }}>
+          <View style={[wrap, { flexDirection: wide ? 'row' : 'column', alignItems: 'center', gap: wide ? 64 : 32 }]}>
+            <View style={{ flex: wide ? 1 : undefined, width: wide ? undefined : '100%', maxWidth: 500, aspectRatio: 1.1, backgroundColor: '#FFFFFF', borderRadius: 28, overflow: 'hidden', borderWidth: 1, borderColor: '#E6ECF3', padding: 18 }}>
+              <Image source={{ uri: illus(2) }} style={{ width: '100%', height: '100%' }} resizeMode="contain" accessibilityLabel="" />
+            </View>
+            <View style={{ flex: wide ? 1 : undefined, alignItems: wide ? 'flex-start' : 'center' }}>
+              <Text style={{ color: BLUE, fontSize: 13, fontWeight: '800', letterSpacing: 1.2 }}>FOR OWNERS AND TEAMS</Text>
+              <Text style={{ color: INK, fontSize: compact ? 28 : 36, lineHeight: compact ? 36 : 44, fontWeight: '800', marginTop: 8, textAlign: wide ? 'left' : 'center' }}>You stay in control. Nexora does the rest.</Text>
+              <View style={{ gap: 14, marginTop: 22 }}>
+                {['Decide once and Nexora handles it the same way next time', 'Get a call or message only when a customer truly needs you', 'Train staff with an AI mentor that knows your business', 'See sales, orders and leads at a glance every morning'].map(t => (
+                  <View key={t} style={{ flexDirection: 'row', gap: 10, alignItems: 'flex-start', maxWidth: 520 }}>
+                    <Ionicons name="checkmark-circle" size={20} color="#15803D" style={{ marginTop: 1 }} />
+                    <Text style={{ flex: 1, color: '#334155', fontSize: 16, lineHeight: 24 }}>{t}</Text>
+                  </View>
+                ))}
+              </View>
+              <View style={{ marginTop: 26 }}>{btn('Create your free account', () => onStart(), 'primary', 'arrow-forward')}</View>
+            </View>
+          </View>
+        </View>
+
+        {/* Pricing (live from the plans table) */}
+        <View onLayout={anchor('pricing')} style={{ paddingVertical: compact ? 48 : 80 }}>
+          <View style={wrap}>
+            {eyebrow('PRICING')}
+            {h2('Start free. Grow when you’re ready.')}
+            {sub('Every plan includes your AI assistant, Business Brain and unified inbox. Yearly plans include two months free.')}
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 12, marginTop: 26 }}>
+              <View style={{ flexDirection: 'row', backgroundColor: SOFT, borderRadius: 12, padding: 4 }}>
+                {[false, true].map(y => (
+                  <Pressable key={String(y)} onPress={() => setYearly(y)} accessibilityRole="button" accessibilityState={{ selected: yearly === y }} style={{ paddingHorizontal: 16, paddingVertical: 8, borderRadius: 9, backgroundColor: yearly === y ? '#FFFFFF' : 'transparent', cursor: 'pointer' } as any}>
+                    <Text style={{ fontWeight: '700', fontSize: 13.5, color: yearly === y ? INK : MUTED }}>{y ? 'Yearly · 2 months free' : 'Monthly'}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <View style={{ flexDirection: 'row', backgroundColor: SOFT, borderRadius: 12, padding: 4 }}>
+                {[true, false].map(n => (
+                  <Pressable key={String(n)} onPress={() => setNgn(n)} accessibilityRole="button" accessibilityState={{ selected: ngn === n }} style={{ paddingHorizontal: 16, paddingVertical: 8, borderRadius: 9, backgroundColor: ngn === n ? '#FFFFFF' : 'transparent', cursor: 'pointer' } as any}>
+                    <Text style={{ fontWeight: '700', fontSize: 13.5, color: ngn === n ? INK : MUTED }}>{n ? '₦ NGN' : '$ USD'}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+            {plans.length === 0 ? (
+              <Text style={{ color: MUTED, fontSize: 15, textAlign: 'center', marginTop: 28 }}>Plans load in a moment. You can also see them after you sign up.</Text>
+            ) : (
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 16, marginTop: 30, justifyContent: 'center' }}>
+                {plans.map(p => {
+                  const pr = price(p);
+                  const popular = p.key === 'pro';
+                  return (
+                    <View key={p.key} style={{ flexBasis: wide ? '18%' : mid ? '46%' : '100%', flexGrow: 1, minWidth: wide ? 200 : undefined, maxWidth: wide ? 260 : undefined, borderRadius: 20, padding: 20, backgroundColor: popular ? INK : '#FFFFFF', borderWidth: 1, borderColor: popular ? INK : '#E6ECF3' }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <Text style={{ color: popular ? '#FFFFFF' : INK, fontSize: 18, fontWeight: '800' }}>{p.name}</Text>
+                        {popular && <View style={{ backgroundColor: '#F2C17D', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3 }}><Text style={{ color: INK, fontSize: 11, fontWeight: '800' }}>POPULAR</Text></View>}
+                      </View>
+                      <Text style={{ color: popular ? '#FFFFFF' : INK, fontSize: 28, fontWeight: '800', marginTop: 12 }}>{pr.main}<Text style={{ fontSize: 13, fontWeight: '500', color: popular ? '#B8C7DA' : MUTED }}>{pr.per}</Text></Text>
+                      <Text style={{ color: popular ? '#B8C7DA' : MUTED, fontSize: 13, lineHeight: 19, marginTop: 8, minHeight: 57 }} numberOfLines={3}>{p.blurb}</Text>
+                      <View style={{ marginTop: 14, gap: 8, flex: 1 }}>
+                        {p.features.slice(0, 5).map(f => (
+                          <View key={f} style={{ flexDirection: 'row', gap: 8 }}>
+                            <Ionicons name="checkmark" size={16} color={popular ? '#9CC3FF' : BLUE} style={{ marginTop: 1 }} />
+                            <Text style={{ flex: 1, color: popular ? '#E2EAF4' : '#334155', fontSize: 13.5, lineHeight: 19 }}>{f}</Text>
+                          </View>
+                        ))}
+                      </View>
+                      <Pressable onPress={() => (p.contact_sales ? Linking.openURL(`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('Nexora Organization plan enquiry')}`).catch(() => {}) : onStart(p.price_usd > 0 ? 'billing' : undefined))}
+                        accessibilityRole="button"
+                        style={(st: any) => ({ marginTop: 18, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+                          backgroundColor: popular ? (st.hovered ? '#EAF1FB' : '#FFFFFF') : st.hovered ? '#184A8B' : BLUE } as any)}>
+                        <Text style={{ color: popular ? INK : '#FFFFFF', fontSize: 14.5, fontWeight: '700' }}>{p.contact_sales ? 'Contact sales' : p.price_usd === 0 ? 'Start free' : `Choose ${p.name}`}</Text>
+                      </Pressable>
+                    </View>
+                  );
+                })}
+              </View>
+            )}
+          </View>
+        </View>
+
+        {/* FAQ */}
+        <View onLayout={anchor('faq')} style={{ backgroundColor: SOFT, paddingVertical: compact ? 48 : 80 }}>
+          <View style={[wrap, { maxWidth: 820 }]}>
+            {eyebrow('FAQ')}
+            {h2('Questions, answered')}
+            <View style={{ marginTop: 30, gap: 10 }}>
+              {LANDING_FAQ.map(([q, a], i) => {
+                const open = faqOpen === i;
+                return (
+                  <Pressable key={q} onPress={() => setFaqOpen(open ? null : i)} accessibilityRole="button" accessibilityState={{ expanded: open }}
+                    style={{ backgroundColor: '#FFFFFF', borderRadius: 14, borderWidth: 1, borderColor: open ? '#9CC3FF' : '#E6ECF3', paddingHorizontal: 18, paddingVertical: 16, cursor: 'pointer' } as any}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                      <Text style={{ flex: 1, color: INK, fontSize: 16, fontWeight: '700' }}>{q}</Text>
+                      <Ionicons name={open ? 'remove' : 'add'} size={20} color={BLUE} />
+                    </View>
+                    {open && <Text style={{ color: MUTED, fontSize: 15, lineHeight: 23, marginTop: 10 }}>{a}</Text>}
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+        </View>
+
+        {/* Final call to action */}
+        <View style={{ paddingVertical: compact ? 40 : 64, paddingHorizontal: pad }}>
+          <View style={{ width: '100%', maxWidth: 1080, alignSelf: 'center', backgroundColor: INK, borderRadius: 28, paddingVertical: compact ? 40 : 56, paddingHorizontal: compact ? 22 : 48, alignItems: 'center', overflow: 'hidden' }}>
+            <View style={{ position: 'absolute', width: 420, height: 420, borderRadius: 210, backgroundColor: 'rgba(30,86,160,0.35)', top: -200, right: -120 }} />
+            {eyebrow('READY WHEN YOU ARE', true)}
+            {h2('Let Nexora run the busy work', true)}
+            {sub('Start on the Free plan today. Upgrade any time as your business grows.', true)}
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 26, justifyContent: 'center' }}>
+              {btn('Start free', () => onStart(), 'light', 'arrow-forward')}
+              <Pressable onPress={onLogin} accessibilityRole="button" style={(st: any) => ({ height: 46, paddingHorizontal: 22, borderRadius: 23, justifyContent: 'center', borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.4)', backgroundColor: st.hovered ? 'rgba(255,255,255,0.08)' : 'transparent', cursor: 'pointer' } as any)}>
+                <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '700' }}>Log in</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+
+        {/* Footer */}
+        <View style={{ backgroundColor: SOFT, borderTopWidth: 1, borderTopColor: '#E6ECF3', paddingVertical: 36 }}>
+          <View style={[wrap, { flexDirection: mid ? 'row' : 'column', gap: 28 }]}>
+            <View style={{ flex: 1.4 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <View style={{ width: 30, height: 30, borderRadius: 9, backgroundColor: BLUE, alignItems: 'center', justifyContent: 'center' }}><Ionicons name="sparkles" size={15} color="#FFFFFF" /></View>
+                <Text style={{ fontSize: 17, fontWeight: '800', color: INK }}>Nexora AI</Text>
+              </View>
+              <Text style={{ color: MUTED, fontSize: 14, lineHeight: 21, marginTop: 10, maxWidth: 320 }}>Your AI business manager. It knows your business, works while you rest and watches the market for you.</Text>
+            </View>
+            {([['Product', [['Features', () => goTo('features')], ['How it works', () => goTo('how')], ['Pricing', () => goTo('pricing')], ['FAQ', () => goTo('faq')]]],
+               ['Company', [['Contact us', () => Linking.openURL(`mailto:${SUPPORT_EMAIL}`).catch(() => {})], ['Support', () => Linking.openURL(`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('Nexora AI support')}`).catch(() => {})]]],
+               ['Legal', [['Terms of Use', () => Linking.openURL(TERMS_URL).catch(() => {})], ['Privacy Policy', () => Linking.openURL(PRIVACY_POLICY_URL).catch(() => {})]]]] as [string, [string, () => void][]][]).map(([title, links]) => (
+              <View key={title} style={{ flex: 1, gap: 10 }}>
+                <Text style={{ color: INK, fontSize: 14, fontWeight: '800' }}>{title}</Text>
+                {links.map(([l, fn]) => (
+                  <Pressable key={l} onPress={fn} accessibilityRole="link" style={{ cursor: 'pointer' } as any}>
+                    {(st: any) => <Text style={{ color: st.hovered ? BLUE : MUTED, fontSize: 14 }}>{l}</Text>}
+                  </Pressable>
+                ))}
+              </View>
+            ))}
+          </View>
+          <View style={[wrap, { marginTop: 28, paddingTop: 18, borderTopWidth: 1, borderTopColor: '#E6ECF3' }]}>
+            <Text style={{ color: '#8A97A6', fontSize: 13 }}>{`© ${new Date().getFullYear()} ATOD Tech · Nexora AI. All rights reserved.`}</Text>
+          </View>
+        </View>
+      </ScrollView>
+      {/* Floating contact button */}
+      <Pressable onPress={() => Linking.openURL(`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('Question about Nexora AI')}`).catch(() => {})} accessibilityRole="button" accessibilityLabel="Contact us"
+        style={(st: any) => ({ position: 'absolute', right: compact ? 16 : 24, bottom: compact ? 16 : 24, height: 48, paddingHorizontal: 18, borderRadius: 24, flexDirection: 'row', alignItems: 'center', gap: 8, cursor: 'pointer',
+          backgroundColor: st.hovered ? '#184A8B' : BLUE, shadowColor: '#0B1220', shadowOpacity: 0.25, shadowRadius: 14, shadowOffset: { width: 0, height: 6 } } as any)}>
+        <Ionicons name="chatbubble-ellipses" size={18} color="#FFFFFF" />
+        {!compact && <Text style={{ color: '#FFFFFF', fontSize: 14.5, fontWeight: '700' }}>Contact us</Text>}
+      </Pressable>
+      {compact && (
+        <View style={{ position: 'absolute', left: 16, right: 84, bottom: 16 }}>{btn('Start free', () => onStart(), 'primary', 'arrow-forward')}</View>
+      )}
     </View>
   );
 }
@@ -2893,17 +3283,6 @@ function HomeScreenInner(){
     setScreen('signup');
     setTimeout(()=>{navigatingRef.current=false},150);
   };
-
-  // Web: ← / → move between onboarding steps, Esc skips to sign up.
-  useEffect(()=>{
-    if(!IS_WEB||screen!=='onboarding'||typeof window==='undefined')return;
-    const onKey=(e:KeyboardEvent)=>{
-      const tag=(e.target as any)?.tagName;if(tag==='INPUT'||tag==='TEXTAREA')return;
-      if(e.key==='ArrowRight')next();else if(e.key==='ArrowLeft')previous();else if(e.key==='Escape')skip();
-    };
-    window.addEventListener('keydown',onKey);
-    return()=>window.removeEventListener('keydown',onKey);
-  },[screen]);
 
   const backToOnboarding=()=>{
     if(navigatingRef.current)return;
@@ -7130,19 +7509,19 @@ function HomeScreenInner(){
         <StatusBar style="light" />
         {/* Brand side */}
         {compact && (
-          <View style={{ height: 60, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: '#E6ECF3' }}>
+          <Pressable onPress={() => setScreen('onboarding')} accessibilityRole="link" accessibilityLabel="Back to the Nexora AI home page" style={{ height: 60, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: '#E6ECF3', cursor: 'pointer' } as any}>
             <View style={{ width: 32, height: 32, borderRadius: 9, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="sparkles" size={16} color="#FFFFFF" /></View>
             <Text style={{ marginLeft: 10, fontSize: 17, fontWeight: '800', color: '#0B1220' }}>Nexora AI</Text>
-          </View>
+          </Pressable>
         )}
         <View style={{ display: compact ? 'none' : 'flex', flex: twoCol ? 1.15 : undefined, backgroundColor: '#0B1220', paddingHorizontal: twoCol ? 56 : 32, paddingVertical: twoCol ? 48 : 28, justifyContent: 'space-between' }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+          <Pressable onPress={() => setScreen('onboarding')} accessibilityRole="link" accessibilityLabel="Back to the Nexora AI home page" style={{ flexDirection: 'row', alignItems: 'center', gap: 12, alignSelf: 'flex-start', cursor: 'pointer' } as any}>
             <NexoraLogo size={44} />
             <View>
               <Text style={{ color: '#FFFFFF', fontSize: 20, fontWeight: '800' }}>Nexora AI</Text>
               <Text style={{ color: '#9FB0C6', fontSize: 12 }}>AI Business Manager</Text>
             </View>
-          </View>
+          </Pressable>
           <View style={{ marginTop: twoCol ? 0 : 24, maxWidth: 560 }}>
             <Text style={{ color: '#FFFFFF', fontSize: twoCol ? 40 : 28, lineHeight: twoCol ? 48 : 34, fontWeight: '800' }}>Run your business with an AI manager that never sleeps.</Text>
             <Text style={{ color: '#B6C3D4', fontSize: 16, lineHeight: 24, marginTop: 14 }}>Nexora learns your products and customers, answers them for you, and tells you what needs your attention each day.</Text>
@@ -7299,98 +7678,15 @@ function HomeScreenInner(){
       </View>
     );
   };
-  // ---- Web (computer): the launch and onboarding screens are the Figma truth frames themselves (stored in
-  // Supabase), shown at true phone proportions inside a web page, with the same tap areas as on phones
-  // (Skip, Continue / Get Started, the interest tiles) plus web controls: step dots, Back, arrow keys.
-  // Web onboarding (wide windows): the Figma onboarding screens (section 244:919, re-exported 20 Oct 2026) laid out as
-  // web pages: the same illustrations, words, colours, Continue / Skip buttons, step dots and interest tiles.
-  const renderWebTruthOnboarding = () => {
-    const step = screen === 'launch' ? 0 : onboardingIndex;
-    const go = (i: number) => { if (screen === 'launch') setScreen('onboarding'); setOnboardingIndex(i); };
-    const onNext = () => { if (screen === 'launch') { setScreen('onboarding'); setOnboardingIndex(1); return; } next(); };
-    const wide = hookWidth >= 1100;
-    const compact = hookWidth < 600;   // phone browser
-    const BLUE = '#1E56A0';
-    const STEPS: [string, string, string][] = [
-      ['Take Control Of', 'Your Business', 'From startups to enterprises, Nexora helps you grow, adapt, and scale with ease.'],
-      ['Make Smarter', 'Business Decisions', 'Turn your business data into clear insights and actionable decisions.'],
-      ['Work Smarter', 'With Nexora AI', 'Automate routine tasks, uncover insights, and keep your business moving forward'],
-    ];
-    const illus = (i: number) => `${SUPABASE_URL}/storage/v1/object/public/assets/onboarding/illustration-${i + 1}.png?v=${ASSET_VERSION}`;
-    const dots = (
-      <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
-        {[0, 1, 2, 3].map(i => (
-          <Pressable key={i} onPress={() => go(i)} accessibilityRole="button" accessibilityLabel={`Step ${i + 1}`}
-            style={{ width: i === step ? 28 : 8, height: 8, borderRadius: 4, backgroundColor: i === step ? BLUE : '#D9D9D9', cursor: 'pointer' } as any} />
-        ))}
-      </View>
-    );
-    const primary = (label: string) => (
-      <Pressable onPress={onNext} accessibilityRole="button" style={(st: any) => ({ height: 52, borderRadius: 26, backgroundColor: st.hovered ? '#184A8B' : BLUE, alignItems: 'center', justifyContent: 'center', width: '100%', maxWidth: 400, cursor: 'pointer' } as any)}>
-        <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '600' }}>{label}</Text>
-      </Pressable>
-    );
-    const bottom = (label: string) => (
-      <View style={{ alignItems: wide ? 'flex-start' : 'center', gap: compact ? 16 : 22, marginTop: compact ? 22 : 34, width: '100%' }}>
-        {dots}
-        {primary(label)}
-        <Text style={{ color: '#6B7280', fontSize: 14 }}>Already have an account? <Text style={{ color: BLUE, fontWeight: '700' }} onPress={() => { setAuthError(''); setInfoMessage(''); setScreen('login'); }}>Log in</Text></Text>
-      </View>
-    );
+  // Web: the first visit is one landing page (what Nexora does, interests, pricing, FAQs, sign up / log in).
+  if (IS_WEB && (screen === 'launch' || screen === 'onboarding')) {
     return (
-      <View style={{ flex: 1, backgroundColor: step === 3 ? '#F5F6F8' : '#FFFFFF' }}>
-        <StatusBar style="dark" />
-        <View style={{ height: compact ? 60 : 72, flexDirection: 'row', alignItems: 'center', paddingHorizontal: compact ? 20 : 40 }}>
-          <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: BLUE, alignItems: 'center', justifyContent: 'center' }}><Ionicons name="sparkles" size={17} color="#FFFFFF" /></View>
-          <Text style={{ marginLeft: 10, fontSize: 18, fontWeight: '800', color: '#0B1220' }}>Nexora AI</Text>
-          {step < 3 && (
-            <Pressable onPress={skip} accessibilityRole="button" style={{ marginLeft: 'auto', paddingHorizontal: 12, paddingVertical: 8, cursor: 'pointer' } as any}>
-              <Text style={{ fontSize: 15, color: '#0B1220', fontWeight: '500' }}>Skip</Text>
-            </Pressable>
-          )}
-        </View>
-        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ flexGrow: 1, justifyContent: compact ? 'flex-start' : 'center', paddingHorizontal: compact ? 20 : 40, paddingTop: compact ? 8 : 24,
-          // Phone browsers can draw their own toolbar over the bottom of the page: keep clear room below the button so it can always be scrolled into view.
-          paddingBottom: compact ? 120 : 24 }}>
-          {step === 3 ? (
-            <View style={{ width: '100%', maxWidth: 760, alignSelf: 'center' }}>
-              <Text style={{ fontSize: wide ? 44 : compact ? 28 : 36, lineHeight: wide ? 52 : compact ? 36 : 44, fontWeight: '600', color: '#0B1220' }}>What do you want NEXORA to help with?</Text>
-              <Text style={{ fontSize: 15, color: '#6B7280', marginTop: 12, marginBottom: 28 }}>Select all that apply.</Text>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 16 }}>
-                {INTEREST_TILES.map(t => {
-                  const on = interestPicks.includes(t.key);
-                  return (
-                    <Pressable key={t.key} accessibilityRole="checkbox" accessibilityState={{ checked: on }} accessibilityLabel={t.label}
-                      onPress={() => { const nx = on ? interestPicks.filter(k => k !== t.key) : [...interestPicks, t.key]; setInterestPicks(nx); savePendingFeature(nx[0] ?? null); }}
-                      style={(st: any) => ({ flexBasis: wide ? '23%' : '47%', flexGrow: 1, height: compact ? 84 : 96, borderRadius: 8, backgroundColor: st.hovered ? '#7C8A9B' : '#6E7C8C', borderWidth: on ? 3 : 1.5, borderColor: on ? BLUE : '#FFFFFF', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' } as any)}>
-                      <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: on ? '700' : '500' }}>{t.label}</Text>
-                      {on && <View style={{ position: 'absolute', top: 8, right: 8, width: 22, height: 22, borderRadius: 11, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="checkmark" size={15} color={BLUE} /></View>}
-                    </Pressable>
-                  );
-                })}
-              </View>
-              {interestPicks.length > 0 && <Text style={{ color: BLUE, fontSize: 13.5, fontWeight: '600', marginTop: 16 }}>{`${interestPicks.length} selected \u00b7 Nexora opens ${FEATURE_LABELS[interestPicks[0]]} first`}</Text>}
-              <View style={{ alignItems: 'center' }}>{bottom('Get Started')}</View>
-            </View>
-          ) : (
-            <View style={{ width: '100%', maxWidth: 1120, alignSelf: 'center', flexDirection: wide ? 'row' : 'column', alignItems: 'center', gap: wide ? 72 : compact ? 18 : 28 }}>
-              <View style={{ flex: wide ? 1.05 : undefined, width: wide ? undefined : '100%', maxWidth: compact ? Math.min(380, Math.max(200, (hookHeight - 430) * 1.05)) : 560, aspectRatio: 1.05, alignItems: 'center', justifyContent: 'center' }}>
-                <Image source={{ uri: illus(step) }} style={{ width: '100%', height: '100%' }} resizeMode="contain" accessibilityLabel="" />
-              </View>
-              <View style={{ flex: wide ? 1 : undefined, maxWidth: 480, alignItems: wide ? 'flex-start' : 'center' }}>
-                <Text style={{ fontSize: wide ? 46 : compact ? 30 : 36, lineHeight: wide ? 54 : compact ? 38 : 44, fontWeight: '600', color: '#0B1220', textAlign: wide ? 'left' : 'center' }}>
-                  {STEPS[step][0]}{'\n'}<Text style={{ color: BLUE }}>{STEPS[step][1]}</Text>
-                </Text>
-                <Text style={{ fontSize: compact ? 15 : 16, lineHeight: compact ? 22 : 24, color: '#6B7280', marginTop: compact ? 10 : 16, textAlign: wide ? 'left' : 'center' }}>{STEPS[step][2]}</Text>
-                {bottom('Continue')}
-              </View>
-            </View>
-          )}
-        </ScrollView>
-      </View>
+      <WebLanding width={hookWidth} picks={interestPicks}
+        onTogglePick={k => { const nx = interestPicks.includes(k) ? interestPicks.filter(x => x !== k) : [...interestPicks, k]; setInterestPicks(nx); savePendingFeature(nx[0] ?? null); }}
+        onStart={f => { if (f) savePendingFeature(f); setAuthError(''); setInfoMessage(''); setScreen('signup'); }}
+        onLogin={() => { setAuthError(''); setInfoMessage(''); setScreen('login'); }} />
     );
-  };
-  if (IS_WEB && hookWidth >= WEB_AUTH_PAGE_MIN && (screen === 'launch' || screen === 'onboarding')) return renderWebTruthOnboarding();
+  }
   if (IS_WEB && hookWidth >= WEB_AUTH_PAGE_MIN && ['signup', 'login', 'forgotPassword'].includes(screen)) return renderWebAuthPage();
 
   if(screen==='launch'){
@@ -7511,15 +7807,18 @@ function HomeScreenInner(){
         {renderTab('home', 'home-outline', 'Home')}
         {renderTab('inbox', 'chatbubble-ellipses-outline', 'Inbox', '#1E9E6D')}
         {renderTab('brain', 'sparkles', 'Brain')}
-        <Pressable
-          style={styles.navItem}
-          onPress={openLeads}
-          accessibilityRole="button"
-          accessibilityLabel="Lead"
-        >
-          <Ionicons name="storefront-outline" size={20} color="#8A97A6" />
-        </Pressable>
-        {renderTab('profile', 'person-outline', 'Profile')}
+        {/* Web: Leads and Profile stay out of the tab bar (the menu and the account row open them). */}
+        {!IS_WEB && (
+          <Pressable
+            style={styles.navItem}
+            onPress={openLeads}
+            accessibilityRole="button"
+            accessibilityLabel="Lead"
+          >
+            <Ionicons name="storefront-outline" size={20} color="#8A97A6" />
+          </Pressable>
+        )}
+        {!IS_WEB && renderTab('profile', 'person-outline', 'Profile')}
       </View>
     );
   };
@@ -13610,7 +13909,8 @@ const styles=StyleSheet.create({
   successIconCheck:{color:'#FFF',fontSize:30,fontWeight:'800'},
   successTitle:{fontSize:16,fontStyle:'italic',fontWeight:'600',color:'#0B1220',textAlign:'center'},
   resetInputError:{borderColor:'#E57373'},
-  resetButton:{minHeight:48,borderRadius:24,alignItems:'center',justifyContent:'center'},
+  // Web: buttons never stretch across wide screens (they stop at 400px, like a normal web form button).
+  resetButton:{minHeight:48,borderRadius:24,alignItems:'center',justifyContent:'center',...(IS_WEB?{maxWidth:400,paddingHorizontal:24}:{})},
   resetButtonEnabled:{backgroundColor:'#1E56A0'},
   resetButtonDisabled:{backgroundColor:'#94A3BB'},
   resetButtonText:{color:'#FFF',fontSize:15,fontWeight:'600'},
