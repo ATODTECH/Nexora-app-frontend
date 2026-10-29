@@ -1144,7 +1144,7 @@ function BrandIcon({ platform, size = 36, ring = false }: { platform: Conversati
   );
 }
 
-type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'campaigns'|'automations'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules'|'opportunities'|'opportunityDetail'|'settings';
+type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'campaigns'|'automations'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules'|'opportunities'|'opportunityDetail'|'settings'|'quickActions';
 type KnowledgeCategory='products'|'services'|'operations'|'policies'|'faqs';
 type KnowledgeField={label:string;value:string};
 // Stock: products can carry "Stock" (how many you have) and "Remind me at" (warn when stock reaches this; default 5).
@@ -1795,7 +1795,7 @@ function ToastHost() {
 // Screens drawn from phone designs (onboarding, sign-in, Home…) keep the phone shape; the flexible
 // screens below may use the full width of the browser.
 const WEB_WIDE_SCREENS = ['settings', 'opportunities', 'opportunityDetail', 'insights', 'ownerAlerts', 'rules', 'browser', 'explore', 'trends', 'network', 'community', 'communityPost', 'storefront', 'followups', 'terms', 'learned', 'leads', 'leadDetail', 'customersLive', 'customerDetail',
-  'orders', 'agenda', 'agendaPriority', 'agendaCreate', 'knowledgeHealth', 'knowledgeList', 'itemDetail', 'itemEdit', 'addKnowledge', 'missingImages', 'inboxChat', 'connectChannels', 'billing', 'campaigns', 'automations'];
+  'orders', 'agenda', 'agendaPriority', 'agendaCreate', 'knowledgeHealth', 'knowledgeList', 'itemDetail', 'itemEdit', 'addKnowledge', 'missingImages', 'inboxChat', 'connectChannels', 'billing', 'campaigns', 'automations', 'quickActions'];
 const WEB_WIDE_TABS = ['brain', 'inbox', 'market', 'profile'];
 // From this window width the web Home is a full dashboard instead of the phone design.
 // The web dashboard Home is used in every browser, phones included (company feedback 28 Oct 2026: the Figma
@@ -1806,7 +1806,7 @@ const WEB_DESKTOP_HOME_MIN = 0;
 // 393x852 phone frames got cut off in phone browsers, hiding Continue and the sign-in buttons.
 const WEB_AUTH_PAGE_MIN = 0;
 // Screens the web version reopens after a refresh or when you come back to the tab.
-const WEB_RESTORABLE = ['main', 'insights', 'ownerAlerts', 'rules', 'leads', 'customersLive', 'orders', 'agenda', 'community', 'storefront', 'followups', 'trends', 'explore', 'network', 'billing', 'learned', 'connectChannels', 'knowledgeHealth', 'knowledgeList', 'campaigns', 'automations'];
+const WEB_RESTORABLE = ['main', 'insights', 'ownerAlerts', 'rules', 'leads', 'customersLive', 'orders', 'agenda', 'community', 'storefront', 'followups', 'trends', 'explore', 'network', 'billing', 'learned', 'connectChannels', 'knowledgeHealth', 'knowledgeList', 'campaigns', 'automations', 'quickActions'];
 const WEB_LAST_VIEW_KEY = 'nexora-last-view';
 const WEB_AUTH_SCREENS = ['launch', 'onboarding', 'signup', 'login', 'forgotPassword', 'verifyEmail'];
 const NEXORA_LOGO_URL = `${SUPABASE_URL}/storage/v1/object/public/assets/icon.png`;
@@ -2444,6 +2444,8 @@ function WebLanding({ width, picks, onTogglePick, onStart, onLogin }: {
 // Nexora logo (the app icon from the Supabase 'assets' bucket), with the sparkle mark as a fallback.
 // The Nexora infinity mark (assets/nexora-mark.png, cut from the brand logo; 1.52 : 1). `size` is the square slot it sits in.
 const NEXORA_MARK = require('../assets/nexora-mark.png');
+// Phone Home base frame (Figma 'Home', Oct 2026): logo header and the "Quick action" row. Bundled with the app.
+const HOME_QUICK_FRAME = require('../assets/home-quick-action.png');
 // The NEXORA AI wordmark (traced from the brand artwork): "NEXORA" in navy (white on dark backgrounds),
 // "AI" in the cyan-to-blue gradient, and optionally the "AI-POWERED BUSINESS OPERATING SYSTEM" line under it.
 const WORDMARK_WORD = 'M69.83 50.33 L69.83 58.67 L70.67 59.50 L74.33 59.50 L74.50 59.33 L81.17 59.33 L81.33 59.50 L120.83 59.33 L122.00 59.50 L122.50 59.33 L123.00 58.67 L123.00 50.00 L122.33 49.33 L70.67 49.33 L70.00 49.83ZM69.83 29.17 L69.83 37.67 L70.33 38.17 L117.50 38.17 L118.17 37.50 L118.33 29.50 L118.17 28.83 L117.00 28.17 L108.50 28.17 L108.33 28.33 L75.33 28.17 L75.17 28.33 L70.50 28.33ZM327.67 58.00 L327.67 59.00 L328.67 59.50 L329.33 59.33 L330.33 59.50 L339.67 59.33 L340.50 58.67 L342.17 55.67 L343.83 53.33 L344.00 52.67 L345.67 50.17 L346.33 48.67 L347.83 46.50 L349.33 43.50 L352.83 38.17 L353.00 37.50 L355.17 34.17 L356.00 32.33 L357.67 30.00 L358.33 28.50 L358.83 28.00 L359.83 26.17 L360.00 25.50 L361.17 23.67 L361.67 23.17 L362.33 23.17 L364.83 26.83 L364.83 27.17 L365.83 28.50 L369.00 34.17 L371.50 37.83 L373.33 41.33 L375.67 44.83 L379.83 52.17 L384.00 58.83 L384.50 59.33 L385.17 59.50 L396.33 59.50 L397.17 59.00 L397.00 57.83 L396.33 57.17 L394.83 54.50 L394.33 54.00 L393.83 52.83 L392.17 50.33 L392.00 49.67 L389.17 45.50 L388.67 44.33 L384.17 37.33 L383.83 36.50 L382.00 34.00 L382.00 33.67 L381.50 33.17 L379.00 28.67 L378.50 28.17 L376.00 24.00 L376.00 23.67 L374.17 21.00 L372.83 18.33 L371.33 16.33 L368.50 11.50 L367.83 10.83 L366.17 9.83 L363.83 9.17 L360.33 9.17 L358.50 9.67 L356.50 10.67 L355.17 12.00 L353.67 14.67 L352.83 15.67 L352.67 16.33 L351.00 18.83 L349.83 21.17 L348.00 23.83 L345.50 28.50 L344.00 30.67 L343.83 31.33 L342.00 33.83 L339.50 38.50 L334.83 45.83 L332.50 50.17 L330.00 53.83 L329.50 55.17ZM70.00 10.50 L70.17 18.33 L70.67 18.83 L71.50 19.00 L72.50 18.83 L122.50 18.83 L123.00 18.17 L123.00 10.17 L122.83 9.67 L122.17 9.17 L71.00 9.17 L70.17 9.83ZM6.67 11.67 L5.67 13.50 L5.33 16.83 L5.33 19.17 L5.50 19.33 L5.50 58.67 L5.83 59.17 L6.67 59.50 L7.17 59.33 L15.33 59.50 L16.17 59.17 L16.50 58.67 L16.50 42.83 L16.67 42.67 L16.50 27.50 L16.67 26.67 L17.00 26.33 L18.00 26.83 L20.83 29.33 L27.83 36.17 L29.17 37.17 L35.17 42.83 L40.67 48.33 L45.17 52.33 L50.83 58.00 L52.50 59.00 L53.67 59.33 L57.00 59.50 L59.50 58.67 L61.33 57.17 L62.00 56.17 L62.33 55.00 L62.33 10.00 L61.83 9.33 L61.50 9.17 L52.33 9.17 L51.50 9.50 L51.17 10.17 L51.33 41.17 L50.83 42.00 L50.00 41.67 L48.17 39.67 L40.50 32.83 L38.33 30.50 L32.67 25.50 L27.00 19.83 L20.50 14.00 L17.33 10.83 L15.17 9.67 L13.17 9.17 L11.50 9.17 L9.83 9.50 L8.67 10.00ZM264.67 9.50 L264.33 10.50 L264.33 17.83 L264.50 18.33 L265.50 19.00 L268.00 19.00 L268.17 18.83 L307.33 18.83 L309.33 19.17 L311.50 20.17 L313.50 22.67 L314.00 24.33 L313.83 26.67 L312.67 28.67 L311.17 30.00 L310.17 30.50 L307.33 31.00 L265.17 31.00 L264.83 31.17 L264.33 32.17 L264.33 58.50 L264.67 59.17 L265.50 59.50 L266.33 59.33 L275.33 59.33 L275.83 58.83 L276.00 58.33 L275.83 56.67 L276.00 41.83 L276.67 41.17 L295.33 41.17 L296.83 42.50 L304.17 51.00 L306.67 53.50 L311.67 59.17 L312.50 59.50 L322.33 59.50 L322.50 59.33 L325.17 59.50 L325.67 59.17 L325.67 58.33 L310.83 41.83 L310.83 41.33 L311.17 41.00 L315.00 40.00 L317.17 39.00 L317.83 38.33 L320.17 37.00 L322.17 35.00 L323.00 33.83 L324.83 29.83 L325.50 26.83 L325.50 23.50 L324.83 20.33 L324.17 19.17 L323.83 17.83 L323.00 16.50 L319.50 12.83 L316.17 10.83 L313.33 9.83 L309.50 9.17 L272.50 9.17 L271.33 9.00 L271.17 9.17 L265.17 9.17ZM129.83 9.33 L129.67 9.83 L130.00 10.67 L136.17 16.33 L142.83 23.17 L144.33 24.33 L148.50 28.50 L149.67 30.00 L152.67 32.83 L153.17 33.50 L153.17 34.17 L149.67 37.67 L148.50 39.17 L130.67 56.83 L129.33 58.50 L129.33 59.00 L129.67 59.33 L142.67 59.50 L143.67 59.17 L160.67 42.00 L161.83 42.17 L178.50 59.17 L179.50 59.50 L188.50 59.50 L188.67 59.33 L192.50 59.50 L193.17 59.00 L193.00 58.17 L169.17 34.17 L169.17 33.50 L184.50 18.17 L186.83 16.17 L190.50 12.33 L192.33 10.83 L192.67 10.33 L192.67 9.50 L192.33 9.17 L178.67 9.17 L171.83 15.50 L166.33 21.33 L164.83 22.50 L161.50 25.83 L161.17 25.83 L156.67 21.50 L144.83 9.50 L144.00 9.17 L131.17 9.17 L131.00 9.00ZM195.83 19.50 L194.00 22.67 L193.00 25.00 L192.83 26.17 L192.00 28.33 L191.50 31.83 L191.67 37.33 L193.00 43.33 L193.67 44.50 L193.83 45.33 L195.50 48.17 L197.67 51.00 L199.67 53.00 L203.83 56.00 L207.67 57.83 L211.33 59.00 L216.17 59.83 L218.33 59.83 L218.50 60.00 L231.83 60.00 L235.17 59.67 L239.33 58.83 L239.83 58.50 L242.33 57.83 L246.50 55.83 L250.17 53.33 L254.00 49.33 L256.67 45.00 L258.17 41.33 L258.83 37.67 L258.83 31.17 L258.17 27.17 L257.00 23.83 L253.83 18.67 L251.00 15.67 L247.17 12.83 L243.00 10.83 L237.50 9.17 L234.33 8.67 L218.33 8.50 L213.83 9.00 L209.50 10.00 L208.17 10.67 L206.83 11.00 L203.50 12.67 L200.83 14.50 L198.50 16.50ZM245.33 25.83 L246.67 28.50 L247.50 32.17 L247.50 36.00 L246.50 40.00 L244.67 43.17 L242.50 45.50 L239.33 47.50 L236.33 48.67 L230.83 49.50 L220.17 49.50 L220.00 49.33 L217.17 49.33 L212.67 48.33 L210.67 47.50 L208.17 45.83 L205.33 42.83 L203.50 39.17 L203.00 37.00 L202.83 33.50 L203.33 29.83 L204.17 27.50 L205.17 25.67 L208.17 22.50 L209.67 21.33 L212.83 19.83 L217.00 18.83 L231.17 18.67 L234.50 19.00 L238.17 20.00 L241.17 21.67 L243.33 23.33Z';
@@ -3590,6 +3592,10 @@ function HomeScreenInner(){
   const [socialMediaIndex, setSocialMediaIndex] = useState(0);
   const [inboxDraft, setInboxDraft] = useState('');
   const [homeCommandExpanded, setHomeCommandExpanded] = useState(false);
+  // Quick Actions screen (Figma, Oct 2026): every Nexora feature as round tiles. null = search box closed.
+  const [qaSearch, setQaSearch] = useState<string | null>(null);
+  const quickBackRef = useRef<MainTab>('home');
+  const [qaBriefing, setQaBriefing] = useState(false);   // the daily briefing, opened from Quick Actions
   // Natural pixel size of each Home PNG, measured when it loads, so Home-1b /
   // 1c / 1d are drawn at their true aspect ratio whatever size they export at.
   // A Home state frame that failed to load (not uploaded yet) falls back to Home-1.
@@ -3837,12 +3843,13 @@ function HomeScreenInner(){
       if (screen === 'main' && homeCommandExpanded && mainTab === 'home') { setHomeCommandExpanded(false); return true; }
       if (screen === 'main' && (mainTab === 'inbox' || mainTab === 'profile' || mainTab === 'brain')) { goTab('home'); return true; }
       if (screen === 'knowledgeHealth') { setScreen('main'); return true; }
+      if (screen === 'quickActions') { if (qaSearch !== null) { setQaSearch(null); return true; } setMainTab(quickBackRef.current); setScreen('main'); return true; }
       if (screen === 'forgotPassword') { setScreen('login'); return true; }
       if (screen === 'login' || (screen === 'signup' && signupIndex === 0)) { setScreen('onboarding'); return true; }
       return false;
     });
     return () => sub.remove();
-  }, [screen, signupIndex, truthKey, inboxModal, homeCommandExpanded, mainTab, contactForm, showAddMenu, browserNav.canGoBack, readerMode, readerHistory]);
+  }, [screen, signupIndex, truthKey, inboxModal, homeCommandExpanded, qaSearch, mainTab, contactForm, showAddMenu, browserNav.canGoBack, readerMode, readerHistory]);
   const [humanHandling, setHumanHandling] = useState<Record<string, boolean>>({});
   // True pixel dimensions of the file actually sitting in Supabase, read off
   // the image itself once it loads. The PNG exports don't share one fixed
@@ -8652,7 +8659,9 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
   // Home "Schedule" -> Schedule-1.
   const openSchedule = () => { if (NATIVE_SCHEDULE) { setAgendaDate(localIsoDate()); setScreen('agenda'); } else openTruth('scheduleHome'); };
 
+  const openQuickActions = (from: MainTab = 'home') => { quickBackRef.current = from; setQaSearch(null); setScreen('quickActions'); };
   const handleCommandCenterPress=(label:string)=>{
+    if(label==='More'){openQuickActions('home');return;}
     if(label==='Train AI'){setScreen('knowledgeHealth');return;}
     if(label==='Policies'){openKnowledgeList('policies');return;}
     if(label==='FAQs'){openKnowledgeList('faqs');return;}
@@ -10543,26 +10552,103 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
     }
 
     if (mainTab === 'brain') {
+      // The ask box: under the greeting on the empty state (design), docked at the bottom once a chat is going.
+      const renderComposer = (inline: boolean) => (
+        <View style={inline ? { width: '100%', maxWidth: 680, alignSelf: 'center' } : undefined}>
+            {showAttachMenu && (
+              <View style={[styles.attachMenu, inline && { marginHorizontal: 0 }]}>
+                {[
+                  { icon: 'camera-outline', label: 'Camera' },
+                  { icon: 'image-outline', label: 'Photo Library' },
+                  { icon: 'document-attach-outline', label: 'Add Files' },
+                  { icon: 'extension-puzzle-outline', label: 'Connect Apps' },
+                  { icon: 'hardware-chip-outline', label: 'Train Your AI' },
+                ].map(opt => (
+                  <Pressable key={opt.label} onPress={() => handleAttachOption(opt.label)} style={styles.attachOption}>
+                    <Ionicons name={opt.icon as any} size={18} color="#FFF" />
+                    <Text style={styles.attachOptionText}>{opt.label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+
+            <View style={[styles.chatInputBar, inline && { marginHorizontal: 0, marginBottom: 0, paddingVertical: 10 }]}>
+              <Pressable onPress={() => setShowAttachMenu(v => !v)} hitSlop={8}>
+                <Ionicons name="add" size={22} color="#0B1220" />
+              </Pressable>
+
+              {isRecording ? (
+                <>
+                  <View style={styles.waveformRow}>
+                    {[6, 14, 9, 18, 7, 15, 10].map((h, i) => (
+                      <View key={i} style={[styles.waveformBar, { height: h }]} />
+                    ))}
+                  </View>
+                  <Pressable onPress={() => setIsRecording(false)} hitSlop={8} style={styles.stopButton}>
+                    <Ionicons name="stop" size={14} color="#FFF" />
+                  </Pressable>
+                </>
+              ) : (
+                <>
+                  <TextInput
+                    value={chatInput}
+                    onChangeText={setChatInput}
+                    placeholder="Ask Nexora about your business…"
+                    placeholderTextColor="#8A97A6"
+                    style={styles.chatTextInput}
+                  />
+                  <Pressable onPress={() => flash('Voice input is coming soon.')} hitSlop={8} accessibilityLabel="Voice input">
+                    <Ionicons name="mic-outline" size={20} color="#5C6B7A" />
+                  </Pressable>
+                </>
+              )}
+
+              <Pressable
+                disabled={!chatInput.trim()}
+                onPress={() => sendChatMessage()}
+                style={[styles.chatSendButton, { backgroundColor: chatInput.trim() ? '#1E56A0' : '#94A3BB' }]}>
+                <Ionicons name="arrow-up" size={16} color="#FFF" />
+              </Pressable>
+            </View>
+        </View>
+      );
       return (
         <View style={[styles.mainScreen, styles.brainScreenDark]}>
           <StatusBar style="light" />
-          {renderTopBar(true)}
-          <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8, paddingHorizontal: 16, paddingTop: 6 }}>
-            {chatMessages.length > 0 && (
+          {/* Brain header (Figma "Brain General Interface", Oct 2026): menu, centred logo, chat history. */}
+          <View style={[styles.topBar, headerSafe, styles.topBarDark, { borderBottomWidth: 0 }]}>
+            <View style={{ width: 44, alignItems: 'flex-start' }}>
+              {!(IS_WEB && userId && hookWidth >= 1000) && (
+                <Pressable onPress={() => drawerOpenFn()} hitSlop={10} accessibilityRole="button" accessibilityLabel="Open menu">
+                  <Ionicons name="menu-outline" size={26} color="#FFF" />
+                </Pressable>
+              )}
+            </View>
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+              <NexoraLockup letter={13} light />
+            </View>
+            <View style={{ width: 44, alignItems: 'flex-end' }}>
+              <Pressable onPress={() => { openChatHistory().catch(() => {}); }} hitSlop={6} accessibilityRole="button" accessibilityLabel="Chat history" style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' }}>
+                <Ionicons name="chatbubble-ellipses-outline" size={19} color="#0B1220" />
+              </Pressable>
+            </View>
+          </View>
+          {chatMessages.length > 0 && (
+            <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8, paddingHorizontal: 16, paddingTop: 6 }}>
               <Pressable onPress={() => setChatMessages([])} accessibilityRole="button" accessibilityLabel="Start a new chat" style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' }}>
                 <Ionicons name="add" size={14} color="#9CC3FF" /><Text style={{ color: '#CFE0F5', fontSize: 12.5, fontWeight: '600' }}>New chat</Text>
               </Pressable>
-            )}
-            <Pressable onPress={() => setAiTool({ tool: null, topic: '', extra: '' })} accessibilityRole="button" accessibilityLabel="AI tools" style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' }}>
-              <Ionicons name="apps-outline" size={14} color="#9CC3FF" /><Text style={{ color: '#CFE0F5', fontSize: 12.5, fontWeight: '600' }}>AI tools</Text>
-            </Pressable>
-            <Pressable onPress={() => { openSavedLib().catch(() => {}); }} accessibilityRole="button" accessibilityLabel="Saved work" style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' }}>
-              <Ionicons name="bookmark-outline" size={14} color="#9CC3FF" /><Text style={{ color: '#CFE0F5', fontSize: 12.5, fontWeight: '600' }}>Saved</Text>
-            </Pressable>
-            <Pressable onPress={() => { openChatHistory().catch(() => {}); }} accessibilityRole="button" accessibilityLabel="Chat history" style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' }}>
-              <Ionicons name="time-outline" size={14} color="#9CC3FF" /><Text style={{ color: '#CFE0F5', fontSize: 12.5, fontWeight: '600' }}>Chat history</Text>
-            </Pressable>
-          </View>
+              <Pressable onPress={() => setAiTool({ tool: null, topic: '', extra: '' })} accessibilityRole="button" accessibilityLabel="AI tools" style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' }}>
+                <Ionicons name="apps-outline" size={14} color="#9CC3FF" /><Text style={{ color: '#CFE0F5', fontSize: 12.5, fontWeight: '600' }}>AI tools</Text>
+              </Pressable>
+              <Pressable onPress={() => { openSavedLib().catch(() => {}); }} accessibilityRole="button" accessibilityLabel="Saved work" style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' }}>
+                <Ionicons name="bookmark-outline" size={14} color="#9CC3FF" /><Text style={{ color: '#CFE0F5', fontSize: 12.5, fontWeight: '600' }}>Saved</Text>
+              </Pressable>
+              <Pressable onPress={() => openQuickActions('brain')} accessibilityRole="button" accessibilityLabel="Quick actions" style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' }}>
+                <Ionicons name="grid-outline" size={14} color="#9CC3FF" /><Text style={{ color: '#CFE0F5', fontSize: 12.5, fontWeight: '600' }}>More</Text>
+              </Pressable>
+            </View>
+          )}
           <Modal visible={!!chatHist} transparent animationType="slide" onRequestClose={() => setChatHist(null)} statusBarTranslucent>
             <View style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.55)', justifyContent: IS_WEB ? 'center' : 'flex-end', padding: IS_WEB ? 16 : 0 }}>
               <View style={{ width: '100%', maxWidth: 640, alignSelf: 'center', maxHeight: '88%' as any, backgroundColor: '#FFFFFF', borderRadius: 20, borderBottomLeftRadius: IS_WEB ? 20 : 0, borderBottomRightRadius: IS_WEB ? 20 : 0, paddingTop: 16, paddingBottom: 16 + (IS_WEB ? 0 : insets.bottom) }}>
@@ -10757,66 +10843,14 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                   <Text style={styles.brainHeroTitle}>Hi, {fullName || 'there'}</Text>
                   <Text style={styles.brainHeroSubtitle}>What would you like to do today?</Text>
                 </View>
-                {renderBriefingCard()}
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 18 }}>
-                  {[
-                    { icon: 'stats-chart', title: 'Business Insights', sub: 'Charts of your business + profitable ideas', onPress: () => openInsights() },
-                    { icon: 'trending-up', title: 'Trending for you', sub: 'What’s hot online for your business', onPress: openTrends },
-                    { icon: 'globe-outline', title: 'Find online', sub: 'Suppliers, services, anything you need', onPress: () => openExplore() },
-                    { icon: 'people-outline', title: 'Find partners', sub: 'Businesses that fit what you offer and need', onPress: () => { openNetwork().catch(() => {}); } },
-                    { icon: 'bulb-outline', title: 'What Nexora learned', sub: 'Confirm facts picked up from your chats', onPress: openLearned },
-                    { icon: 'chatbubbles-outline', title: 'Community', sub: commUnread ? `${commUnread} new ${commUnread === 1 ? 'alert' : 'alerts'} for you` : 'Ask other business owners, share wins', onPress: openCommunity, badge: commUnread },
-                    { icon: 'storefront-outline', title: 'AI shop link', sub: 'A page where customers chat with your Nexora 24/7', onPress: () => { openStorefront().catch(() => {}); } },
-                  ].map(c => (
-                    <Pressable key={c.title} onPress={c.onPress} accessibilityRole="button" style={{ flexBasis: '47%', flexGrow: 1, padding: 14, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' }}>
-                      {!!(c as any).badge && <View style={{ position: 'absolute', top: 10, right: 10, minWidth: 20, height: 20, borderRadius: 10, paddingHorizontal: 5, backgroundColor: '#EF4444', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#FFF', fontSize: 11, fontWeight: '800' }}>{(c as any).badge > 9 ? '9+' : (c as any).badge}</Text></View>}
-                      <Ionicons name={c.icon as any} size={20} color="#7FB2FF" />
-                      <Text style={{ color: '#FFF', fontWeight: '700', fontSize: 14, marginTop: 8 }}>{c.title}</Text>
-                      <Text style={{ color: '#9FB0C6', fontSize: 12, marginTop: 2 }}>{c.sub}</Text>
+                {renderComposer(true)}
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 8, marginTop: 16, width: '100%', maxWidth: 680, alignSelf: 'center' }}>
+                  {popularQuestions.slice(0, 3).map(q => (
+                    <Pressable key={q} onPress={() => sendChatMessage(q)} accessibilityRole="button" style={{ paddingHorizontal: 12, paddingVertical: 7, borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)' }}>
+                      <Text style={{ color: '#B8C7DA', fontSize: 12.5 }} numberOfLines={1}>{q}</Text>
                     </Pressable>
                   ))}
                 </View>
-                <Text style={styles.popularLabel}>AI tools</Text>
-                <View style={{ gap: 10, marginBottom: 18 }}>
-                  {AI_TOOL_GROUPS.map(g => (
-                    <View key={g.title} style={{ padding: 14, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.10)' }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                        <Ionicons name={g.icon as any} size={18} color="#7FB2FF" />
-                        <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 15 }}>{g.title}</Text>
-                      </View>
-                      <Text style={{ color: '#9FB0C6', fontSize: 12, marginTop: 2 }}>{g.sub}</Text>
-                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
-                        {g.tools.map(t => (
-                          <Pressable key={t.key} onPress={() => setAiTool({ tool: t, topic: '', extra: '' })} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 11, paddingVertical: 7, borderRadius: 14, backgroundColor: 'rgba(127,178,255,0.12)' }}>
-                            <Ionicons name={t.icon as any} size={14} color="#9CC3FF" />
-                            <Text style={{ color: '#E2EAF4', fontSize: 13, fontWeight: '600' }}>{t.label}</Text>
-                          </Pressable>
-                        ))}
-                      </View>
-                    </View>
-                  ))}
-                  <View style={{ flexDirection: 'row', gap: 10 }}>
-                    {[
-                      { icon: 'color-palette-outline', title: 'Creative Studio', sub: 'Design posts and product pictures', onPress: () => openTruth('createPostHome') },
-                      { icon: 'git-branch-outline', title: 'AI Workflows', sub: 'Automations and rules; asks before big actions', onPress: () => openAutomations() },
-                      { icon: 'bookmark-outline', title: 'Saved work', sub: 'Reuse and export AI answers', onPress: () => { openSavedLib().catch(() => {}); } },
-                    ].map(c => (
-                      <Pressable key={c.title} onPress={c.onPress} style={{ flex: 1, padding: 12, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.10)' }}>
-                        <Ionicons name={c.icon as any} size={18} color="#7FB2FF" />
-                        <Text style={{ color: '#FFF', fontWeight: '700', fontSize: 13.5, marginTop: 6 }}>{c.title}</Text>
-                        <Text style={{ color: '#9FB0C6', fontSize: 11.5, marginTop: 2 }}>{c.sub}</Text>
-                      </Pressable>
-                    ))}
-                  </View>
-                </View>
-                <Text style={styles.popularLabel}>Popular Questions</Text>
-                {popularQuestions.map(q => (
-                  <Pressable key={q} onPress={() => sendChatMessage(q)} style={styles.popularItem}>
-                    <Ionicons name="search-outline" size={16} color="#8FA3BC" />
-                    <Text style={styles.popularItemText}>{q}</Text>
-                    <Ionicons name="chevron-forward" size={16} color="#5C6B7A" />
-                  </Pressable>
-                ))}
               </>
             ) : (
               chatMessages.map((m, mi) => (
@@ -10906,61 +10940,15 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
               previously a dead button with no onPress, which is why there
               was no way to reach these screens from the Brain tab. */}
 
-          {showAttachMenu && (
-            <View style={styles.attachMenu}>
-              {[
-                { icon: 'camera-outline', label: 'Camera' },
-                { icon: 'image-outline', label: 'Photo Library' },
-                { icon: 'document-attach-outline', label: 'Add Files' },
-                { icon: 'extension-puzzle-outline', label: 'Connect Apps' },
-                { icon: 'hardware-chip-outline', label: 'Train Your AI' },
-              ].map(opt => (
-                <Pressable key={opt.label} onPress={() => handleAttachOption(opt.label)} style={styles.attachOption}>
-                  <Ionicons name={opt.icon as any} size={18} color="#FFF" />
-                  <Text style={styles.attachOptionText}>{opt.label}</Text>
-                </Pressable>
-              ))}
-            </View>
+          {chatMessages.length > 0 && renderComposer(false)}
+          {/* Floating Nexora button (design): opens Quick Actions with every tool. */}
+          {chatMessages.length === 0 && (
+            <Pressable onPress={() => openQuickActions('brain')} accessibilityRole="button" accessibilityLabel="Quick actions"
+              style={{ position: 'absolute', right: 18, bottom: (IS_WEB && userId && hookWidth >= 1000 ? 24 : 92 + insets.bottom), width: 58, height: 58, borderRadius: 29, backgroundColor: '#1B3A5C', borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)', alignItems: 'center', justifyContent: 'center', zIndex: 30, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 6 }}>
+              <MaterialCommunityIcons name="robot-happy-outline" size={28} color="#9CC3FF" />
+              <View style={{ position: 'absolute', top: 12, right: 13, width: 8, height: 8, borderRadius: 4, backgroundColor: '#EF4444' }} />
+            </Pressable>
           )}
-
-          <View style={styles.chatInputBar}>
-            <Pressable onPress={() => setShowAttachMenu(v => !v)} hitSlop={8}>
-              <Ionicons name="add" size={22} color="#0B1220" />
-            </Pressable>
-
-            {isRecording ? (
-              <>
-                <View style={styles.waveformRow}>
-                  {[6, 14, 9, 18, 7, 15, 10].map((h, i) => (
-                    <View key={i} style={[styles.waveformBar, { height: h }]} />
-                  ))}
-                </View>
-                <Pressable onPress={() => setIsRecording(false)} hitSlop={8} style={styles.stopButton}>
-                  <Ionicons name="stop" size={14} color="#FFF" />
-                </Pressable>
-              </>
-            ) : (
-              <>
-                <TextInput
-                  value={chatInput}
-                  onChangeText={setChatInput}
-                  placeholder="Ask Nexora about your business…"
-                  placeholderTextColor="#8A97A6"
-                  style={styles.chatTextInput}
-                />
-                <Pressable onPress={() => flash('Voice input is coming soon.')} hitSlop={8} accessibilityLabel="Voice input">
-                  <Ionicons name="mic-outline" size={20} color="#5C6B7A" />
-                </Pressable>
-              </>
-            )}
-
-            <Pressable
-              disabled={!chatInput.trim()}
-              onPress={() => sendChatMessage()}
-              style={[styles.chatSendButton, { backgroundColor: chatInput.trim() ? '#1E56A0' : '#94A3BB' }]}>
-              <Ionicons name="arrow-up" size={16} color="#FFF" />
-            </Pressable>
-          </View>
 
           {renderReportModal()}
           {renderSourceSheet()}
@@ -11057,8 +11045,8 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
         <Ionicons name="chevron-forward" size={15 * k} color="#1E56A0" />
       </View>
     );
-    const renderAvatar = (k: number) => (
-      <View pointerEvents="none" style={{ position: 'absolute', left: (362 - 18) * k, top: (73.5 - 18) * k, width: 36 * k, height: 36 * k, borderRadius: 18 * k, overflow: 'hidden', backgroundColor: '#1E56A0', borderWidth: 1 * k, borderColor: '#F5F6F8', alignItems: 'center', justifyContent: 'center', zIndex: 20 }}>
+    const renderAvatar = (k: number, cx = 362) => (
+      <View pointerEvents="none" style={{ position: 'absolute', left: (cx - 18) * k, top: (73.5 - 18) * k, width: 36 * k, height: 36 * k, borderRadius: 18 * k, overflow: 'hidden', backgroundColor: '#1E56A0', borderWidth: 1 * k, borderColor: '#F5F6F8', alignItems: 'center', justifyContent: 'center', zIndex: 20 }}>
         {avatarUrl ? <ExpoImage source={{ uri: avatarUrl }} style={{ width: '100%', height: '100%' }} contentFit="cover" cachePolicy="memory-disk" />
           : <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 13 * k }}>{ownerInitials}</Text>}
       </View>
@@ -11210,16 +11198,12 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
       const narrow = hookWidth < 700;
       const panel = { backgroundColor: '#FFFFFF', borderRadius: isDesktopWeb ? 14 : 18, padding: narrow ? 14 : 18, borderWidth: 1, borderColor: '#E6ECF3' } as const;
       const hour = new Date().getHours();
-      // AI Command Center (Home design): eight shortcuts in two rows.
+      // Quick action (Home design, Oct 2026): four shortcuts; "More" opens the full Quick Actions screen.
       const commandCenter: { label: string; icon: string; color: string; onPress: () => void }[] = [
-        { label: 'Train AI', icon: 'school-outline', color: '#1E56A0', onPress: () => handleCommandCenterPress('Train AI') },
-        { label: 'Connect Apps', icon: 'apps-outline', color: '#0E7490', onPress: () => handleCommandCenterPress('Connect Apps') },
-        { label: 'Schedule', icon: 'calendar-outline', color: '#7C3AED', onPress: () => handleCommandCenterPress('Schedule') },
-        { label: 'Create Post', icon: 'create-outline', color: '#DB2777', onPress: () => handleCommandCenterPress('Create Post') },
-        { label: 'Biz insights', icon: 'stats-chart-outline', color: '#1E9E6D', onPress: () => openInsights() },
-        { label: 'Leads', icon: 'person-add-outline', color: '#B45309', onPress: () => handleCommandCenterPress('Leads') },
-        { label: 'AI Employees', icon: 'people-outline', color: '#0F2942', onPress: () => openSettings('team', { exit: () => goTab('home') }) },
-        { label: 'Policies', icon: 'shield-checkmark-outline', color: '#B42318', onPress: () => handleCommandCenterPress('Policies') },
+        { label: 'Train AI', icon: 'school-outline', color: '#0F2942', onPress: () => handleCommandCenterPress('Train AI') },
+        { label: 'Connect Apps', icon: 'extension-puzzle', color: '#0F2942', onPress: () => handleCommandCenterPress('Connect Apps') },
+        { label: 'Schedule', icon: 'calendar', color: '#0F2942', onPress: () => handleCommandCenterPress('Schedule') },
+        { label: 'More', icon: 'apps', color: '#0F2942', onPress: () => openQuickActions('home') },
       ];
       const askHome = () => { const q = homeAsk.trim(); setHomeAsk(''); goTab('brain'); if (q) sendChatMessage(q); };
       const desktop = isDesktopWeb;
@@ -11266,7 +11250,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
 
             {/* Ask Nexora (design: "Ask Nexora about your business...", mic, send) */}
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, height: 56, borderRadius: 28, paddingLeft: 18, paddingRight: 8, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E1E8F0', shadowColor: '#0B1220', shadowOpacity: 0.04, shadowRadius: 8, shadowOffset: { width: 0, height: 2 } }}>
-              <Ionicons name="sparkles" size={18} color="#1E56A0" />
+              <Ionicons name="sparkles" size={18} color="#D98BE8" />
               <TextInput value={homeAsk} onChangeText={setHomeAsk} onSubmitEditing={askHome} returnKeyType="send" placeholder="Ask Nexora about your business..." placeholderTextColor="#8A97A6" style={{ flex: 1, minWidth: 0, fontSize: 15, color: '#0B1220', height: 54, ...(IS_WEB ? { outlineStyle: 'none' } as any : null) }} />
               <Pressable onPress={() => goTab('brain')} hitSlop={6} accessibilityRole="button" accessibilityLabel="Talk to Nexora" style={{ width: 36, height: 36, alignItems: 'center', justifyContent: 'center' }}><Ionicons name="mic-outline" size={21} color="#5C6B7A" /></Pressable>
               <Pressable onPress={askHome} accessibilityRole="button" accessibilityLabel="Ask Nexora" style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: '#0F2942', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="arrow-up" size={20} color="#FFFFFF" /></Pressable>
@@ -11297,7 +11281,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
               </View>
             )}
 
-            {/* Nexora insight + AI Command Center (Home design) */}
+            {/* Nexora insight + Quick action (Home design) */}
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: narrow ? 14 : 18, alignItems: 'stretch' }}>
               <View style={{ flexBasis: narrow ? '100%' : '40%', flexGrow: 1, minWidth: narrow ? 0 : 320 }}>
                 {/* The Home-1 / 1b / 1c / 1d insight card straight from the Figma frame (artwork included), chosen from the
@@ -11328,7 +11312,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                 </View>
               </View>
               <View style={[panel, { flexBasis: narrow ? '100%' : '52%', flexGrow: 1, minWidth: narrow ? 0 : 360 }]}>
-                {head('AI Command Center')}
+                {head('Quick action')}
                 <View style={{ flexDirection: 'row', flexWrap: 'wrap', rowGap: 14, marginTop: 6 }}>
                   {commandCenter.map(c => (
                     <Pressable key={c.label} onPress={c.onPress} accessibilityRole="button" style={{ width: '25%', alignItems: 'center', gap: 8, paddingVertical: 4 }}>
@@ -11486,12 +11470,14 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
       );
     }
     const home1Spots: Hotspot[] = [
-      ...topSpots.filter(sp => sp.label !== 'view-analysis'),
+      // The new frame has the NEXORA AI logo where the menu button was; tapping it still opens the menu.
+      ...topSpots.filter(sp => sp.label !== 'view-analysis' && sp.label !== 'menu'),
+      { x: 10, y: 52, w: 160, h: 44, label: 'Open menu', onPress: () => drawerOpenFn() },
       // The whole insight card (title, text and its "View ..." link) opens the matching detail.
       { x: 16, y: 170, w: 361, h: 178, label: `insight-${ins.state}`, onPress: insightAction },
-      // Command center: Train AI, Connect Apps, Leads, More.
-      cmdSpot('Train AI', 67, 405), cmdSpot('Connect Apps', 157.5, 405), cmdSpot('Leads', 248, 405),
-      { x: 287, y: 405, w: 78, h: 100, label: 'More', onPress: () => setHomeCommandExpanded(true) },
+      // Quick action: Train AI, Connect Apps, Schedule, More (opens the Quick Actions screen).
+      cmdSpot('Train AI', 67, 405), cmdSpot('Connect Apps', 157.5, 405), cmdSpot('Schedule', 248, 405),
+      { x: 287, y: 405, w: 78, h: 100, label: 'More', onPress: () => openQuickActions('home') },
       { x: 300, y: 522, w: 80, h: 30, label: 'attention-view-all', onPress: () => { refreshEscalations().catch(() => {}); setScreen('agendaPriority'); } },
       { x: 16, y: 575, w: 361, h: 60, label: 'attention-call', onPress: () => { refreshEscalations().catch(() => {}); setScreen(escalations.length ? 'agendaPriority' : 'callSummary'); } },
       { x: 16, y: 636, w: 361, h: 60, label: 'attention-images', onPress: () => { if (lowStockItems.length) { openKnowledgeList('products'); flash(`Running low: ${lowStockItems.slice(0, 3).map(i => i.name).join(', ')}. Open a product and update its Stock.`); } else openMissingImages(); } },
@@ -11505,15 +11491,24 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
         <StatusBar hidden />
         <ScrollView scrollEnabled={homeFrameHeight > height + 1} showsVerticalScrollIndicator={false} contentContainerStyle={{ width }}>
           <View style={{ width, height: homeFrameHeight }}>
-            <ExpoImage
-              source={{ uri: stateUri }}
-              style={{ width, height: homeFrameHeight }}
-              contentFit="fill"
-              cachePolicy="memory-disk"
-              recyclingKey={stateUri}
-              transition={150}
-              onError={() => { console.warn('[home] failed to load', stateUri); if (stateKey !== 'home1') setHomeSegFailed(p => ({ ...p, [stateKey]: true })); }}
-            />
+            <ExpoImage source={HOME_QUICK_FRAME} style={{ width, height: homeFrameHeight }} contentFit="fill" />
+            {/* Other insight states: the matching card from its Figma frame, drawn over the base frame's card. */}
+            {stateKey !== 'home1' && (() => {
+              const C = HOME_CARD_CROP;
+              return (
+                <View pointerEvents="none" style={{ position: 'absolute', left: C.x * hs, top: C.y * hs, width: C.w * hs, height: C.h * hs, overflow: 'hidden', zIndex: 5 }}>
+                  <ExpoImage
+                    source={{ uri: stateUri }}
+                    style={{ position: 'absolute', left: -C.x * hs, top: -C.y * hs, width, height: homeFrameHeight }}
+                    contentFit="fill"
+                    cachePolicy="memory-disk"
+                    recyclingKey={stateUri}
+                    transition={150}
+                    onError={() => { console.warn('[home] failed to load', stateUri); setHomeSegFailed(p => ({ ...p, [stateKey]: true })); }}
+                  />
+                </View>
+              );
+            })()}
             {(() => {
               const t = HOME_CARD_TEXT[stateKey];
               const patch = (b: { x: number; y: number; w: number; h: number }) => ({ position: 'absolute' as const, left: b.x * hs, top: b.y * hs, width: b.w * hs, height: b.h * hs, backgroundColor: t.bg, zIndex: 10 });
@@ -11531,12 +11526,133 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
               );
             })()}
             {renderAttention(3, 0, hs)}
-            {renderHeaderLockup(0, hs)}
             {renderViewAll(524, hs)}
-            {renderAvatar(hs)}
+            {renderAvatar(hs, 359.5)}
             {renderSpots(home1Spots, hs)}
           </View>
         </ScrollView>
+      </View>
+    );
+  }
+
+  if (screen === 'quickActions') {
+    // Quick Actions (Figma, Oct 2026): every Nexora feature as round tiles, four to a row, in sections.
+    const back = () => { setQaSearch(null); setQaBriefing(false); setMainTab(quickBackRef.current); setScreen('main'); };
+    const tool = (k: AiToolKey) => () => {
+      const t = AI_TOOL_GROUPS.flatMap(g => g.tools).find(x => x.key === k) ?? null;
+      setMainTab('brain'); setScreen('main'); setAiTool({ tool: t, topic: '', extra: '' });
+    };
+    const ask = (q: string) => () => { setMainTab('brain'); setScreen('main'); sendChatMessage(q); };
+    type QaTile = { label: string; icon: string; mci?: boolean; badge?: number; onPress: () => void };
+    const sections: { title: string; tiles: QaTile[] }[] = [
+      { title: 'AI Command center', tiles: [
+        { label: 'Train AI', icon: 'brain', mci: true, onPress: () => handleCommandCenterPress('Train AI') },
+        { label: 'Connect Apps', icon: 'extension-puzzle', onPress: () => handleCommandCenterPress('Connect Apps') },
+        { label: 'Schedule', icon: 'calendar', onPress: () => handleCommandCenterPress('Schedule') },
+        { label: 'Create Post', icon: 'create', onPress: () => handleCommandCenterPress('Create Post') },
+      ] },
+      { title: 'Marketing & Growth', tiles: [
+        { label: 'Biz insights', icon: 'stats-chart', onPress: () => openInsights() },
+        { label: 'Social posts', icon: 'color-wand', onPress: tool('social') },
+        { label: 'Campaign', icon: 'megaphone', onPress: () => openCampaigns() },
+        { label: 'AI Shop Link', icon: 'storefront', onPress: () => { openStorefront().catch(() => {}); } },
+      ] },
+      { title: 'Discovery and opportunity', tiles: [
+        { label: 'Trending', icon: 'trending-up', onPress: openTrends },
+        { label: 'Community', icon: 'people', badge: commUnread, onPress: openCommunity },
+        { label: 'Find partners', icon: 'git-network', onPress: () => { openNetwork().catch(() => {}); } },
+        { label: 'Find Online', icon: 'globe', onPress: () => openExplore() },
+      ] },
+      { title: 'AI Tools', tiles: [
+        { label: 'AI Employees', icon: 'people-circle', onPress: () => openSettings('team', { exit: () => openQuickActions(quickBackRef.current) }) },
+        { label: 'Video Script', icon: 'videocam', onPress: tool('video') },
+        { label: 'Business Plan', icon: 'map', onPress: tool('plan') },
+        { label: 'Launch Plan', icon: 'rocket', onPress: tool('launch') },
+        { label: 'Summarize', icon: 'reader', onPress: tool('summary') },
+        { label: 'Brainstorm', icon: 'bulb', onPress: tool('brainstorm') },
+        { label: 'AI Images', icon: 'image', onPress: () => openTruth('createPostHome') },
+        { label: 'AI Videos', icon: 'film', onPress: () => { flash('Video making is coming soon. For now Nexora plans the video for you to film.'); ask('Plan a short video for my business that I can film on my phone: the idea, a shot list, the script and a caption.')(); } },
+        { label: 'Adverts', icon: 'megaphone-outline', onPress: tool('advert') },
+        { label: 'Product text', icon: 'pricetag', onPress: tool('description') },
+        { label: 'Emails', icon: 'mail', onPress: tool('email') },
+        { label: 'More tools', icon: 'apps', onPress: () => { setMainTab('brain'); setScreen('main'); setAiTool({ tool: null, topic: '', extra: '' }); } },
+      ] },
+      { title: 'Business Knowledge', tiles: [
+        { label: 'Products', icon: 'cube', onPress: () => openKnowledgeList('products') },
+        { label: 'Services', icon: 'construct', onPress: () => openKnowledgeList('services') },
+        { label: 'Policies', icon: 'shield-checkmark', onPress: () => openKnowledgeList('policies') },
+        { label: 'FAQs', icon: 'help-circle', onPress: () => openKnowledgeList('faqs') },
+        { label: 'AI learned', icon: 'school', onPress: openLearned },
+        { label: 'Add knowledge', icon: 'add-circle', onPress: () => openAddKnowledge() },
+      ] },
+      { title: 'Your business', tiles: [
+        { label: 'Daily briefing', icon: 'sunny', onPress: () => { setBriefingOpen(true); setQaBriefing(true); if (!briefing || briefing.day !== localIsoDate()) loadBriefing().catch(() => {}); } },
+        { label: 'Leads', icon: 'person-add', onPress: () => openLeads() },
+        { label: 'Customers', icon: 'people-outline', onPress: () => openCustomers(() => openQuickActions(quickBackRef.current)) },
+        { label: 'Orders', icon: 'bag-handle', onPress: () => openOrders('All') },
+        { label: 'Automations', icon: 'git-branch', onPress: () => openAutomations() },
+        { label: 'Saved work', icon: 'bookmark', onPress: () => { setMainTab('brain'); setScreen('main'); openSavedLib().catch(() => {}); } },
+        { label: 'Chat history', icon: 'chatbubbles', onPress: () => { setMainTab('brain'); setScreen('main'); openChatHistory().catch(() => {}); } },
+      ] },
+    ];
+    const q = (qaSearch ?? '').trim().toLowerCase();
+    const shown = sections.map(sec => ({ ...sec, tiles: q ? sec.tiles.filter(t => t.label.toLowerCase().includes(q) || sec.title.toLowerCase().includes(q)) : sec.tiles })).filter(sec => sec.tiles.length);
+    const desktop = isDesktopWeb;
+    const searchBox = (
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, height: 42, borderRadius: 21, paddingHorizontal: 14, backgroundColor: '#F2F5F9', borderWidth: 1, borderColor: '#E1E8F0', minWidth: desktop ? 280 : 0, flex: desktop ? 0 : 1 }}>
+        <Ionicons name="search" size={17} color="#8A97A6" />
+        <TextInput value={qaSearch ?? ''} onChangeText={setQaSearch} autoFocus={!desktop} placeholder="Search actions" placeholderTextColor="#8A97A6" style={{ flex: 1, minWidth: 0, fontSize: 14.5, color: '#0B1220', height: 40, ...(IS_WEB ? { outlineStyle: 'none' } as any : null) }} />
+        {!!qaSearch && <Pressable onPress={() => setQaSearch('')} hitSlop={8} accessibilityLabel="Clear search"><Ionicons name="close-circle" size={17} color="#A5AFBB" /></Pressable>}
+      </View>
+    );
+    return (
+      <View style={[styles.mainScreen, { backgroundColor: '#FFFFFF' }]}>
+        <StatusBar style="dark" />
+        {desktop ? renderDesktopBar('Quick Actions', 'Every Nexora tool in one place', searchBox) : (
+          <View style={[styles.knowledgeHeader, headerSafe, { backgroundColor: '#FFFFFF', gap: 10 }]}>
+            <Pressable onPress={back} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+            {qaSearch === null ? <Text style={[styles.knowledgeHeaderTitle, { flex: 1, textAlign: 'center' }]}>Quick Actions</Text> : searchBox}
+            <Pressable onPress={() => setQaSearch(v => (v === null ? '' : null))} hitSlop={8} accessibilityRole="button" accessibilityLabel={qaSearch === null ? 'Search actions' : 'Close search'}>
+              <Ionicons name={qaSearch === null ? 'search' : 'close'} size={23} color="#0B1220" />
+            </Pressable>
+          </View>
+        )}
+        <ScrollView style={{ flex: 1, backgroundColor: '#FFFFFF' }} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingHorizontal: desktop ? 32 : 16, paddingTop: desktop ? 24 : 4, paddingBottom: 32, width: '100%', maxWidth: desktop ? 1100 : 720, alignSelf: 'center' }}>
+          {shown.length === 0 && <Text style={[styles.attentionSubtitle, { textAlign: 'center', marginTop: 40 }]}>No action matches "{qaSearch}". Try another word, or ask Nexora in the Brain tab.</Text>}
+          {shown.map(sec => (
+            <View key={sec.title} style={{ marginBottom: desktop ? 26 : 18 }}>
+              <Text style={{ fontSize: 16, fontWeight: '500', color: '#0B1220', marginBottom: 14 }}>{sec.title}</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', rowGap: 18 }}>
+                {sec.tiles.map(t => (
+                  <Pressable key={`${sec.title}-${t.label}`} onPress={t.onPress} accessibilityRole="button" accessibilityLabel={t.label}
+                    style={({ pressed }) => ({ width: desktop ? '16.66%' : '25%', alignItems: 'center', gap: 9, opacity: pressed ? 0.6 : 1 })}>
+                    <View style={{ width: 54, height: 54, borderRadius: 27, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#EEF1F4', alignItems: 'center', justifyContent: 'center', shadowColor: '#0B1220', shadowOpacity: 0.05, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 1 }}>
+                      {t.mci ? <MaterialCommunityIcons name={t.icon as any} size={23} color="#0F2942" /> : <Ionicons name={t.icon as any} size={22} color="#0F2942" />}
+                      {!!t.badge && <View style={{ position: 'absolute', top: -2, right: -2, minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 4, backgroundColor: '#EF4444', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#FFF', fontSize: 10, fontWeight: '800' }}>{t.badge > 9 ? '9+' : t.badge}</Text></View>}
+                    </View>
+                    <Text style={{ fontSize: 12.5, color: '#5C6B7A', textAlign: 'center', paddingHorizontal: 2 }} numberOfLines={1}>{t.label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          ))}
+        </ScrollView>
+        {/* Daily briefing (it used to sit on the Brain screen; the new Brain design keeps that screen clear). */}
+        <Modal visible={qaBriefing} transparent animationType="fade" onRequestClose={() => setQaBriefing(false)} statusBarTranslucent>
+          <Pressable onPress={() => setQaBriefing(false)} style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.6)', justifyContent: 'center', padding: 16 }}>
+            <Pressable onPress={() => {}} style={{ width: '100%', maxWidth: 560, maxHeight: '86%' as any, alignSelf: 'center', backgroundColor: '#0F2942', borderRadius: 22, padding: 14 }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginBottom: 6 }}>
+                <Pressable onPress={() => setQaBriefing(false)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Close"><Ionicons name="close" size={22} color="#CFE0F5" /></Pressable>
+              </View>
+              <ScrollView>
+                {briefingError === 'setup'
+                  ? <Text style={{ color: '#CFE0F5', fontSize: 14, padding: 8 }}>Your daily briefing starts once your business details are set up.</Text>
+                  : renderBriefingCard()}
+              </ScrollView>
+            </Pressable>
+          </Pressable>
+        </Modal>
+        {renderBottomNav()}
       </View>
     );
   }
@@ -18907,8 +19023,8 @@ const styles=StyleSheet.create({
   bellWrapDark:{},
   topBarAvatar:{width:32,height:32,borderRadius:16,backgroundColor:'#E7EAEC'},
   brainScreenDark:{backgroundColor:'#0F2942'},
-  brainHeroIconWrap:{width:220,height:145,alignItems:'center',justifyContent:'center'},
-  brainHeroImage:{width:220,height:145},
+  brainHeroIconWrap:{width:260,height:172,alignItems:'center',justifyContent:'center'},
+  brainHeroImage:{width:260,height:172},
   // Floating black + button on the AI Brain Train screen (overlays the scroll view; does not scroll with it)
   knowledgeFab:{position:'absolute',right:16,width:56,height:56,borderRadius:28,backgroundColor:'#0B1220',alignItems:'center',justifyContent:'center',zIndex:30,elevation:8,shadowColor:'#000',shadowOpacity:0.25,shadowRadius:8,shadowOffset:{width:0,height:4}},
   fabBackdrop:{position:'absolute',top:0,left:0,right:0,bottom:0,backgroundColor:'rgba(11,18,32,0.35)',zIndex:20,elevation:8},
@@ -18970,9 +19086,9 @@ monthChip:{flexDirection:'row',alignItems:'center',gap:4,backgroundColor:'#FFF',
 monthChipText:{fontSize:11,color:'#5C6B7A'},
 chatScroll:{flex:1,backgroundColor:'#0F2942'},
 chatScrollContent:{padding:16,paddingBottom:12},
-brainHero:{alignItems:'center',marginTop:32,marginBottom:24},
-brainHeroTitle:{fontSize:22,fontWeight:'700',color:'#FFF',marginTop:12},
-brainHeroSubtitle:{fontSize:13,color:'#8A97A6',marginTop:4},
+brainHero:{alignItems:'center',marginTop:40,marginBottom:18},
+brainHeroTitle:{fontSize:30,fontWeight:'600',color:'#FFF',marginTop:14},
+brainHeroSubtitle:{fontSize:14,color:'#6F8198',marginTop:6},
 popularLabel:{fontSize:13,fontWeight:'700',color:'#FFF',marginBottom:8},
 popularItem:{flexDirection:'row',alignItems:'center',gap:8,backgroundColor:'rgba(255,255,255,0.06)',borderRadius:12,padding:12,marginBottom:8},
 popularItemText:{flex:1,fontSize:12,color:'#E5E9EF'},
