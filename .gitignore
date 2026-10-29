@@ -40,9 +40,20 @@ yarn-error.*
 /ios
 /android
 
-# Environment variables
+# Environment variables (never commit keys)
 .env
 .env.*
 !.env.example
 .vercel
 .env*
+
+# Not part of the app
+/supabase/
+/tools/
+/scripts/
+/figma-truth/
+/figma-screens-*/
+/docs/
+/git-bundles/
+/.claude/
+/.vscode/

@@ -10,13 +10,16 @@
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.atodtech.nexora"
+      "bundleIdentifier": "com.atodtech.nexora",
+      "config": {
+        "usesNonExemptEncryption": false
+      }
     },
     "android": {
       "package": "com.atodtech.nexora",
       "versionCode": 1,
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#FFFFFF",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -58,13 +61,17 @@
       "expo-image",
       "expo-font",
       "expo-web-browser",
+      "expo-build-properties",
       [
-        "expo-build-properties",
+        "expo-notifications",
         {
-          "android": {
-            "compileSdkVersion": 36,
-            "targetSdkVersion": 36
-          }
+          "color": "#1E56A0"
+        }
+      ],
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Allow Nexora to use Face ID to unlock the app."
         }
       ]
     ],

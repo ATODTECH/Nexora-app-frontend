@@ -4,14 +4,27 @@
     "appVersionSource": "remote"
   },
   "build": {
+    "base": {
+      "env": {
+        "EXPO_PUBLIC_SUPABASE_URL": "https://evevvwlglxzeoamvcodx.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV2ZXZ2d2xnbHh6ZW9hbXZjb2R4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgwODI4OTAsImV4cCI6MjEwMzY1ODg5MH0.au3EWfdO41KeEu8ABwa5iO7twcIhFNJ6k0ANFDSwDSU",
+        "EXPO_PUBLIC_SITE_URL": "https://nexorabusinessai.com"
+      }
+    },
     "development": {
+      "extends": "base",
       "developmentClient": true,
       "distribution": "internal"
     },
     "preview": {
-      "distribution": "internal"
+      "extends": "base",
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      }
     },
     "production": {
+      "extends": "base",
       "autoIncrement": true
     }
   },
