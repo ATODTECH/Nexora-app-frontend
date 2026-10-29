@@ -16,6 +16,24 @@ import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImageManipulator from 'expo-image-manipulator';
+import * as Device from 'expo-device';
+import * as LocalAuthentication from 'expo-local-authentication';
+import * as SecureStore from 'expo-secure-store';
+import Constants from 'expo-constants';
+
+// Push notifications: only in the installed app. Expo Go on Android doesn't include the push module, and just
+// loading expo-notifications there crashes ("Cannot find native module 'ExpoTopicSubscriptionModule'"),
+// so it is loaded only outside Expo Go and the web.
+const Notifications: typeof import('expo-notifications') | null = (() => {
+  if (Platform.OS === 'web' || Constants.executionEnvironment === 'storeClient') return null;
+  try { return require('expo-notifications'); } catch { return null; }
+})();
+// Push notifications show even while Nexora is open.
+if (Notifications) {
+  try {
+    Notifications.setNotificationHandler({ handleNotification: async () => ({ shouldShowBanner: true, shouldShowList: true, shouldPlaySound: true, shouldSetBadge: false }) });
+  } catch { /* not available in this build */ }
+}
 
 const FIGMA_WIDTH=393,FIGMA_HEIGHT=852;
 const BUTTON_X=16.5,BUTTON_Y=762.5,BUTTON_WIDTH=360,BUTTON_HEIGHT=45,BUTTON_R=20.5,BUTTON_COLOR='#1E56A0',BUTTON_BORDER='#5381BB';
@@ -142,7 +160,10 @@ function remoteSvg(path: string) {
       if (!xml && !failed) loadRemoteSvg(path).then(x => { if (!alive) return; if (x) setXml(x); else setFailed(true); });
       return () => { alive = false; };
     }, [xml, failed]);
-    if (xml) return <SvgXml xml={xml} {...props} />;
+    // Phones: react-native-svg only partly supports Figma's drop-shadow filters and drew those groups blank
+    // (the Google and Apple sign-up buttons). The shadows are dropped there; the web draws them as designed.
+    const shown = React.useMemo(() => (xml && Platform.OS !== 'web' ? xml.replace(/\sfilter="url\(#[^)]*\)"/g, '') : xml), [xml]);
+    if (shown) return <SvgXml xml={shown} {...props} />;
     return (
       <View style={{ width: props.width, height: props.height, alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFFFFF' }}>
         {failed
@@ -204,7 +225,7 @@ const GENERATE_LINK_X=INPUT_X,GENERATE_LINK_Y=SIGNUP_PASSWORD_Y+INPUT_HEIGHT+1,G
 // same URL after a same-name file swap in Supabase still serves the old
 // cached bytes until this changes. Bumped 4 -> 5 for this pass (Home-1/
 // Home-2's truth image and product-speaker.jpg were both re-uploaded).
-const ASSET_VERSION = 10;   // 10: Figma truth screens re-exported 20 Oct 2026
+const ASSET_VERSION = 12;   // 12: Customers / Leads / Schedule / Create Post screens re-exported 27 Oct 2026
 // Home-1 / Home-2 get their own version so they can be bumped on their own
 // whenever either PNG is re-uploaded under the same name. Bumped 7 -> 9 so
 // the latest Home screens replace the stale cached copies.
@@ -473,6 +494,7 @@ const DETAIL_FIELD_ORDER = ['Category', 'Specification', 'Brand', 'Price', 'Visi
 // (Category/Price/Brand/etc. each have their own icon) without having to
 // carry an icon name on every field of every mock item.
 const KNOWLEDGE_FIELD_ICON: Record<string, string> = {
+  'Stock': 'cube-outline', 'Remind me at': 'alarm-outline',
   // FIX: re-verified directly against Product details-6's truth icon column
   // — Category/Specification/Brand/Status were reusing generic or
   // duplicated icons (Category had a box instead of a folder; Specification
@@ -912,7 +934,7 @@ const SOCIAL_MEDIA_SCREENS=SOCIAL_MEDIA_FILENAMES.map(({label,file,width,height}
 type TruthKey =
   | 'inbox1' | 'inbox2' | 'inbox3' | 'inbox4' | 'channelOptions' | 'channelDetailsIg' | 'channelDetailsWa'
   | 'leadsList' | 'leadProfile' | 'leadDemoInvite'
-  | 'customers' | 'customerProfile' | 'addCustomer' | 'interactionHistory'
+  | 'customers' | 'customerProfile' | 'addCustomer' | 'interactionHistory' | 'customerOrders'
   | 'scheduleHome' | 'scheduleList' | 'createSchedule' | 'scheduleTask' | 'scheduleMeeting' | 'conflictTime'
   | 'createPostHome' | 'productPostSuggested' | 'productPostAll' | 'productAdd' | 'servicePostSuggested' | 'servicePostAll' | 'serviceAdd' | 'aiContent'
   | 'editPost' | 'platformAdapt' | 'platformAdapt2'
@@ -934,6 +956,7 @@ const TRUTH_FILES: Record<TruthKey, string> = {
   customerProfile: 'Customer Profile.png',
   addCustomer: 'Add Customer.png',
   interactionHistory: 'Interractive History.png',
+  customerOrders: 'Customer Profile orders.png',
   scheduleHome: 'Schedule-1.png',
   scheduleList: 'Schedule-2.png',
   createSchedule: 'Create Schedule.png',
@@ -986,7 +1009,7 @@ const TRUTH_BUCKET: Partial<Record<TruthKey, string>> = {
 // 599px: the phone on the left plus a stray text layer to its right). They are
 // drawn at the phone's scale and the extra width is clipped, instead of being
 // squashed into the screen, which skewed the screen and its buttons.
-const TRUTH_SRC_WIDTH: Partial<Record<TruthKey, number>> = { productAdd: 599 };
+const TRUTH_SRC_WIDTH: Partial<Record<TruthKey, number>> = {};   // 27 Oct 2026: Add Product Image Detail is a plain 393px frame now
 const TRUTH_URLS = Object.fromEntries(
   (Object.keys(TRUTH_FILES) as TruthKey[]).map(k => [k, withCacheBust(supabase.storage.from(TRUTH_BUCKET[k] ?? 'social-media').getPublicUrl(TRUTH_FILES[k]).data.publicUrl)])
 ) as Record<TruthKey, string>;
@@ -1005,6 +1028,17 @@ const CHANNEL_PLATFORM: Record<string, Conversation['platform'] | undefined> = {
 };
 // Channels the backend can really connect and send through today
 // (channel-connect + send-message + meta-webhook edge functions).
+// react-native-web has no Alert.alert: show the browser's confirm/alert instead, so confirmations work on the web app too.
+if (Platform.OS === 'web' && typeof window !== 'undefined') {
+  (Alert as any).alert = (title: string, message?: string, buttons?: { text?: string; style?: string; onPress?: () => void }[]) => {
+    const text = [title, message].filter(Boolean).join('\n\n');
+    const actions = (buttons ?? []).filter(b => b.style !== 'cancel');
+    if (!buttons || buttons.length <= 1) { window.alert(text); buttons?.[0]?.onPress?.(); return; }
+    if (actions.length === 1) { if (window.confirm(text)) actions[0].onPress?.(); return; }
+    // Several choices: ask about each in turn (first one confirmed wins).
+    for (const b of actions) { if (window.confirm(`${text}\n\n${b.text}?`)) { b.onPress?.(); return; } }
+  };
+}
 const LIVE_CHANNELS = ['whatsapp', 'instagram', 'facebook'];
 // WhatsApp / Messenger / Instagram only allow free-form replies within 24h of
 // the customer's last message, so broadcasts only go to those conversations.
@@ -1018,7 +1052,6 @@ const SHOW_DEMO_INBOX = false;
 const IN_APP_SUBSCRIBE_ENABLED = true;
 // Public pages Google Play requires (privacy policy + account deletion).
 // Replace with your real URLs before submitting.
-const PRIVACY_POLICY_URL = 'https://nexora.ai/privacy';
 // The Terms of Use live inside Nexora: a public page on the web (?page=terms) and the 'terms' screen in the app.
 // The web address of the Nexora site. Set EXPO_PUBLIC_SITE_URL when the site moves (for example to the company
 // Vercel account or a custom domain); on the web it otherwise follows the address the page was opened from.
@@ -1029,6 +1062,7 @@ const SITE_URL: string = (() => {
   return 'https://nexorabusinessai.com';
 })();
 const TERMS_URL = `${SITE_URL}/?page=terms`;
+const PRIVACY_POLICY_URL = `${SITE_URL}/?page=privacy`;
 const SUPPORT_EMAIL = 'support@nexorabusinessai.com';
 const REPORT_REASONS: { key: 'spam' | 'harassment' | 'scam' | 'inappropriate' | 'other'; label: string }[] = [
   { key: 'spam', label: 'Spam' },
@@ -1110,9 +1144,44 @@ function BrandIcon({ platform, size = 36, ring = false }: { platform: Conversati
   );
 }
 
-type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules';
+type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'campaigns'|'automations'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules'|'opportunities'|'opportunityDetail'|'settings';
 type KnowledgeCategory='products'|'services'|'operations'|'policies'|'faqs';
 type KnowledgeField={label:string;value:string};
+// Stock: products can carry "Stock" (how many you have) and "Remind me at" (warn when stock reaches this; default 5).
+// ---- Brain AI tools (company guide, 29 Oct 2026): organised tools instead of one crowded screen ----
+type AiToolKey = 'description' | 'advert' | 'social' | 'email' | 'blog' | 'video' | 'plan' | 'proposal' | 'persona' | 'pricing' | 'salesScript' | 'launch' | 'summary' | 'brainstorm';
+type AiTool = { key: AiToolKey; label: string; icon: string; kind: 'content' | 'business' | 'note'; hint: string; extra?: string; build: (topic: string, extra: string) => string };
+const AI_RULE = 'Use what you know about my business from my knowledge base. Do not invent facts, prices, numbers, testimonials or guarantees; where something is missing write [add: ...] so I can fill it in. Use clear headings and plain words.';
+const AI_TOOL_GROUPS: { title: string; sub: string; icon: string; tools: AiTool[] }[] = [
+  { title: 'Content Studio', sub: 'Descriptions, adverts, posts, emails, articles and video scripts', icon: 'create-outline', tools: [
+    { key: 'description', label: 'Product description', icon: 'pricetag-outline', kind: 'content', hint: 'Which product or service?', extra: 'Who is it for? (optional)', build: (t, x) => `Write a clear, persuasive product description for "${t}"${x ? ` aimed at ${x}` : ''}: a short title, a 60–120 word description, 4–6 key features and 3 FAQs with answers. ${AI_RULE}` },
+    { key: 'advert', label: 'Advert', icon: 'megaphone-outline', kind: 'content', hint: 'What are you advertising?', extra: 'Where will it run? (e.g. Facebook, radio, flyer)', build: (t, x) => `Write 3 short advert versions for "${t}"${x ? ` to run on ${x}` : ''}, each with a headline, body text and a call to action. ${AI_RULE}` },
+    { key: 'social', label: 'Social media posts', icon: 'logo-instagram', kind: 'content', hint: 'What should the posts be about?', extra: 'Platform (Instagram, Facebook, TikTok, X)', build: (t, x) => `Write 5 social media posts about "${t}" for ${x || 'Instagram and Facebook'}, each with a caption, 2–4 hashtags and an idea for the picture or video. ${AI_RULE}` },
+    { key: 'email', label: 'Customer email', icon: 'mail-outline', kind: 'content', hint: 'What is the email for? (e.g. new stock, offer, thank you)', extra: 'Who receives it? (optional)', build: (t, x) => `Write a customer email about "${t}"${x ? ` for ${x}` : ''}: 3 subject line options, then the email (under 180 words) with one clear call to action. ${AI_RULE}` },
+    { key: 'blog', label: 'Blog article', icon: 'document-text-outline', kind: 'content', hint: 'Article topic', extra: 'Main keyword or reader (optional)', build: (t, x) => `Write a helpful blog article (about 600 words) titled around "${t}"${x ? `, for ${x}` : ''}, with an introduction, 3–5 sections with headings, and a short conclusion that mentions my business naturally. ${AI_RULE}` },
+    { key: 'video', label: 'Video script', icon: 'videocam-outline', kind: 'content', hint: 'What is the video about?', extra: 'Length (e.g. 30 seconds, 2 minutes)', build: (t, x) => `Write a ${x || '45-second'} video script about "${t}" for social media: a hook for the first 3 seconds, scene-by-scene shots with what to say, on-screen text, and a closing call to action. ${AI_RULE}` },
+  ] },
+  { title: 'Business Assistant', sub: 'Plans, proposals, pricing, sales scripts and launches', icon: 'briefcase-outline', tools: [
+    { key: 'plan', label: 'Business plan', icon: 'map-outline', kind: 'business', hint: 'What is the plan for? (e.g. the whole business, a new branch)', extra: 'Goal or time frame (optional)', build: (t, x) => `Draft a practical business plan for ${t}${x ? ` (${x})` : ''}: summary, customers, products and pricing, marketing, operations, costs to check, risks, and a 90-day action list. ${AI_RULE}` },
+    { key: 'proposal', label: 'Proposal or quote', icon: 'document-attach-outline', kind: 'business', hint: 'Who is it for and what are you offering?', extra: 'Budget or deadline (optional)', build: (t, x) => `Write a professional proposal for ${t}${x ? ` (${x})` : ''}: introduction, understanding of their need, what we will deliver, timeline, price table (use my real prices or [add price]), terms, and next steps. ${AI_RULE}` },
+    { key: 'persona', label: 'Customer profile', icon: 'person-circle-outline', kind: 'business', hint: 'Which product or customer group?', build: (t) => `Create 2–3 customer profiles for ${t}: who they are, what they need, what stops them buying, where to reach them, and the message that works best for each. Base it on my products and real customers where you can. ${AI_RULE}` },
+    { key: 'pricing', label: 'Pricing ideas', icon: 'cash-outline', kind: 'business', hint: 'Which product or service?', extra: 'Your cost per item (optional)', build: (t, x) => `Give me pricing ideas for "${t}"${x ? ` (my cost: ${x})` : ''}: 3 pricing options with pros and cons, bundle or discount ideas, and how to present the price. Do not quote competitor prices unless they are in my knowledge base. ${AI_RULE}` },
+    { key: 'salesScript', label: 'Sales script', icon: 'chatbubbles-outline', kind: 'business', hint: 'What are you selling, and where? (WhatsApp, phone, in person)', build: (t) => `Write a sales script for ${t}: opening, questions to understand the customer, how to present the product, answers to the 5 most likely objections, and how to close politely. ${AI_RULE}` },
+    { key: 'launch', label: 'Launch plan', icon: 'rocket-outline', kind: 'business', hint: 'What are you launching?', extra: 'Launch date (optional)', build: (t, x) => `Make a launch plan for "${t}"${x ? ` launching ${x}` : ''}: 2 weeks before, launch week and 2 weeks after, with daily tasks, posts to publish and what to measure. ${AI_RULE}` },
+  ] },
+  { title: 'AI Assistant', sub: 'Summarise, brainstorm and solve problems', icon: 'sparkles-outline', tools: [
+    { key: 'summary', label: 'Summarise text', icon: 'reader-outline', kind: 'note', hint: 'Paste the text or document to summarise', build: (t) => `Summarise this clearly in bullet points, then list any actions I should take:\n\n${t}` },
+    { key: 'brainstorm', label: 'Brainstorm ideas', icon: 'bulb-outline', kind: 'note', hint: 'What do you need ideas for?', build: (t) => `Brainstorm 10 practical ideas for: ${t}. For each, say why it could work for my business and the first step. ${AI_RULE}` },
+  ] },
+];
+const AI_SAVED_KIND_LABEL: Record<string, string> = { note: 'Notes', content: 'Content', business: 'Business', listing: 'Listings', caption: 'Captions', email: 'Emails', plan: 'Plans', script: 'Scripts', other: 'Other' };
+const STOCK_LABEL = 'Stock', STOCK_ALERT_LABEL = 'Remind me at';
+const stockOf = (fields: { label: string; value: string }[]) => {
+  const n = (l: string) => { const v = fields.find(f => f.label === l)?.value; const m = v ? /-?\d+/.exec(v.replace(/,/g, '')) : null; return m ? Number(m[0]) : null; };
+  const stock = n(STOCK_LABEL);
+  const at = n(STOCK_ALERT_LABEL) ?? 5;
+  return { stock, at, low: stock !== null && stock <= at };
+};
 type KnowledgeItem={id:string;name:string;subtitle:string;status:'Verified'|'Need review'|'Draft';icon:string;iconBg:string;iconColor:string;overview:string;fields:KnowledgeField[];features?:string[];image?:string;viewOnlyFields?:KnowledgeField[]};
 
 // A couple of items don't have a good match in Ionicons or
@@ -1246,7 +1315,13 @@ async function seedSampleWorkspace(userId: string) {
     throw e;
   }
 }
-type OrderRow = { id: string; customer_name: string; items: string; total: number; status: 'pending' | 'processing' | 'shipped' | 'delivered' | 'cancelled'; tracking: string; created_at: string };
+type OrderLine = { id?: string; name: string; qty: number; unit_price: number; total: number };
+type OrderEvent = { at: string; text: string; by?: string; customer?: boolean };
+type PaymentStatus = 'unknown' | 'unpaid' | 'pending' | 'paid' | 'partially_refunded' | 'refunded';
+type OrderRow = { id: string; customer_name: string; items: string; total: number; status: 'pending' | 'processing' | 'shipped' | 'delivered' | 'completed' | 'cancelled'; tracking: string; created_at: string;
+  order_number?: string | null; payment_status?: PaymentStatus; source?: string; src?: string | null; customer_phone?: string; customer_email?: string; delivery_address?: string; note?: string;
+  line_items?: OrderLine[]; subtotal?: number | null; delivery_fee?: number; discount?: number; currency?: string; amount_paid?: number; refunded_amount?: number;
+  paid_at?: string | null; shipped_at?: string | null; delivered_at?: string | null; completed_at?: string | null; cancelled_at?: string | null; cancel_reason?: string; history?: OrderEvent[]; track_token?: string | null; updated_at?: string };
 type AgendaEvent = { id: string; title: string; with_whom: string; event_date: string; start_time: string; end_time: string; notes: string; event_type: 'meeting' | 'task' | 'follow_up'; status: 'scheduled' | 'completed' | 'cancelled'; created_by: string };
 type EscalationRow = { id: string; customer_name: string; channel: string; reason: string; urgency: 'low' | 'normal' | 'high'; created_at: string };
 // One line about what Nexora did to reach the owner about an escalation.
@@ -1268,6 +1343,8 @@ function alertStatusText(a: any): string {
   return '';
 }
 const NATIVE_SCHEDULE = false; // false = go back to the Schedule-1..4 reference images
+// Dollar prices follow the Naira price at today's rate (e.g. 5.66), so they keep their cents.
+const fmtUsd = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 });
 const localIsoDate = (d: Date = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const addDaysIso = (iso: string, n: number) => { const d = new Date(`${iso}T12:00:00`); d.setDate(d.getDate() + n); return localIsoDate(d); };
 const niceDate = (iso: string) => new Date(`${iso}T12:00:00`).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
@@ -1285,7 +1362,8 @@ const eventEnd = (e: { start_time: string; end_time: string }) => toMinutes(e.en
 const clientNow = () => {
   let tz = 'UTC';
   try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { /* keep UTC */ }
-  return { date: localIsoDate(), time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }), tz };
+  // tz_offset_min lets Nexora count goal progress by the owner's own calendar (this week, this month).
+  return { date: localIsoDate(), time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }), tz, tz_offset_min: -new Date().getTimezoneOffset() };
 };
 const SAMPLE_ORDERS: { name: string; items: string; total: number; status: OrderRow['status']; ageH: number }[] = [
   { name: 'Sarah Johnson', items: 'Wireless Headphones x1', total: 59, status: 'pending', ageH: 3 },
@@ -1370,6 +1448,138 @@ function KnowledgeRowImage({ uri, style, fallback, contentFit = 'cover' }: { uri
 // "file-pdf-box" already IS the red document-with-folded-corner-and-
 // "PDF"-text glyph Figma uses, just needs the pink rounded-square behind
 // it.
+// "NEXORA is analyzing…" (Figma "Add Knowledge" processing): a breathing orb with twinkling sparkles,
+// and a step list where each step spins until it's done, then ticks.
+function NexoraThinkingOrb({ size = 120 }: { size?: number }) {
+  const breathe = useRef(new Animated.Value(0)).current;
+  const twinkle = useRef([0, 1, 2, 3, 4].map(() => new Animated.Value(0))).current;
+  const spin = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loops = [
+      Animated.loop(Animated.sequence([
+        Animated.timing(breathe, { toValue: 1, duration: 1400, useNativeDriver: true }),
+        Animated.timing(breathe, { toValue: 0, duration: 1400, useNativeDriver: true }),
+      ])),
+      Animated.loop(Animated.timing(spin, { toValue: 1, duration: 6000, useNativeDriver: true })),
+      ...twinkle.map((v, i) => Animated.loop(Animated.sequence([
+        Animated.delay(i * 260),
+        Animated.timing(v, { toValue: 1, duration: 700, useNativeDriver: true }),
+        Animated.timing(v, { toValue: 0, duration: 700, useNativeDriver: true }),
+        Animated.delay((4 - i) * 260),
+      ]))),
+    ];
+    loops.forEach(l => l.start());
+    return () => loops.forEach(l => l.stop());
+  }, []);
+  const scale = breathe.interpolate({ inputRange: [0, 1], outputRange: [0.94, 1.05] });
+  const glow = breathe.interpolate({ inputRange: [0, 1], outputRange: [0.15, 0.4] });
+  const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
+  const W = size * 1.9;
+  // Little sparkles around the orb: [x, y, size, colour] relative to the box.
+  const stars: [number, number, number, string][] = [[0.12, 0.5, 0.16, '#1E56A0'], [0.86, 0.32, 0.26, '#1E56A0'], [0.28, 0.16, 0.06, '#1E56A0'], [0.68, 0.08, 0.06, '#1E56A0'], [0.4, 0.9, 0.1, '#1E56A0']];
+  return (
+    <View style={{ width: W, height: size * 1.15, alignItems: 'center', justifyContent: 'center' }} accessibilityLabel="Nexora is working">
+      <Animated.View style={{ position: 'absolute', width: size * 1.1, height: size * 1.1, borderRadius: size, backgroundColor: '#3B82F6', opacity: glow, transform: [{ scale }] }} />
+      <Animated.View style={{ transform: [{ scale }] }}>
+        <Svg width={size * 0.82} height={size * 0.82} viewBox="0 0 100 100">
+          <Defs>
+            <LinearGradient id="nxOrb" x1="0" y1="0.5" x2="1" y2="0.5">
+              <Stop offset="0" stopColor="#F4F7FB" />
+              <Stop offset="0.55" stopColor="#7C9CC9" />
+              <Stop offset="1" stopColor="#1E4E95" />
+            </LinearGradient>
+          </Defs>
+          <Circle cx="50" cy="50" r="49" fill="url(#nxOrb)" />
+        </Svg>
+        <Animated.View style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', transform: [{ rotate }] }}>
+          <Ionicons name="sparkles" size={size * 0.34} color="#1AA6CF" />
+        </Animated.View>
+      </Animated.View>
+      {stars.map(([x, y, s, c], i) => (
+        <Animated.View key={i} style={{ position: 'absolute', left: x * W - (s * size) / 2, top: y * size * 1.15 - (s * size) / 2, opacity: twinkle[i].interpolate({ inputRange: [0, 1], outputRange: [0.35, 1] }), transform: [{ scale: twinkle[i].interpolate({ inputRange: [0, 1], outputRange: [0.7, 1.15] }) }] }}>
+          <Ionicons name="sparkles-sharp" size={Math.max(8, s * size)} color={c} />
+        </Animated.View>
+      ))}
+    </View>
+  );
+}
+function DotSpinner({ size = 18, color = '#1AA6CF' }: { size?: number; color?: string }) {
+  const spin = useRef(new Animated.Value(0)).current;
+  useEffect(() => { const l = Animated.loop(Animated.timing(spin, { toValue: 1, duration: 1100, useNativeDriver: true })); l.start(); return () => l.stop(); }, []);
+  const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
+  return (
+    <Animated.View style={{ width: size, height: size, transform: [{ rotate }] }}>
+      {[0, 1, 2, 3, 4, 5, 6, 7].map(i => {
+        const a = (i / 8) * Math.PI * 2;
+        const d = size * 0.18;
+        return <View key={i} style={{ position: 'absolute', width: d, height: d, borderRadius: d, backgroundColor: color, opacity: 0.25 + (i / 8) * 0.75, left: size / 2 - d / 2 + Math.cos(a) * (size / 2 - d / 2), top: size / 2 - d / 2 + Math.sin(a) * (size / 2 - d / 2) }} />;
+      })}
+    </Animated.View>
+  );
+}
+function AnalyzingSteps({ title, steps, done, detail }: { title: string; steps: string[]; done: number; detail?: string }) {
+  return (
+    <View style={{ alignItems: 'center', paddingTop: 28 }}>
+      <NexoraThinkingOrb size={110} />
+      <Text style={{ fontSize: 16, fontWeight: '700', color: '#0B1220', marginTop: 22, textAlign: 'center' }}>{title}</Text>
+      {!!detail && <Text style={{ fontSize: 13, color: '#6B7A8C', marginTop: 6, textAlign: 'center', paddingHorizontal: 20 }} numberOfLines={2}>{detail}</Text>}
+      <View style={{ marginTop: 18, alignSelf: 'center' }}>
+        {steps.map((s, i) => (
+          <View key={s} style={{ flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 6 }}>
+            {i < done ? <Ionicons name="checkmark-circle-outline" size={19} color="#14A38B" /> : <DotSpinner size={17} />}
+            <Text style={{ fontSize: 14, color: i < done ? '#4B5B6E' : '#6B7A8C' }}>{s}</Text>
+          </View>
+        ))}
+      </View>
+      <View style={{ marginTop: 60, alignSelf: 'stretch', flexDirection: 'row', alignItems: 'center', gap: 14, borderRadius: 12, backgroundColor: '#E8F1F5', padding: 16 }}>
+        <MaterialCommunityIcons name="shield-lock" size={30} color="#1AA6CF" />
+        <Text style={{ flex: 1, fontSize: 12.5, color: '#6B7A8C', lineHeight: 18 }}>All data is secure and private. You can disconnect anytime.</Text>
+      </View>
+    </View>
+  );
+}
+// The "NEXORA is working" screen (Figma "Add Knowledge" processing) for anything that takes a while:
+// web searches, market research, insights, quotes, exports... Call nexoraBusy({...}, async () => ...).
+// It appears only if the job is still running after a moment, so quick answers never flash it.
+type BusyJob = { id: number; heading: string; title: string; steps: string[]; detail?: string };
+let busySet: (j: BusyJob | null) => void = () => {};
+let busyNow: BusyJob | null = null;
+async function nexoraBusy<T>(cfg: { heading: string; title: string; steps: string[]; detail?: string }, run: () => Promise<T>): Promise<T> {
+  const job: BusyJob = { id: Date.now() + Math.random(), ...cfg };
+  const t = setTimeout(() => { busyNow = job; busySet(job); }, 700);
+  try { return await run(); }
+  finally {
+    clearTimeout(t);
+    if (busyNow?.id === job.id) { busyNow = null; busySet(null); }
+  }
+}
+function BusyHost() {
+  const [job, setJob] = useState<BusyJob | null>(null);
+  const [done, setDone] = useState(0);
+  const [hidden, setHidden] = useState<number | null>(null);
+  const insets = useSafeAreaInsets();
+  useEffect(() => { busySet = (j) => { setJob(j); setDone(0); }; return () => { busySet = () => {}; }; }, []);
+  useEffect(() => {
+    if (!job) return;
+    const t = setInterval(() => setDone(d => Math.min(d + 1, job.steps.length - 1)), 2400);
+    return () => clearInterval(t);
+  }, [job?.id]);
+  const visible = !!job && hidden !== job.id;
+  return (
+    <Modal visible={visible} animationType="fade" onRequestClose={() => job && setHidden(job.id)} statusBarTranslucent>
+      <View style={{ flex: 1, backgroundColor: '#F4F6F8', paddingTop: (insets.top || 24) + 8, paddingBottom: insets.bottom + 16 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, height: 48 }}>
+          <Pressable onPress={() => job && setHidden(job.id)} hitSlop={10} accessibilityLabel="Hide (Nexora keeps working)"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={{ flex: 1, textAlign: 'center', fontSize: 18, fontWeight: '600', color: '#0B1220', marginRight: 24 }} numberOfLines={1}>{job?.heading}</Text>
+        </View>
+        <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24, width: '100%', maxWidth: 560, alignSelf: 'center' }}>
+          {job && <AnalyzingSteps title={job.title} steps={job.steps} done={done} detail={job.detail} />}
+          <Text style={{ fontSize: 12, color: '#8A97A6', textAlign: 'center', marginTop: 14 }}>You can go back; Nexora keeps working and shows the result when it's ready.</Text>
+        </ScrollView>
+      </View>
+    </Modal>
+  );
+}
 function PdfSourceBadge() {
   return (
     <View style={styles.pdfBadge}>
@@ -1452,32 +1662,24 @@ function DrawerHost() {
   }, []);
   const items: { k: string; icon: string; label: string }[] = [
     { k: 'home', icon: 'home-outline', label: 'Home' },
-    { k: 'inbox', icon: 'chatbubbles-outline', label: 'Inbox' },
-    { k: 'brain', icon: 'sparkles-outline', label: 'Train AI' },
-    { k: 'schedule', icon: 'calendar-outline', label: 'Schedule' },
+    // Inbox, Train AI and Schedule open from the Home screen, so they aren't repeated here.
+    { k: 'market', icon: 'storefront-outline', label: 'Market' },
     { k: 'insights', icon: 'stats-chart-outline', label: 'Business Insights' },
     { k: 'orders', icon: 'cube-outline', label: 'Orders' },
-    { k: 'attention', icon: 'hand-left-outline', label: 'Needs your decision' },
-    { k: 'ownerAlerts', icon: 'call-outline', label: 'When Nexora needs you' },
-    { k: 'rules', icon: 'git-branch-outline', label: 'What Nexora decides for you' },
-    { k: 'leads', icon: 'people-outline', label: 'Leads' },
-    { k: 'customers', icon: 'person-circle-outline', label: 'Customers' },
-    { k: 'channels', icon: 'link-outline', label: 'Connected channels' },
-    { k: 'trends', icon: 'trending-up-outline', label: 'Trending for you' },
-    { k: 'explore', icon: 'globe-outline', label: 'Find online' },
+    { k: 'customers', icon: 'people-outline', label: 'Customers' },
+    { k: 'campaigns', icon: 'megaphone-outline', label: 'Campaigns' },
+    { k: 'automations', icon: 'git-branch-outline', label: 'Automations' },
     { k: 'network', icon: 'people-outline', label: 'Find partners' },
-    { k: 'community', icon: 'chatbubbles-outline', label: 'Community' },
-    { k: 'shop', icon: 'storefront-outline', label: 'AI shop link' },
+    { k: 'shop', icon: 'qr-code-outline', label: 'AI shop link' },
     { k: 'billing', icon: 'card-outline', label: 'Plans & billing' },
-    { k: 'profile', icon: 'person-outline', label: 'Profile' },
   ];
   const go = (k: string) => { setOpen(false); setTimeout(() => drawerBridge.go(k), 60); };
   return (
     <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)} statusBarTranslucent>
       <View style={{ flex: 1, flexDirection: 'row' }}>
         <View style={{ width: 296, backgroundColor: '#FFF', paddingTop: 64, paddingHorizontal: 20, paddingBottom: 28 }}>
-          <Text style={{ fontSize: 22, fontWeight: '700', color: '#0B1220' }}>Nexora AI</Text>
-          <Text style={{ fontSize: 12, color: '#8A97A6', marginTop: 2 }} numberOfLines={1}>{drawerBridge.name || 'AI Business Manager'}{drawerBridge.email ? `  \u00b7  ${drawerBridge.email}` : ''}</Text>
+          <NexoraLockup letter={17} />
+          <Text style={{ fontSize: 12, color: '#8A97A6', marginTop: 10 }} numberOfLines={1}>{drawerBridge.name || 'AI Business Manager'}{drawerBridge.email ? `  \u00b7  ${drawerBridge.email}` : ''}</Text>
           <ScrollView style={{ marginTop: 18 }} showsVerticalScrollIndicator={false}>
             {items.map(it => (
               <Pressable key={it.k} onPress={() => go(it.k)} accessibilityRole="button" accessibilityLabel={it.label} style={{ flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 14 }}>
@@ -1592,17 +1794,19 @@ function ToastHost() {
 // ---- Web layout ----
 // Screens drawn from phone designs (onboarding, sign-in, Home…) keep the phone shape; the flexible
 // screens below may use the full width of the browser.
-const WEB_WIDE_SCREENS = ['insights', 'ownerAlerts', 'rules', 'browser', 'explore', 'trends', 'network', 'community', 'communityPost', 'storefront', 'followups', 'terms', 'learned', 'leads', 'leadDetail', 'customersLive', 'customerDetail',
-  'orders', 'agenda', 'agendaPriority', 'agendaCreate', 'knowledgeHealth', 'knowledgeList', 'itemDetail', 'itemEdit', 'addKnowledge', 'missingImages', 'inboxChat', 'connectChannels', 'billing'];
-const WEB_WIDE_TABS = ['brain', 'inbox', 'profile'];
+const WEB_WIDE_SCREENS = ['settings', 'opportunities', 'opportunityDetail', 'insights', 'ownerAlerts', 'rules', 'browser', 'explore', 'trends', 'network', 'community', 'communityPost', 'storefront', 'followups', 'terms', 'learned', 'leads', 'leadDetail', 'customersLive', 'customerDetail',
+  'orders', 'agenda', 'agendaPriority', 'agendaCreate', 'knowledgeHealth', 'knowledgeList', 'itemDetail', 'itemEdit', 'addKnowledge', 'missingImages', 'inboxChat', 'connectChannels', 'billing', 'campaigns', 'automations'];
+const WEB_WIDE_TABS = ['brain', 'inbox', 'market', 'profile'];
 // From this window width the web Home is a full dashboard instead of the phone design.
-const WEB_DESKTOP_HOME_MIN = 900;
+// The web dashboard Home is used in every browser, phones included (company feedback 28 Oct 2026: the Figma
+// phone widget belongs to the mobile app); it reflows into one column on narrow screens.
+const WEB_DESKTOP_HOME_MIN = 0;
 // From this window width, sign up / log in / password reset are a full web page instead of the phone screens.
 // Web (any screen size, phones included) uses the responsive onboarding and sign-in pages; the fixed
 // 393x852 phone frames got cut off in phone browsers, hiding Continue and the sign-in buttons.
 const WEB_AUTH_PAGE_MIN = 0;
 // Screens the web version reopens after a refresh or when you come back to the tab.
-const WEB_RESTORABLE = ['main', 'insights', 'ownerAlerts', 'rules', 'leads', 'customersLive', 'orders', 'agenda', 'community', 'storefront', 'followups', 'trends', 'explore', 'network', 'billing', 'learned', 'connectChannels', 'knowledgeHealth', 'knowledgeList'];
+const WEB_RESTORABLE = ['main', 'insights', 'ownerAlerts', 'rules', 'leads', 'customersLive', 'orders', 'agenda', 'community', 'storefront', 'followups', 'trends', 'explore', 'network', 'billing', 'learned', 'connectChannels', 'knowledgeHealth', 'knowledgeList', 'campaigns', 'automations'];
 const WEB_LAST_VIEW_KEY = 'nexora-last-view';
 const WEB_AUTH_SCREENS = ['launch', 'onboarding', 'signup', 'login', 'forgotPassword', 'verifyEmail'];
 const NEXORA_LOGO_URL = `${SUPABASE_URL}/storage/v1/object/public/assets/icon.png`;
@@ -1624,20 +1828,16 @@ function useWebShell() {
 const WEB_NAV: { label: string; icon: string; key: FeatureKey; pages: string[] }[] = [
   { label: 'Home', icon: 'home-outline', key: 'home', pages: ['home'] },
   { label: 'Brain', icon: 'sparkles-outline', key: 'knowledge', pages: ['brain'] },
-  { label: 'Inbox', icon: 'chatbubbles-outline', key: 'inbox', pages: ['inbox', 'inboxChat', 'connectChannels', 'channelSettings'] },
+  // Inbox, Schedule and Train AI open from Home (its cards and Quick actions), so they aren't listed here.
+  // Market also holds Leads, Customers, Trending, Find online and Community (its tiles), so they aren't listed separately.
+  { label: 'Market', icon: 'storefront-outline', key: 'market', pages: ['market', 'opportunities', 'opportunityDetail', 'leads', 'leadDetail', 'trends', 'explore', 'browser', 'community', 'communityPost'] },
   { label: 'Insights', icon: 'stats-chart-outline', key: 'analytics', pages: ['insights'] },
-  { label: 'Customers', icon: 'people-outline', key: 'customers', pages: ['customersLive', 'customerDetail'] },
   { label: 'Orders', icon: 'bag-handle-outline', key: 'orders', pages: ['orders'] },
-  { label: 'Schedule', icon: 'calendar-outline', key: 'agenda', pages: ['agenda', 'agendaCreate'] },
-  { label: 'Needs your decision', icon: 'hand-left-outline', key: 'attention', pages: ['agendaPriority', 'activeCall', 'callSummary'] },
-  { label: 'What Nexora decides', icon: 'git-branch-outline', key: 'rules', pages: ['rules'] },
-  { label: 'When Nexora calls you', icon: 'call-outline', key: 'alerts', pages: ['ownerAlerts'] },
-  { label: 'Train AI', icon: 'school-outline', key: 'operations', pages: ['knowledgeHealth', 'knowledgeList', 'itemDetail', 'itemEdit', 'addKnowledge', 'learned'] },
-  { label: 'Trending', icon: 'trending-up-outline', key: 'trends', pages: ['trends'] },
-  { label: 'Find online', icon: 'globe-outline', key: 'explore', pages: ['explore', 'browser'] },
+  { label: 'Customers', icon: 'people-outline', key: 'customers', pages: ['customersLive', 'customerDetail'] },
+  { label: 'Campaigns', icon: 'megaphone-outline', key: 'campaigns', pages: ['campaigns'] },
+  { label: 'Automations', icon: 'git-branch-outline', key: 'automations', pages: ['automations', 'rules'] },
   { label: 'Find partners', icon: 'people-circle-outline', key: 'partners', pages: ['network'] },
-  { label: 'Community', icon: 'chatbubbles-outline', key: 'community', pages: ['community', 'communityPost'] },
-  { label: 'AI shop link', icon: 'storefront-outline', key: 'shop', pages: ['storefront'] },
+  { label: 'AI shop link', icon: 'qr-code-outline', key: 'shop', pages: ['storefront'] },
   { label: 'Plans & billing', icon: 'card-outline', key: 'billing', pages: ['billing'] },
 ];
 const WEB_SIDEBAR_W = 248;
@@ -1645,13 +1845,7 @@ function WebSidebar({ active }: { active: string }) {
   return (
     <View style={{ width: WEB_SIDEBAR_W, backgroundColor: '#0B1220', borderRightWidth: 1, borderRightColor: 'rgba(255,255,255,0.06)', paddingTop: 24, paddingHorizontal: 14 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 10, marginBottom: 26 }}>
-        <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}>
-          <Ionicons name="sparkles" size={18} color="#FFFFFF" />
-        </View>
-        <View>
-          <Text style={{ color: '#FFFFFF', fontSize: 17, fontWeight: '800' }}>Nexora AI</Text>
-          <Text style={{ color: '#7F93AD', fontSize: 11 }}>AI Business Manager</Text>
-        </View>
+        <NexoraLockup letter={15} light />
       </View>
       <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 24 }}>
         {WEB_NAV.map(item => {
@@ -1690,22 +1884,32 @@ const INTEREST_TILES: { label: string; key: FeatureKey; x: number; y: number }[]
   { label: 'Marketing', key: 'trends', x: 22, y: 337 }, { label: 'Operations', key: 'operations', x: 212, y: 337 },
   { label: 'Scheduling', key: 'agenda', x: 22, y: 432 }, { label: 'Analytics', key: 'analytics', x: 212, y: 432 },
   { label: 'Automation', key: 'automation', x: 22, y: 527 }, { label: 'Customers', key: 'customers', x: 212, y: 527 },
+  // Businesses outside the categories above. Not in the phone onboarding design (x/y -1), only on the web pages.
+  { label: 'Other', key: 'knowledge', x: -1, y: -1 },
 ];
 const INTEREST_TILE_W = 160, INTEREST_TILE_H = 80;
 // Feature shortcuts on the web side panels. A click before signing in is remembered (also across a page
 // reload during email confirmation) and is the first thing Nexora opens once the user is signed in.
-type FeatureKey = 'knowledge' | 'inbox' | 'trends' | 'partners' | 'learned' | 'account' | 'sales' | 'orders' | 'operations' | 'agenda' | 'analytics' | 'automation' | 'customers' | 'home' | 'leads' | 'explore' | 'billing' | 'community' | 'shop' | 'attention' | 'rules' | 'alerts';
-const FEATURE_LABELS: Record<FeatureKey, string> = { knowledge: 'Ask Nexora', inbox: 'your Inbox', trends: 'Trending for you', partners: 'Find partners', learned: 'What Nexora learned', account: 'your Profile', sales: 'your sales report', orders: 'your orders', operations: 'Train AI', agenda: 'your schedule', analytics: 'Business Insights', automation: 'automatic replies', customers: 'your customers', home: 'Home', leads: 'your leads', explore: 'Find online', billing: 'Plans & billing', community: 'the Community', shop: 'your AI shop link', attention: 'Needs your decision', rules: 'What Nexora decides for you', alerts: 'When Nexora needs you' };
+type FeatureKey = 'automations' | 'campaigns' | 'knowledge' | 'inbox' | 'trends' | 'partners' | 'learned' | 'account' | 'sales' | 'orders' | 'operations' | 'agenda' | 'analytics' | 'automation' | 'customers' | 'home' | 'leads' | 'explore' | 'billing' | 'community' | 'shop' | 'attention' | 'rules' | 'alerts' | 'market';
+const FEATURE_LABELS: Record<FeatureKey, string> = { automations: 'Automations', campaigns: 'Campaigns', knowledge: 'Ask Nexora', inbox: 'your Inbox', trends: 'Trending for you', partners: 'Find partners', learned: 'What Nexora learned', account: 'your Profile', sales: 'your sales report', orders: 'your orders', operations: 'Train AI', agenda: 'your schedule', analytics: 'Business Insights', automation: 'automatic replies', customers: 'your customers', home: 'Home', leads: 'your leads', explore: 'Find online', billing: 'Plans & billing', community: 'the Community', shop: 'your AI shop link', attention: 'Needs your decision', rules: 'What Nexora decides for you', alerts: 'When Nexora needs you', market: 'the Marketplace' };
 const PENDING_FEATURE_KEY = 'nexora-pending-feature';
 let featureHandler: ((k: FeatureKey) => void) | null = null;
 let pendingFeatureMem: FeatureKey | null = null;
+// Stored with the time it was clicked: a click older than 2 hours (or from before this format) is forgotten,
+// so someone who tapped a plan days ago isn't dropped onto Plans & billing the next time they sign in.
+const PENDING_FEATURE_TTL = 2 * 3600_000;
 function savePendingFeature(k: FeatureKey | null) {
   pendingFeatureMem = k;
-  try { const ls = (globalThis as any).localStorage; if (ls) { if (k) ls.setItem(PENDING_FEATURE_KEY, k); else ls.removeItem(PENDING_FEATURE_KEY); } } catch { /* storage blocked */ }
+  try { const ls = (globalThis as any).localStorage; if (ls) { if (k) ls.setItem(PENDING_FEATURE_KEY, `${k}|${Date.now()}`); else ls.removeItem(PENDING_FEATURE_KEY); } } catch { /* storage blocked */ }
 }
 function readPendingFeature(): FeatureKey | null {
   if (pendingFeatureMem) return pendingFeatureMem;
-  try { const v = (globalThis as any).localStorage?.getItem(PENDING_FEATURE_KEY); if (v && v in FEATURE_LABELS) return v as FeatureKey; } catch { /* storage blocked */ }
+  try {
+    const ls = (globalThis as any).localStorage;
+    const [k, at] = String(ls?.getItem(PENDING_FEATURE_KEY) ?? '').split('|');
+    if (k && k in FEATURE_LABELS && Date.now() - Number(at) < PENDING_FEATURE_TTL) return k as FeatureKey;
+    if (k) ls?.removeItem(PENDING_FEATURE_KEY);
+  } catch { /* storage blocked */ }
   return null;
 }
 function requestFeature(k: FeatureKey) {
@@ -1723,8 +1927,8 @@ function WebSidePanel({ side }: { side: 'left' | 'right' }) {
     <View style={{ flex: 1, maxWidth: 380, paddingHorizontal: 36, justifyContent: 'center' }}>
       {side === 'left' && (
         <>
-          <Text style={{ color: '#FFFFFF', fontSize: 34, fontWeight: '800', letterSpacing: -0.5 }}>Nexora AI</Text>
-          <Text style={{ color: '#9FB0C6', fontSize: 16, marginTop: 8, marginBottom: 28, lineHeight: 23 }}>Your AI business assistant: it knows your business, works while you rest, and watches the market for you.</Text>
+          <NexoraLockup letter={22} light />
+          <Text style={{ color: '#9FB0C6', fontSize: 16, marginTop: 8, marginBottom: 28, lineHeight: 23 }}>Your AI business manager: it knows your business, runs it 24/7 while you’re away, and watches the market for you.</Text>
         </>
       )}
       {side === 'right' && <Text style={{ color: '#7FB2FF', fontSize: 13, fontWeight: '700', letterSpacing: 1, marginBottom: 18 }}>ALSO IN NEXORA</Text>}
@@ -1748,28 +1952,138 @@ function WebSidePanel({ side }: { side: 'left' | 'right' }) {
 // ---- Web landing page: the whole first-visit experience on one page (web only) ----
 // Replaces the phone-style onboarding steps: what Nexora does, what to start with (the interest picks),
 // how it works, live plan prices, FAQs, and sign up / log in, like a product website.
+// Where the visitor is, from the device's time zone (no network call): Nigeria sees Naira prices, everyone else
+// sees US dollars only, so visitors abroad never see Naira (company guide, 28 Oct 2026).
+const VISITOR_COUNTRY: string = (() => {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+    if (tz === 'Africa/Lagos') return 'NG';
+    const m = /-([A-Za-z]{2})$/.exec(String((globalThis as any).navigator?.language || ''));
+    return m ? m[1].toUpperCase() : '';
+  } catch { return ''; }
+})();
+const LOCAL_NGN = VISITOR_COUNTRY === 'NG';
+// Plan features say "connected accounts": spell out what that means (company guide, 28 Oct 2026).
+const explainPlanFeature = (f: string) => (/connected/i.test(f) && /\d/.test(f) && !/e\.g\./i.test(f) ? `${f.replace(/,?\s*where supported/i, '')} (e.g. WhatsApp, Instagram, Facebook page or website chat)` : f);
 type LandingPlan = { key: string; name: string; price_usd: number; price_ngn: number | null; price_usd_year: number | null; price_ngn_year: number | null; features: string[]; blurb: string; contact_sales: boolean };
-const LANDING_ROTATING = ['WhatsApp', 'Instagram', 'Facebook', 'your shop link'];
-const LANDING_WHY: [string, string, string][] = [
-  ['chatbubbles-outline', 'Replies while you rest', 'Nexora answers customers on WhatsApp, Instagram and Facebook in your voice, day and night.'],
-  ['sparkles-outline', 'Knows your business', 'Teach it your products, prices and policies once. Every answer comes from your own knowledge.'],
-  ['flash-outline', 'Never misses a lead', 'Hot leads, orders and follow-ups are captured and flagged, so no sale slips through.'],
-  ['stats-chart-outline', 'Shows what to do next', 'Clear insights, trends in your market and ideas made for your business.'],
+// Hero: "Your business keeps running while you ___" (rest, sleep, travel...).
+const LANDING_ROTATING = ['rest', 'sleep', 'travel', 'go on holiday', 'focus on other work'];
+// What Nexora can do, in three levels (company guide, 28 Oct 2026): the main jobs first, then everyday help, then the extras.
+// Plain words on purpose: a visitor should understand everything Nexora does within a minute.
+const LANDING_MAJOR: [string, string, string][] = [
+  ['chatbubbles-outline', 'Answers your customers 24/7', 'Every question gets a quick, correct reply on WhatsApp, Instagram, Facebook and your website, in your own words. Day or night, for as long as you want.'],
+  ['albums-outline', 'All your chats in one place', 'Messages from all your platforms land in one inbox, so you never have to jump between apps again.'],
+  ['call-outline', 'Contacts you when it matters', 'When a serious buyer or a problem needs you personally, Nexora alerts you right away by phone, text or email.'],
+  ['grid-outline', 'Your whole business on one screen', 'Sales, orders, customers and activity from every platform, together in one simple dashboard.'],
+  ['cube-outline', 'Keeps an eye on your stock', 'Note how many of each product you have, and Nexora reminds you to restock before anything runs out.'],
+  ['megaphone-outline', 'Your social media manager', 'It writes and designs posts for your products, offers and news, and publishes or schedules them for you.'],
 ];
+const LANDING_MID: [string, string][] = [
+  ['school-outline', 'Learns your business and helps you write your policies (delivery, refunds, opening hours)'],
+  ['person-add-outline', 'Saves every interested buyer and reminds you to follow up'],
+  ['calendar-outline', 'Books meetings and keeps your schedule'],
+  ['receipt-outline', 'Tracks orders and tells you what still needs to ship'],
+  ['stats-chart-outline', 'Shows clear insights and what to do next to sell more'],
+  ['trending-up-outline', 'Watches your market and finds suppliers, deals and grants'],
+];
+const LANDING_MINOR: string[] = ['Your own AI shop page', 'Team accounts and staff training', 'Rules you set once', 'Quiet hours', 'Business goals', 'Find business partners', 'Community of owners', 'Fingerprint and two-factor sign-in'];
 const LANDING_STEPS: [string, string][] = [
   ['Create your free account', 'Sign up in a minute. No card needed.'],
   ['Teach Nexora your business', 'Add products and policies, or upload a price list.'],
-  ['Connect your channels', 'Link WhatsApp, Instagram and Facebook in a few taps.'],
-  ['Let Nexora run the busy work', 'It replies, follows up and reports back to you.'],
+  ['Connect your channels', 'Link WhatsApp, Instagram, Facebook and your website in a few taps, or let our team do it for you.'],
+  ['Let Nexora run your business', 'It replies, follows up, posts and reports back to you, 24/7.'],
 ];
 const LANDING_FAQ: [string, string][] = [
   ['Is there really a free plan?', 'Yes. The Free plan is free forever with 100 AI tasks a month, so you can try Nexora on your own business. Upgrade only when you need more.'],
   ['What is an AI task?', 'Every reply or action Nexora takes for you, such as answering a customer, booking a meeting or saving a lead, counts as one AI task.'],
-  ['Which channels does Nexora work with?', 'WhatsApp, Instagram and Facebook Messenger today, plus your own AI shop link that customers can chat with.'],
+  ['Where can Nexora talk to my customers?', 'On WhatsApp, Instagram and Facebook, on your own website (we give you a simple chat button, or set it up for you), and on your Nexora shop page. TikTok and Snapchat are coming soon.'],
+  ['What is a "connected account"?', 'One place your customers reach you, for example your WhatsApp Business number, your Instagram page, your Facebook page or your website chat. Each plan says how many you can connect at the same time.'],
   ['Will Nexora say things I didn’t approve?', 'Nexora only answers from the knowledge you give it, asks before taking actions you haven’t allowed, and hands anything unusual to you.'],
-  ['How do I pay?', 'Securely through Paystack by card, bank transfer or USSD, monthly or yearly. Yearly plans include two months free.'],
+  ['How do I pay?', 'Securely by card online, monthly or yearly, in your local currency where available. Yearly plans include two months free.'],
   ['Can my team use it?', 'Yes. Pro and Business plans add team members, so staff can learn your business and work from one inbox.'],
 ];
+// ---- Landing page AI guide: answers visitors' questions about Nexora (nexora-guide function, no sign-in) ----
+type GuideMsg = { role: 'user' | 'assistant'; content: string; at: number };
+const GUIDE_STARTERS = ['What does Nexora do?', 'How much does it cost?', 'Can it reply on WhatsApp?', 'How do I add it to my website?'];
+function LandingGuide({ width, compact, onStart }: { width: number; compact: boolean; onStart: (feature?: FeatureKey) => void }) {
+  const BLUE = '#1E56A0';
+  const [open, setOpen] = useState(false);
+  const [msgs, setMsgs] = useState<GuideMsg[]>([{ role: 'assistant', content: 'Hi! I’m the Nexora guide. Ask me anything about what Nexora can do for your business, our plans, or how to get started.', at: Date.now() }]);
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const listRef = useRef<ScrollView>(null);
+  const ask = async (q: string) => {
+    const question = q.trim().slice(0, 600);
+    if (!question || busy) return;
+    const next: GuideMsg[] = [...msgs, { role: 'user', content: question, at: Date.now() }];
+    setMsgs(next); setText(''); setBusy(true);
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/nexora-guide`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+        body: JSON.stringify({ messages: next.slice(1).map(m => ({ role: m.role, content: m.content })), local_ngn: LOCAL_NGN }),
+      });
+      const r = await res.json().catch(() => ({}));
+      setMsgs(m => [...m, { role: 'assistant', content: r?.reply || r?.message || `Sorry, I couldn’t answer just now. Please try again, or email ${SUPPORT_EMAIL}.`, at: Date.now() }]);
+    } catch {
+      setMsgs(m => [...m, { role: 'assistant', content: `I can’t connect right now. Please check your internet, or email ${SUPPORT_EMAIL}.`, at: Date.now() }]);
+    } finally { setBusy(false); setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 60); }
+  };
+  const panelW = Math.min(380, width - 32);
+  if (!open) {
+    return (
+      <Pressable onPress={() => setOpen(true)} accessibilityRole="button" accessibilityLabel="Chat with the Nexora guide"
+        style={(st: any) => ({ position: 'absolute', right: compact ? 16 : 24, bottom: compact ? 16 : 24, height: 52, paddingHorizontal: compact ? 16 : 20, borderRadius: 26, flexDirection: 'row', alignItems: 'center', gap: 8, cursor: 'pointer',
+          backgroundColor: st.hovered ? '#184A8B' : BLUE, shadowColor: '#0B1220', shadowOpacity: 0.25, shadowRadius: 14, shadowOffset: { width: 0, height: 6 } } as any)}>
+        <Ionicons name="sparkles" size={18} color="#FFFFFF" />
+        {!compact && <Text style={{ color: '#FFFFFF', fontSize: 14.5, fontWeight: '700' }}>Ask Nexora</Text>}
+      </Pressable>
+    );
+  }
+  return (
+    <View style={{ position: 'absolute', right: compact ? 16 : 24, bottom: compact ? 16 : 24, width: panelW, height: compact ? 460 : 540, maxHeight: '85%' as any, backgroundColor: '#FFFFFF', borderRadius: 20, overflow: 'hidden',
+      shadowColor: '#0B1220', shadowOpacity: 0.28, shadowRadius: 24, shadowOffset: { width: 0, height: 10 }, borderWidth: 1, borderColor: '#E6ECF3' } as any}>
+      <View style={{ backgroundColor: '#0F2942', paddingHorizontal: 16, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+        <View style={{ width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(127,178,255,0.18)', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="sparkles" size={18} color="#7FB2FF" /></View>
+        <View style={{ flex: 1 }}>
+          <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 15 }}>Nexora guide</Text>
+          <Text style={{ color: '#9FB0C6', fontSize: 12 }}>AI assistant · answers in seconds</Text>
+        </View>
+        <Pressable onPress={() => setOpen(false)} hitSlop={8} accessibilityLabel="Close chat"><Ionicons name="close" size={22} color="#FFFFFF" /></Pressable>
+      </View>
+      <ScrollView ref={listRef} style={{ flex: 1 }} contentContainerStyle={{ padding: 14, gap: 10 }} onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}>
+        {msgs.map((m, i) => (
+          <View key={i} style={{ alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '86%' }}>
+            <View style={{ backgroundColor: m.role === 'user' ? BLUE : '#F1F5FA', borderRadius: 16, paddingHorizontal: 12, paddingVertical: 9 }}>
+              <Text selectable style={{ color: m.role === 'user' ? '#FFFFFF' : '#0B1220', fontSize: 14, lineHeight: 20 }}>{m.content.replace(/\*\*(.+?)\*\*/g, '$1')}</Text>
+            </View>
+            <Text style={{ fontSize: 10.5, color: '#8A97A6', marginTop: 3, alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start' }}>{new Date(m.at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</Text>
+          </View>
+        ))}
+        {busy && <View style={{ alignSelf: 'flex-start', backgroundColor: '#F1F5FA', borderRadius: 16, paddingHorizontal: 14, paddingVertical: 10 }}><ActivityIndicator size="small" color={BLUE} /></View>}
+        {msgs.length === 1 && !busy && (
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
+            {GUIDE_STARTERS.map(q => (
+              <Pressable key={q} onPress={() => { ask(q).catch(() => {}); }} style={(st: any) => ({ borderWidth: 1, borderColor: '#C9D8EC', borderRadius: 16, paddingHorizontal: 12, paddingVertical: 7, backgroundColor: st.hovered ? '#EAF1FB' : '#FFFFFF', cursor: 'pointer' } as any)}>
+                <Text style={{ color: BLUE, fontSize: 13, fontWeight: '600' }}>{q}</Text>
+              </Pressable>
+            ))}
+          </View>
+        )}
+      </ScrollView>
+      <View style={{ borderTopWidth: 1, borderTopColor: '#EEF1F4', padding: 10, gap: 8 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <TextInput value={text} onChangeText={setText} onSubmitEditing={() => { ask(text).catch(() => {}); }} placeholder="Ask about Nexora…" placeholderTextColor="#A5AFBB" maxLength={600} returnKeyType="send"
+            style={{ flex: 1, height: 42, borderRadius: 21, borderWidth: 1, borderColor: '#D8DCE1', paddingHorizontal: 14, fontSize: 14, color: '#0B1220', outlineStyle: 'none' } as any} />
+          <Pressable disabled={busy || !text.trim()} onPress={() => { ask(text).catch(() => {}); }} accessibilityLabel="Send"
+            style={{ width: 42, height: 42, borderRadius: 21, backgroundColor: busy || !text.trim() ? '#A5AFBB' : BLUE, alignItems: 'center', justifyContent: 'center' }}>
+            <Ionicons name="arrow-up" size={20} color="#FFFFFF" />
+          </Pressable>
+        </View>
+        <Pressable onPress={() => onStart()} style={{ alignItems: 'center' }}><Text style={{ color: BLUE, fontSize: 13, fontWeight: '700' }}>Get started free →</Text></Pressable>
+      </View>
+    </View>
+  );
+}
 function WebLanding({ width, picks, onTogglePick, onStart, onLogin }: {
   width: number; picks: FeatureKey[]; onTogglePick: (k: FeatureKey) => void; onStart: (feature?: FeatureKey) => void; onLogin: () => void;
 }) {
@@ -1782,12 +2096,12 @@ function WebLanding({ width, picks, onTogglePick, onStart, onLogin }: {
   const [faqOpen, setFaqOpen] = useState<number | null>(0);
   const [plans, setPlans] = useState<LandingPlan[]>([]);
   const [yearly, setYearly] = useState(false);
-  const [ngn, setNgn] = useState(true);
+  const ngn = LOCAL_NGN;
   useEffect(() => { const t = setInterval(() => setWord(w => (w + 1) % LANDING_ROTATING.length), 2200); return () => clearInterval(t); }, []);
   useEffect(() => { try { document.title = 'Nexora AI · Your AI business manager'; } catch { /* not a browser */ } }, []);
   useEffect(() => {
     supabase.from('plans').select('*').order('sort').then(({ data }) => {
-      if (data) setPlans((data as any[]).map(p => ({ ...p, price_usd: Number(p.price_usd), features: Array.isArray(p.features) ? p.features : [], contact_sales: !!p.contact_sales })));
+      if (data) setPlans((data as any[]).map(p => ({ ...p, price_usd: Number(p.price_usd), price_ngn: p.price_ngn == null ? null : Number(p.price_ngn), price_usd_year: p.price_usd_year == null ? null : Number(p.price_usd_year), price_ngn_year: p.price_ngn_year == null ? null : Number(p.price_ngn_year), features: Array.isArray(p.features) ? p.features : [], contact_sales: !!p.contact_sales })));
     }, () => {});
   }, []);
   const goTo = (k: string) => scrollRef.current?.scrollTo({ y: Math.max(0, (anchors.current[k] ?? 0) - 72), animated: true });
@@ -1810,7 +2124,7 @@ function WebLanding({ width, picks, onTogglePick, onStart, onLogin }: {
     if (p.contact_sales) return { main: `From $${p.price_usd.toLocaleString()}`, per: '/month' };
     if (p.price_usd === 0) return { main: ngn ? '₦0' : '$0', per: ' forever' };
     const v = ngn ? (yearly ? p.price_ngn_year : p.price_ngn) : (yearly ? p.price_usd_year : p.price_usd);
-    return { main: v == null ? '' : `${ngn ? '₦' : '$'}${v.toLocaleString()}`, per: yearly ? '/year' : '/month' };
+    return { main: v == null ? '' : ngn ? `₦${v.toLocaleString()}` : `$${fmtUsd(v)}`, per: yearly ? '/year' : '/month' };
   };
   const navLinks: [string, string][] = [['Features', 'features'], ['How it works', 'how'], ['Pricing', 'pricing'], ['FAQ', 'faq']];
   return (
@@ -1820,8 +2134,7 @@ function WebLanding({ width, picks, onTogglePick, onStart, onLogin }: {
         <View style={{ backgroundColor: 'rgba(255,255,255,0.96)', borderBottomWidth: 1, borderBottomColor: '#EEF1F4' }}>
           <View style={[wrap, { height: 68, flexDirection: 'row', alignItems: 'center', gap: 12 }]}>
             <Pressable onPress={() => scrollRef.current?.scrollTo({ y: 0, animated: true })} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, cursor: 'pointer' } as any} accessibilityRole="link" accessibilityLabel="Nexora AI home">
-              <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: BLUE, alignItems: 'center', justifyContent: 'center' }}><Ionicons name="sparkles" size={17} color="#FFFFFF" /></View>
-              <Text style={{ fontSize: 18, fontWeight: '800', color: INK }}>Nexora AI</Text>
+              <NexoraLockup letter={compact ? 14 : 17} />
             </Pressable>
             {wide && (
               <View style={{ flexDirection: 'row', gap: 4, marginLeft: 28 }}>
@@ -1847,13 +2160,13 @@ function WebLanding({ width, picks, onTogglePick, onStart, onLogin }: {
             <View style={{ flex: wide ? 1.1 : undefined, alignItems: wide ? 'flex-start' : 'center' }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#EAF1FB', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 }}>
                 <Ionicons name="sparkles" size={13} color={BLUE} />
-                <Text style={{ color: BLUE, fontSize: 13, fontWeight: '700' }}>Your AI business manager</Text>
+                <Text style={{ color: BLUE, fontSize: 13, fontWeight: '700' }}>Your AI business manager · works 24/7</Text>
               </View>
               <Text style={{ color: INK, fontSize: wide ? 54 : compact ? 34 : 44, lineHeight: wide ? 62 : compact ? 42 : 52, fontWeight: '800', marginTop: 18, textAlign: wide ? 'left' : 'center', letterSpacing: -0.5 }}>
-                Answer every customer on{'\n'}<Text style={{ color: BLUE }}>{LANDING_ROTATING[word]}</Text>, even while you rest.
+                Your business keeps running while you <Text style={{ color: BLUE }}>{LANDING_ROTATING[word]}</Text>.
               </Text>
               <Text style={{ color: MUTED, fontSize: compact ? 16 : 18, lineHeight: compact ? 24 : 28, marginTop: 18, maxWidth: 560, textAlign: wide ? 'left' : 'center' }}>
-                Nexora learns your products, prices and policies, replies to customers in your voice, captures every lead and tells you what needs you.
+                Nexora manages your business for you: it answers your customers, keeps all your chats in one place, watches your sales and stock, runs your social media, and contacts you when something needs you.
               </Text>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 28, justifyContent: wide ? 'flex-start' : 'center' }}>
                 {btn('Start free', () => onStart(), 'primary', 'arrow-forward')}
@@ -1878,7 +2191,7 @@ function WebLanding({ width, picks, onTogglePick, onStart, onLogin }: {
               </View>
               <View style={{ position: 'absolute', bottom: '8%', right: compact ? 0 : '-2%', maxWidth: 270, backgroundColor: BLUE, borderRadius: 16, padding: 12, shadowColor: '#0B1220', shadowOpacity: 0.18, shadowRadius: 18, shadowOffset: { width: 0, height: 8 } }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}><Ionicons name="sparkles" size={13} color="#CFE0F7" /><Text style={{ fontSize: 11.5, color: '#CFE0F7', fontWeight: '700' }}>Nexora · replied instantly</Text></View>
-                <Text style={{ fontSize: 13.5, color: '#FFFFFF', marginTop: 4 }}>Yes! The black earbuds are in stock at ₦18,500. Shall I reserve a pair for you?</Text>
+                <Text style={{ fontSize: 13.5, color: '#FFFFFF', marginTop: 4 }}>Yes! The black earbuds are in stock at {LOCAL_NGN ? '₦18,500' : '$25'}. Shall I reserve a pair for you?</Text>
               </View>
             </View>
           </View>
@@ -1888,10 +2201,11 @@ function WebLanding({ width, picks, onTogglePick, onStart, onLogin }: {
         <View style={{ backgroundColor: SOFT, paddingVertical: 22 }}>
           <View style={[wrap, { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: compact ? 16 : 36 }]}>
             <Text style={{ color: MUTED, fontSize: 13, fontWeight: '700', letterSpacing: 1 }}>WORKS WITH</Text>
-            {([['logo-whatsapp', 'WhatsApp', '#1E9E6D'], ['logo-instagram', 'Instagram', '#C13584'], ['logo-facebook', 'Facebook', '#1877F2'], ['card-outline', 'Paystack', '#0BA4DB'], ['storefront-outline', 'Your shop link', BLUE]] as const).map(([ic, l, c]) => (
+            {([['logo-whatsapp', 'WhatsApp', '#1E9E6D', ''], ['logo-instagram', 'Instagram', '#C13584', ''], ['logo-facebook', 'Facebook', '#1877F2', ''], ['globe-outline', 'Your website', BLUE, ''], ['logo-tiktok', 'TikTok', '#0B1220', 'soon'], ['logo-snapchat', 'Snapchat', '#E6C800', 'soon']] as const).map(([ic, l, c, tag]) => (
               <View key={l} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <Ionicons name={ic as any} size={20} color={c} />
                 <Text style={{ color: '#334155', fontSize: 15, fontWeight: '700' }}>{l}</Text>
+                {!!tag && <Text style={{ fontSize: 11, fontWeight: '700', color: '#8A6A1E', backgroundColor: '#FFF4D6', paddingHorizontal: 7, paddingVertical: 2, borderRadius: 8, overflow: 'hidden' }}>{tag}</Text>}
               </View>
             ))}
           </View>
@@ -1900,17 +2214,32 @@ function WebLanding({ width, picks, onTogglePick, onStart, onLogin }: {
         {/* Why Nexora */}
         <View onLayout={anchor('features')} style={{ paddingVertical: compact ? 48 : 80 }}>
           <View style={wrap}>
-            {eyebrow('WHY BUSINESSES CHOOSE NEXORA')}
-            {h2('One assistant for your whole business')}
-            {sub('From the first customer message to the final sale, Nexora handles the busy work so you can focus on growing.')}
+            {eyebrow('WHAT NEXORA DOES FOR YOU')}
+            {h2('Nexora manages your business while you’re away')}
+            {sub('Think of it as a smart assistant that never takes a day off. These are the main jobs it does for you:')}
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 18, marginTop: 36 }}>
-              {LANDING_WHY.map(([ic, t, d]) => (
-                <View key={t} style={{ flexBasis: wide ? '22%' : mid ? '46%' : '100%', flexGrow: 1, backgroundColor: '#FFFFFF', borderRadius: 18, borderWidth: 1, borderColor: '#E6ECF3', padding: 22 }}>
+              {LANDING_MAJOR.map(([ic, t, d]) => (
+                <View key={t} style={{ flexBasis: wide ? '30%' : mid ? '46%' : '100%', flexGrow: 1, backgroundColor: '#FFFFFF', borderRadius: 18, borderWidth: 1, borderColor: '#E6ECF3', padding: 22 }}>
                   <View style={{ width: 46, height: 46, borderRadius: 14, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}><Ionicons name={ic as any} size={22} color={BLUE} /></View>
                   <Text style={{ color: INK, fontSize: 17, fontWeight: '800', marginTop: 16 }}>{t}</Text>
                   <Text style={{ color: MUTED, fontSize: 14.5, lineHeight: 22, marginTop: 8 }}>{d}</Text>
                 </View>
               ))}
+            </View>
+            <View style={{ marginTop: 28, borderRadius: 18, backgroundColor: SOFT, padding: compact ? 18 : 26 }}>
+              <Text style={{ color: INK, fontSize: 18, fontWeight: '800' }}>It also helps you every day</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', columnGap: 24, rowGap: 14, marginTop: 16 }}>
+                {LANDING_MID.map(([ic, t]) => (
+                  <View key={t} style={{ flexBasis: mid ? '46%' : '100%', flexGrow: 1, flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+                    <Ionicons name={ic as any} size={20} color={BLUE} style={{ marginTop: 1 }} />
+                    <Text style={{ flex: 1, color: '#334155', fontSize: 15, lineHeight: 22 }}>{t}</Text>
+                  </View>
+                ))}
+              </View>
+              <Text style={{ color: MUTED, fontSize: 13, fontWeight: '800', letterSpacing: 1, marginTop: 22 }}>AND MORE</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+                {LANDING_MINOR.map(t => <Text key={t} style={{ color: '#334155', fontSize: 13.5, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E6ECF3', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, overflow: 'hidden' }}>{t}</Text>)}
+              </View>
             </View>
           </View>
         </View>
@@ -1924,14 +2253,16 @@ function WebLanding({ width, picks, onTogglePick, onStart, onLogin }: {
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 14, marginTop: 32, justifyContent: 'center' }}>
               {INTEREST_TILES.map(t => {
                 const on = picks.includes(t.key);
-                const ic: Record<string, string> = { sales: 'cash-outline', orders: 'bag-handle-outline', trends: 'megaphone-outline', operations: 'construct-outline', agenda: 'calendar-outline', analytics: 'stats-chart-outline', automation: 'flash-outline', customers: 'people-outline' };
+                const ic: Record<string, string> = { sales: 'cash-outline', orders: 'bag-handle-outline', trends: 'megaphone-outline', operations: 'construct-outline', agenda: 'calendar-outline', analytics: 'stats-chart-outline', automation: 'flash-outline', customers: 'people-outline', knowledge: 'ellipsis-horizontal-circle-outline' };
                 return (
                   <Pressable key={t.key} onPress={() => onTogglePick(t.key)} accessibilityRole="checkbox" accessibilityState={{ checked: on }} accessibilityLabel={t.label}
-                    style={(st: any) => ({ flexBasis: wide ? '23%' : '46%', flexGrow: 1, maxWidth: wide ? 270 : undefined, height: 76, borderRadius: 16, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 18, cursor: 'pointer',
+                    style={(st: any) => ({ flexBasis: wide ? '23%' : '46%', flexGrow: 1, minWidth: 0, maxWidth: wide ? 270 : undefined, height: 76, borderRadius: 16, overflow: 'hidden', cursor: 'pointer',
+                      // Narrow screens stack the icon over the name so long names ("Operations", "Customers") stay inside the tile.
+                      flexDirection: mid ? 'row' : 'column', alignItems: mid ? 'center' : 'flex-start', justifyContent: 'center', gap: mid ? 12 : 6, paddingLeft: mid ? 18 : 14, paddingRight: mid ? 18 : 34,
                       backgroundColor: on ? BLUE : '#FFFFFF', borderWidth: 1.5, borderColor: on ? BLUE : st.hovered ? '#9CC3FF' : '#E6ECF3' } as any)}>
                     <Ionicons name={(ic[t.key] ?? 'ellipse-outline') as any} size={22} color={on ? '#FFFFFF' : BLUE} />
-                    <Text style={{ color: on ? '#FFFFFF' : INK, fontSize: 16, fontWeight: '700', flex: 1 }}>{t.label}</Text>
-                    <Ionicons name={on ? 'checkmark-circle' : 'add-circle-outline'} size={20} color={on ? '#FFFFFF' : '#8A97A6'} />
+                    <Text numberOfLines={1} style={{ color: on ? '#FFFFFF' : INK, fontSize: mid ? 16 : 15, fontWeight: '700', flexShrink: 1, minWidth: 0, ...(mid ? { flex: 1 } : { alignSelf: 'stretch' }) }}>{t.label}</Text>
+                    <Ionicons name={on ? 'checkmark-circle' : 'add-circle-outline'} size={20} color={on ? '#FFFFFF' : '#8A97A6'} style={mid ? undefined : { position: 'absolute', top: 10, right: 10 }} />
                   </Pressable>
                 );
               })}
@@ -1951,7 +2282,7 @@ function WebLanding({ width, picks, onTogglePick, onStart, onLogin }: {
             <View style={{ flexDirection: wide ? 'row' : 'column', gap: 18, marginTop: 36 }}>
               {LANDING_STEPS.map(([t, d], i) => (
                 <View key={t} style={{ flex: wide ? 1 : undefined, flexDirection: wide ? 'column' : 'row', gap: 14, padding: 20, borderRadius: 18, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E6ECF3' }}>
-                  <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: BLUE, alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '800' }}>{i + 1}</Text></View>
+                  <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: '#0F2942', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '800' }}>{i + 1}</Text></View>
                   <View style={{ flex: wide ? undefined : 1 }}>
                     <Text style={{ color: INK, fontSize: 17, fontWeight: '800' }}>{t}</Text>
                     <Text style={{ color: MUTED, fontSize: 14.5, lineHeight: 22, marginTop: 6 }}>{d}</Text>
@@ -1998,13 +2329,6 @@ function WebLanding({ width, picks, onTogglePick, onStart, onLogin }: {
                   </Pressable>
                 ))}
               </View>
-              <View style={{ flexDirection: 'row', backgroundColor: SOFT, borderRadius: 12, padding: 4 }}>
-                {[true, false].map(n => (
-                  <Pressable key={String(n)} onPress={() => setNgn(n)} accessibilityRole="button" accessibilityState={{ selected: ngn === n }} style={{ paddingHorizontal: 16, paddingVertical: 8, borderRadius: 9, backgroundColor: ngn === n ? '#FFFFFF' : 'transparent', cursor: 'pointer' } as any}>
-                    <Text style={{ fontWeight: '700', fontSize: 13.5, color: ngn === n ? INK : MUTED }}>{n ? '₦ NGN' : '$ USD'}</Text>
-                  </Pressable>
-                ))}
-              </View>
             </View>
             {plans.length === 0 ? (
               <Text style={{ color: MUTED, fontSize: 15, textAlign: 'center', marginTop: 28 }}>Plans load in a moment. You can also see them after you sign up.</Text>
@@ -2025,11 +2349,11 @@ function WebLanding({ width, picks, onTogglePick, onStart, onLogin }: {
                         {p.features.slice(0, 5).map(f => (
                           <View key={f} style={{ flexDirection: 'row', gap: 8 }}>
                             <Ionicons name="checkmark" size={16} color={popular ? '#9CC3FF' : BLUE} style={{ marginTop: 1 }} />
-                            <Text style={{ flex: 1, color: popular ? '#E2EAF4' : '#334155', fontSize: 13.5, lineHeight: 19 }}>{f}</Text>
+                            <Text style={{ flex: 1, color: popular ? '#E2EAF4' : '#334155', fontSize: 13.5, lineHeight: 19 }}>{explainPlanFeature(f)}</Text>
                           </View>
                         ))}
                       </View>
-                      <Pressable onPress={() => (p.contact_sales ? Linking.openURL(`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('Nexora Organization plan enquiry')}`).catch(() => {}) : onStart(p.price_usd > 0 ? 'billing' : undefined))}
+                      <Pressable onPress={() => onStart(p.price_usd > 0 || p.contact_sales ? 'billing' : undefined)}
                         accessibilityRole="button"
                         style={(st: any) => ({ marginTop: 18, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
                           backgroundColor: popular ? (st.hovered ? '#EAF1FB' : '#FFFFFF') : st.hovered ? '#184A8B' : BLUE } as any)}>
@@ -2085,17 +2409,16 @@ function WebLanding({ width, picks, onTogglePick, onStart, onLogin }: {
         {/* Footer */}
         <View style={{ backgroundColor: SOFT, borderTopWidth: 1, borderTopColor: '#E6ECF3', paddingVertical: 36 }}>
           <View style={[wrap, { flexDirection: mid ? 'row' : 'column', gap: 28 }]}>
-            <View style={{ flex: 1.4 }}>
+            <View style={mid ? { flex: 1.4 } : undefined}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                <View style={{ width: 30, height: 30, borderRadius: 9, backgroundColor: BLUE, alignItems: 'center', justifyContent: 'center' }}><Ionicons name="sparkles" size={15} color="#FFFFFF" /></View>
-                <Text style={{ fontSize: 17, fontWeight: '800', color: INK }}>Nexora AI</Text>
+                <NexoraLockup letter={16} />
               </View>
-              <Text style={{ color: MUTED, fontSize: 14, lineHeight: 21, marginTop: 10, maxWidth: 320 }}>Your AI business manager. It knows your business, works while you rest and watches the market for you.</Text>
+              <Text style={{ color: MUTED, fontSize: 14, lineHeight: 21, marginTop: 10, maxWidth: 320 }}>Your AI business manager. It knows your business, runs it 24/7 while you’re away and watches the market for you.</Text>
             </View>
             {([['Product', [['Features', () => goTo('features')], ['How it works', () => goTo('how')], ['Pricing', () => goTo('pricing')], ['FAQ', () => goTo('faq')]]],
-               ['Company', [['Contact us', () => Linking.openURL(`mailto:${SUPPORT_EMAIL}`).catch(() => {})], ['Support', () => Linking.openURL(`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('Nexora AI support')}`).catch(() => {})]]],
+               ['Company', [['Contact us', () => onStart()], ['Support', () => Linking.openURL(`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('Nexora AI support')}`).catch(() => {})]]],
                ['Legal', [['Terms of Use', () => Linking.openURL(TERMS_URL).catch(() => {})], ['Privacy Policy', () => Linking.openURL(PRIVACY_POLICY_URL).catch(() => {})]]]] as [string, [string, () => void][]][]).map(([title, links]) => (
-              <View key={title} style={{ flex: 1, gap: 10 }}>
+              <View key={title} style={{ flex: mid ? 1 : undefined, gap: 10 }}>
                 <Text style={{ color: INK, fontSize: 14, fontWeight: '800' }}>{title}</Text>
                 {links.map(([l, fn]) => (
                   <Pressable key={l} onPress={fn} accessibilityRole="link" style={{ cursor: 'pointer' } as any}>
@@ -2110,31 +2433,61 @@ function WebLanding({ width, picks, onTogglePick, onStart, onLogin }: {
           </View>
         </View>
       </ScrollView>
-      {/* Floating contact button */}
-      <Pressable onPress={() => Linking.openURL(`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('Question about Nexora AI')}`).catch(() => {})} accessibilityRole="button" accessibilityLabel="Contact us"
-        style={(st: any) => ({ position: 'absolute', right: compact ? 16 : 24, bottom: compact ? 16 : 24, height: 48, paddingHorizontal: 18, borderRadius: 24, flexDirection: 'row', alignItems: 'center', gap: 8, cursor: 'pointer',
-          backgroundColor: st.hovered ? '#184A8B' : BLUE, shadowColor: '#0B1220', shadowOpacity: 0.25, shadowRadius: 14, shadowOffset: { width: 0, height: 6 } } as any)}>
-        <Ionicons name="chatbubble-ellipses" size={18} color="#FFFFFF" />
-        {!compact && <Text style={{ color: '#FFFFFF', fontSize: 14.5, fontWeight: '700' }}>Contact us</Text>}
-      </Pressable>
+      {/* Nexora guide: the website's AI chat assistant (company guide: the chat bubble is our AI guide) */}
       {compact && (
         <View style={{ position: 'absolute', left: 16, right: 84, bottom: 16 }}>{btn('Start free', () => onStart(), 'primary', 'arrow-forward')}</View>
       )}
+      <LandingGuide width={width} compact={compact} onStart={onStart} />
     </View>
   );
 }
 // Nexora logo (the app icon from the Supabase 'assets' bucket), with the sparkle mark as a fallback.
+// The Nexora infinity mark (assets/nexora-mark.png, cut from the brand logo; 1.52 : 1). `size` is the square slot it sits in.
+const NEXORA_MARK = require('../assets/nexora-mark.png');
+// The NEXORA AI wordmark (traced from the brand artwork): "NEXORA" in navy (white on dark backgrounds),
+// "AI" in the cyan-to-blue gradient, and optionally the "AI-POWERED BUSINESS OPERATING SYSTEM" line under it.
+const WORDMARK_WORD = 'M69.83 50.33 L69.83 58.67 L70.67 59.50 L74.33 59.50 L74.50 59.33 L81.17 59.33 L81.33 59.50 L120.83 59.33 L122.00 59.50 L122.50 59.33 L123.00 58.67 L123.00 50.00 L122.33 49.33 L70.67 49.33 L70.00 49.83ZM69.83 29.17 L69.83 37.67 L70.33 38.17 L117.50 38.17 L118.17 37.50 L118.33 29.50 L118.17 28.83 L117.00 28.17 L108.50 28.17 L108.33 28.33 L75.33 28.17 L75.17 28.33 L70.50 28.33ZM327.67 58.00 L327.67 59.00 L328.67 59.50 L329.33 59.33 L330.33 59.50 L339.67 59.33 L340.50 58.67 L342.17 55.67 L343.83 53.33 L344.00 52.67 L345.67 50.17 L346.33 48.67 L347.83 46.50 L349.33 43.50 L352.83 38.17 L353.00 37.50 L355.17 34.17 L356.00 32.33 L357.67 30.00 L358.33 28.50 L358.83 28.00 L359.83 26.17 L360.00 25.50 L361.17 23.67 L361.67 23.17 L362.33 23.17 L364.83 26.83 L364.83 27.17 L365.83 28.50 L369.00 34.17 L371.50 37.83 L373.33 41.33 L375.67 44.83 L379.83 52.17 L384.00 58.83 L384.50 59.33 L385.17 59.50 L396.33 59.50 L397.17 59.00 L397.00 57.83 L396.33 57.17 L394.83 54.50 L394.33 54.00 L393.83 52.83 L392.17 50.33 L392.00 49.67 L389.17 45.50 L388.67 44.33 L384.17 37.33 L383.83 36.50 L382.00 34.00 L382.00 33.67 L381.50 33.17 L379.00 28.67 L378.50 28.17 L376.00 24.00 L376.00 23.67 L374.17 21.00 L372.83 18.33 L371.33 16.33 L368.50 11.50 L367.83 10.83 L366.17 9.83 L363.83 9.17 L360.33 9.17 L358.50 9.67 L356.50 10.67 L355.17 12.00 L353.67 14.67 L352.83 15.67 L352.67 16.33 L351.00 18.83 L349.83 21.17 L348.00 23.83 L345.50 28.50 L344.00 30.67 L343.83 31.33 L342.00 33.83 L339.50 38.50 L334.83 45.83 L332.50 50.17 L330.00 53.83 L329.50 55.17ZM70.00 10.50 L70.17 18.33 L70.67 18.83 L71.50 19.00 L72.50 18.83 L122.50 18.83 L123.00 18.17 L123.00 10.17 L122.83 9.67 L122.17 9.17 L71.00 9.17 L70.17 9.83ZM6.67 11.67 L5.67 13.50 L5.33 16.83 L5.33 19.17 L5.50 19.33 L5.50 58.67 L5.83 59.17 L6.67 59.50 L7.17 59.33 L15.33 59.50 L16.17 59.17 L16.50 58.67 L16.50 42.83 L16.67 42.67 L16.50 27.50 L16.67 26.67 L17.00 26.33 L18.00 26.83 L20.83 29.33 L27.83 36.17 L29.17 37.17 L35.17 42.83 L40.67 48.33 L45.17 52.33 L50.83 58.00 L52.50 59.00 L53.67 59.33 L57.00 59.50 L59.50 58.67 L61.33 57.17 L62.00 56.17 L62.33 55.00 L62.33 10.00 L61.83 9.33 L61.50 9.17 L52.33 9.17 L51.50 9.50 L51.17 10.17 L51.33 41.17 L50.83 42.00 L50.00 41.67 L48.17 39.67 L40.50 32.83 L38.33 30.50 L32.67 25.50 L27.00 19.83 L20.50 14.00 L17.33 10.83 L15.17 9.67 L13.17 9.17 L11.50 9.17 L9.83 9.50 L8.67 10.00ZM264.67 9.50 L264.33 10.50 L264.33 17.83 L264.50 18.33 L265.50 19.00 L268.00 19.00 L268.17 18.83 L307.33 18.83 L309.33 19.17 L311.50 20.17 L313.50 22.67 L314.00 24.33 L313.83 26.67 L312.67 28.67 L311.17 30.00 L310.17 30.50 L307.33 31.00 L265.17 31.00 L264.83 31.17 L264.33 32.17 L264.33 58.50 L264.67 59.17 L265.50 59.50 L266.33 59.33 L275.33 59.33 L275.83 58.83 L276.00 58.33 L275.83 56.67 L276.00 41.83 L276.67 41.17 L295.33 41.17 L296.83 42.50 L304.17 51.00 L306.67 53.50 L311.67 59.17 L312.50 59.50 L322.33 59.50 L322.50 59.33 L325.17 59.50 L325.67 59.17 L325.67 58.33 L310.83 41.83 L310.83 41.33 L311.17 41.00 L315.00 40.00 L317.17 39.00 L317.83 38.33 L320.17 37.00 L322.17 35.00 L323.00 33.83 L324.83 29.83 L325.50 26.83 L325.50 23.50 L324.83 20.33 L324.17 19.17 L323.83 17.83 L323.00 16.50 L319.50 12.83 L316.17 10.83 L313.33 9.83 L309.50 9.17 L272.50 9.17 L271.33 9.00 L271.17 9.17 L265.17 9.17ZM129.83 9.33 L129.67 9.83 L130.00 10.67 L136.17 16.33 L142.83 23.17 L144.33 24.33 L148.50 28.50 L149.67 30.00 L152.67 32.83 L153.17 33.50 L153.17 34.17 L149.67 37.67 L148.50 39.17 L130.67 56.83 L129.33 58.50 L129.33 59.00 L129.67 59.33 L142.67 59.50 L143.67 59.17 L160.67 42.00 L161.83 42.17 L178.50 59.17 L179.50 59.50 L188.50 59.50 L188.67 59.33 L192.50 59.50 L193.17 59.00 L193.00 58.17 L169.17 34.17 L169.17 33.50 L184.50 18.17 L186.83 16.17 L190.50 12.33 L192.33 10.83 L192.67 10.33 L192.67 9.50 L192.33 9.17 L178.67 9.17 L171.83 15.50 L166.33 21.33 L164.83 22.50 L161.50 25.83 L161.17 25.83 L156.67 21.50 L144.83 9.50 L144.00 9.17 L131.17 9.17 L131.00 9.00ZM195.83 19.50 L194.00 22.67 L193.00 25.00 L192.83 26.17 L192.00 28.33 L191.50 31.83 L191.67 37.33 L193.00 43.33 L193.67 44.50 L193.83 45.33 L195.50 48.17 L197.67 51.00 L199.67 53.00 L203.83 56.00 L207.67 57.83 L211.33 59.00 L216.17 59.83 L218.33 59.83 L218.50 60.00 L231.83 60.00 L235.17 59.67 L239.33 58.83 L239.83 58.50 L242.33 57.83 L246.50 55.83 L250.17 53.33 L254.00 49.33 L256.67 45.00 L258.17 41.33 L258.83 37.67 L258.83 31.17 L258.17 27.17 L257.00 23.83 L253.83 18.67 L251.00 15.67 L247.17 12.83 L243.00 10.83 L237.50 9.17 L234.33 8.67 L218.33 8.50 L213.83 9.00 L209.50 10.00 L208.17 10.67 L206.83 11.00 L203.50 12.67 L200.83 14.50 L198.50 16.50ZM245.33 25.83 L246.67 28.50 L247.50 32.17 L247.50 36.00 L246.50 40.00 L244.67 43.17 L242.50 45.50 L239.33 47.50 L236.33 48.67 L230.83 49.50 L220.17 49.50 L220.00 49.33 L217.17 49.33 L212.67 48.33 L210.67 47.50 L208.17 45.83 L205.33 42.83 L203.50 39.17 L203.00 37.00 L202.83 33.50 L203.33 29.83 L204.17 27.50 L205.17 25.67 L208.17 22.50 L209.67 21.33 L212.83 19.83 L217.00 18.83 L231.17 18.67 L234.50 19.00 L238.17 20.00 L241.17 21.67 L243.33 23.33Z';
+const WORDMARK_AI = 'M506.33 9.17 L503.33 9.17 L503.17 9.00 L495.50 9.17 L494.67 9.50 L494.33 10.50 L494.33 36.00 L494.50 36.17 L494.33 36.83 L494.50 37.83 L494.50 51.83 L494.33 52.00 L494.50 54.83 L494.33 55.50 L494.50 55.67 L494.50 58.33 L495.00 59.00 L495.67 59.33 L503.17 59.33 L503.33 59.17 L505.83 59.33 L506.33 59.17 L507.00 58.50 L507.17 58.00 L507.00 56.83 L507.17 10.83 L506.83 9.67ZM418.50 58.00 L418.50 58.83 L419.17 59.33 L430.83 59.17 L431.67 58.50 L432.33 56.67 L433.67 55.00 L433.67 54.67 L434.67 53.17 L436.33 49.67 L437.33 48.33 L439.67 43.67 L440.17 43.17 L440.83 41.67 L441.33 41.17 L442.50 38.83 L443.17 38.00 L443.17 37.67 L444.17 36.33 L446.00 32.67 L447.17 31.17 L447.67 29.83 L448.17 29.33 L449.00 27.33 L450.00 26.00 L450.67 24.50 L451.67 23.67 L452.17 23.67 L454.17 26.50 L454.50 27.50 L456.33 30.33 L458.67 34.67 L459.50 35.67 L461.33 39.33 L462.33 40.50 L462.83 42.00 L463.33 42.50 L465.33 45.83 L465.50 46.50 L466.50 47.83 L467.00 49.17 L469.17 52.50 L469.83 54.17 L470.50 54.83 L472.17 58.33 L473.50 59.33 L479.33 59.33 L479.50 59.17 L480.50 59.33 L484.83 59.17 L485.17 59.33 L485.83 58.83 L485.67 57.67 L483.50 54.33 L482.83 52.83 L482.33 52.33 L480.50 48.67 L479.33 47.17 L479.17 46.50 L478.67 46.00 L477.50 43.67 L476.50 42.33 L476.33 41.67 L475.17 40.33 L473.33 36.67 L471.17 33.33 L469.17 29.50 L468.83 29.33 L468.17 27.67 L467.00 26.17 L465.33 22.83 L464.17 21.33 L462.67 18.33 L461.67 17.00 L461.00 15.50 L460.50 15.00 L459.33 12.83 L457.17 10.33 L455.33 9.50 L452.33 9.00 L449.67 9.17 L448.50 9.50 L446.50 10.50 L444.83 11.83 L444.17 13.33 L443.33 14.33 L442.50 16.17 L442.00 16.67 L440.33 20.17 L439.17 21.67 L437.33 25.33 L436.67 26.00 L435.17 28.67 L434.17 31.00 L432.50 33.33 L431.67 35.17 L429.50 38.50 L429.33 39.17 L426.67 43.50 L426.50 44.17 L425.50 45.50 L424.67 47.33 L422.67 50.50 L422.33 51.67 L421.50 52.67 L419.17 57.17Z';
+const WORDMARK_TAG = 'M32.33 87.50 L32.67 88.17 L35.33 88.17 L35.83 87.67 L35.50 87.17 L32.67 87.17ZM11.00 81.83 L10.33 82.50 L9.83 84.00 L9.00 85.33 L8.83 86.33 L8.17 87.50 L7.83 88.83 L7.00 90.00 L7.00 91.17 L7.67 91.33 L9.50 88.83 L11.00 89.00 L12.33 88.83 L13.17 89.17 L13.67 89.67 L14.00 91.00 L14.33 91.33 L15.17 91.33 L15.50 91.00 L15.33 90.17 L14.00 87.33 L13.83 86.50 L13.00 85.17 L11.83 82.17 L11.50 81.83ZM11.33 84.67 L12.00 85.67 L12.17 87.33 L11.83 87.67 L10.67 87.83 L10.17 87.50 L10.00 86.50 L10.17 85.83ZM497.33 81.67 L496.83 82.67 L496.50 89.50 L496.17 90.17 L496.33 91.00 L497.00 91.33 L497.67 90.67 L498.00 86.83 L498.50 86.17 L499.00 86.67 L500.50 90.17 L501.00 90.67 L501.67 90.67 L502.00 90.17 L502.17 89.17 L502.83 88.33 L503.17 87.17 L504.33 86.00 L504.83 86.50 L505.00 90.67 L505.50 91.33 L505.83 91.33 L506.33 90.67 L505.33 82.17 L504.83 81.83 L504.17 82.17 L503.50 84.00 L503.00 84.67 L503.00 85.17 L502.00 86.83 L502.00 87.33 L501.33 88.00 L500.67 87.33 L498.67 82.83 L497.67 81.67ZM384.00 81.83 L383.67 82.50 L384.00 91.17 L384.50 91.33 L385.00 90.50 L385.00 85.50 L385.33 85.17 L387.00 86.67 L389.67 90.17 L390.50 91.00 L391.17 91.17 L391.67 90.50 L391.50 89.67 L391.67 89.00 L391.67 82.33 L391.50 82.00 L390.83 81.83 L390.33 82.50 L390.33 87.33 L390.00 87.67 L389.33 87.67 L384.50 81.67ZM374.33 81.67 L374.00 82.33 L374.00 90.83 L374.33 91.33 L374.83 91.33 L375.33 90.67 L375.50 85.17 L375.33 85.00 L375.33 82.33 L374.83 81.67ZM349.17 81.67 L348.50 82.67 L347.67 85.17 L347.00 86.00 L345.50 90.17 L345.50 91.00 L345.67 91.17 L346.33 91.00 L347.00 89.67 L347.67 89.00 L348.83 88.83 L351.33 89.17 L351.83 89.67 L352.17 90.83 L352.83 91.33 L353.33 91.33 L353.50 90.33 L352.00 86.50 L351.00 84.83 L350.00 82.17 L349.50 81.67ZM349.33 84.50 L349.83 84.83 L350.67 86.67 L350.67 87.33 L350.33 87.67 L348.67 87.67 L348.33 87.33 L348.50 85.83 L348.83 85.00ZM207.67 81.67 L207.33 81.83 L207.00 82.67 L207.17 83.00 L207.17 89.67 L207.00 90.17 L207.33 91.17 L207.83 91.33 L208.50 90.67 L208.50 82.17ZM184.33 81.67 L184.00 81.67 L183.33 82.50 L183.33 88.17 L183.00 89.17 L182.50 89.83 L181.33 90.33 L180.50 90.33 L179.67 90.00 L179.00 89.33 L178.50 88.17 L178.50 83.83 L178.33 83.67 L178.50 82.50 L178.00 81.83 L177.33 81.83 L177.17 82.17 L177.17 89.00 L177.83 90.33 L179.67 91.67 L180.33 91.83 L182.17 91.67 L183.67 90.83 L184.67 89.33 L184.83 88.83 L184.83 82.33ZM23.33 81.67 L22.83 82.67 L23.00 83.00 L23.00 90.50 L23.33 91.17 L23.83 91.17 L24.33 90.33 L24.17 89.50 L24.33 82.33 L23.83 81.67ZM483.50 81.50 L482.83 82.33 L482.83 90.67 L483.00 91.17 L483.83 91.67 L488.17 91.67 L488.67 91.33 L488.50 90.33 L488.17 90.17 L484.67 90.17 L484.17 89.67 L484.00 88.33 L484.17 87.50 L484.50 87.17 L487.33 87.00 L488.00 86.33 L487.33 85.83 L484.50 85.67 L484.17 85.33 L484.00 83.67 L484.67 82.83 L485.50 82.67 L488.00 82.83 L488.67 82.33 L488.67 81.83 L488.33 81.50ZM447.50 81.50 L446.67 82.00 L444.50 85.17 L444.17 85.17 L443.17 84.17 L442.83 83.33 L441.50 81.67 L440.67 81.83 L440.67 82.83 L443.50 87.00 L443.67 87.50 L443.50 90.33 L444.00 91.33 L444.67 91.33 L444.83 91.00 L445.00 86.83 L446.00 85.17 L446.83 84.33 L447.17 83.33 L447.83 82.67 L447.83 81.83ZM224.67 81.67 L224.33 81.50 L223.83 81.67 L223.33 82.50 L223.33 87.17 L222.83 87.67 L222.50 87.67 L222.00 87.17 L221.83 86.67 L217.67 81.67 L217.00 81.83 L216.83 82.33 L216.83 90.67 L217.33 91.50 L217.67 91.50 L218.17 90.83 L218.33 85.83 L218.67 85.50 L219.17 85.67 L220.00 86.50 L221.00 88.00 L221.83 88.67 L222.83 90.17 L224.17 91.33 L224.67 91.17 L225.00 88.00 L225.00 82.50ZM163.33 81.50 L162.67 82.17 L162.67 89.17 L162.50 89.33 L162.67 91.00 L163.67 91.67 L167.17 91.50 L168.67 90.67 L169.50 89.00 L169.33 87.83 L168.33 86.33 L168.33 85.83 L169.00 84.33 L168.83 83.17 L167.83 82.00 L167.17 81.67ZM164.00 87.50 L164.50 87.00 L167.50 87.17 L168.17 88.17 L168.00 89.50 L167.00 90.17 L164.83 90.33 L164.00 89.67ZM167.33 83.33 L167.50 84.67 L166.50 85.67 L164.50 85.83 L164.00 85.33 L163.83 83.83 L164.50 82.83 L166.00 82.67ZM75.67 81.50 L75.33 81.83 L75.33 82.67 L75.83 83.67 L76.00 85.17 L76.67 86.67 L76.83 88.00 L77.83 90.83 L78.33 91.33 L78.83 91.17 L80.33 86.67 L80.83 85.83 L81.33 85.50 L81.83 86.00 L82.00 87.33 L82.67 88.67 L82.83 90.17 L83.17 91.00 L84.17 91.17 L84.83 90.17 L85.00 88.83 L85.67 87.33 L86.00 85.00 L87.00 82.67 L86.67 81.67 L85.83 81.83 L85.17 83.50 L84.67 86.33 L83.67 87.33 L83.00 86.67 L82.83 85.33 L81.67 82.00 L81.33 81.83 L80.83 82.00 L80.17 82.83 L79.00 86.83 L78.33 87.50 L78.00 87.17 L77.67 85.50 L77.17 84.67 L76.83 82.33 L76.33 81.67ZM468.67 81.50 L468.33 82.00 L468.67 82.67 L470.50 82.83 L471.00 83.33 L471.00 86.83 L471.17 87.00 L471.00 90.33 L471.17 91.00 L471.50 91.33 L472.00 91.33 L472.50 90.67 L472.50 83.67 L473.33 82.83 L475.00 82.67 L475.17 82.00 L475.00 81.67 L474.33 81.33ZM457.33 81.33 L456.00 82.00 L455.17 83.00 L455.00 84.67 L455.33 85.33 L456.67 86.50 L457.67 87.00 L459.17 87.33 L460.00 88.17 L460.17 89.17 L459.50 90.00 L458.50 90.50 L457.67 90.50 L455.67 89.17 L455.33 89.17 L455.00 89.50 L455.00 90.33 L455.67 91.00 L457.00 91.67 L458.83 91.83 L460.33 91.17 L461.17 90.33 L461.67 89.33 L461.67 88.17 L461.33 87.50 L460.17 86.33 L459.17 85.83 L457.67 85.50 L456.33 84.17 L456.50 83.50 L457.33 82.67 L458.67 82.50 L460.50 83.33 L460.83 83.00 L460.83 82.33 L460.33 81.83 L459.17 81.33ZM431.00 81.33 L429.50 81.33 L428.17 81.83 L427.17 82.83 L426.83 83.67 L427.00 85.00 L428.17 86.33 L429.00 86.83 L430.67 87.17 L431.33 87.50 L431.83 88.17 L431.83 89.50 L430.33 90.50 L429.50 90.50 L428.50 90.00 L427.67 89.17 L427.00 89.33 L427.00 90.50 L427.50 91.00 L429.33 91.83 L431.00 91.67 L432.50 90.83 L433.50 88.83 L433.33 88.00 L432.50 86.67 L431.17 85.83 L430.50 85.83 L429.50 85.33 L428.33 84.17 L428.50 83.33 L430.00 82.50 L431.33 82.83 L432.17 83.33 L432.83 83.00 L432.67 82.00ZM403.33 81.33 L401.50 82.00 L400.00 83.33 L399.17 85.33 L399.00 86.50 L399.83 89.33 L401.17 90.83 L403.00 91.67 L404.83 91.83 L406.00 91.50 L407.83 90.33 L408.83 89.00 L409.00 87.00 L408.50 86.50 L405.33 86.50 L404.83 87.00 L405.17 87.50 L405.50 87.67 L406.33 87.50 L407.33 88.17 L406.83 89.33 L405.33 90.33 L404.50 90.50 L403.50 90.33 L401.67 89.33 L400.83 88.33 L400.50 87.33 L400.50 85.67 L401.00 84.33 L402.33 83.00 L403.33 82.67 L405.17 82.67 L406.17 83.00 L407.17 84.17 L407.67 84.17 L408.00 83.83 L407.83 82.83 L406.83 82.00 L405.17 81.33ZM360.50 81.33 L359.83 81.83 L359.67 82.33 L360.33 82.83 L361.67 82.83 L362.50 83.67 L362.33 84.00 L362.50 90.83 L362.83 91.33 L363.50 91.33 L363.83 90.83 L363.83 83.50 L364.33 82.83 L366.00 82.67 L366.33 82.33 L366.33 81.83 L365.83 81.50ZM331.50 81.67 L331.17 82.33 L331.17 90.83 L331.33 91.17 L332.00 91.50 L332.67 91.00 L332.83 90.33 L332.67 88.50 L333.17 87.67 L333.83 87.67 L334.83 88.50 L336.33 90.83 L337.17 91.50 L337.50 91.50 L337.83 91.17 L337.83 90.67 L337.00 89.33 L336.17 88.50 L336.00 87.83 L337.83 85.67 L338.00 85.17 L337.83 83.17 L336.83 82.00 L335.50 81.50 L332.33 81.33ZM332.83 83.33 L333.67 82.67 L335.50 82.83 L336.50 83.67 L336.67 85.00 L335.50 86.17 L333.67 86.33 L332.83 85.50ZM322.33 81.33 L318.17 81.50 L317.67 81.67 L317.17 82.33 L317.00 90.33 L317.33 91.17 L317.83 91.50 L322.50 91.67 L323.17 91.17 L323.17 90.67 L322.83 90.33 L322.33 90.17 L319.67 90.33 L318.67 89.50 L318.83 87.50 L319.33 87.00 L321.83 87.00 L322.33 86.67 L322.33 86.17 L321.83 85.83 L319.33 85.83 L318.67 85.00 L318.67 83.50 L319.50 82.67 L321.67 82.67 L321.83 82.83 L322.67 82.67 L323.00 82.33 L323.00 81.83ZM308.50 82.00 L306.33 81.33 L303.50 81.50 L302.83 82.33 L302.83 85.67 L303.00 85.83 L302.83 90.50 L303.33 91.33 L304.00 91.00 L304.17 88.33 L304.67 87.83 L307.00 87.67 L308.50 87.00 L309.67 85.50 L309.83 85.00 L309.67 83.67ZM304.17 83.33 L305.00 82.83 L307.17 82.83 L308.00 83.50 L308.17 85.33 L307.33 86.17 L306.17 86.67 L304.83 86.33 L304.17 85.67ZM233.50 81.50 L232.83 82.50 L233.00 84.00 L233.00 89.67 L232.83 90.17 L233.00 90.83 L233.50 91.50 L234.33 91.67 L238.17 91.67 L238.67 91.33 L238.50 90.33 L235.00 90.17 L234.00 89.17 L234.17 87.67 L234.67 87.17 L237.50 87.00 L238.00 86.67 L238.00 86.17 L237.33 85.83 L234.67 85.67 L234.17 85.17 L234.17 83.50 L234.67 83.00 L235.50 82.67 L238.33 82.67 L238.67 82.33 L238.67 81.83 L238.00 81.33 L237.67 81.50 L236.00 81.50 L235.83 81.33ZM138.00 81.50 L137.33 82.00 L137.17 82.50 L137.17 90.50 L137.33 91.00 L138.50 91.67 L140.50 91.67 L142.33 91.17 L143.50 90.50 L145.00 88.50 L145.33 87.33 L145.33 85.50 L145.00 84.17 L143.67 82.50 L142.17 81.67 L139.00 81.33ZM139.67 82.67 L142.17 83.00 L143.67 84.67 L143.83 85.50 L143.67 88.17 L142.50 89.67 L141.33 90.17 L139.67 90.33 L138.50 89.33 L138.67 88.67 L138.50 83.67 L139.00 83.00ZM124.17 81.50 L123.33 82.33 L123.50 90.83 L123.83 91.33 L124.67 91.67 L128.50 91.67 L129.17 91.17 L129.17 90.67 L128.50 90.17 L125.33 90.17 L124.67 89.33 L124.83 87.67 L125.50 87.00 L128.00 87.00 L128.50 86.67 L128.50 86.17 L127.83 85.83 L125.33 85.83 L124.83 85.33 L124.67 83.83 L125.33 82.83 L128.67 82.67 L129.00 82.50 L129.00 81.67 L128.50 81.33ZM108.83 81.67 L108.33 82.67 L108.50 84.17 L108.33 87.17 L108.50 87.33 L108.50 90.83 L108.67 91.17 L109.17 91.50 L109.67 91.33 L110.00 88.00 L110.50 87.50 L111.00 87.50 L112.17 88.50 L113.50 90.67 L114.17 91.33 L114.67 91.50 L115.00 91.17 L115.00 90.33 L113.50 88.33 L113.33 87.50 L115.00 85.83 L115.17 83.67 L114.83 82.83 L114.00 82.00 L112.00 81.33 L109.67 81.33ZM110.00 83.33 L110.50 82.83 L112.50 82.83 L113.17 83.17 L113.67 83.67 L113.50 85.33 L112.17 86.17 L110.50 86.17 L110.00 85.50ZM94.83 81.67 L94.33 82.67 L94.50 83.17 L94.50 90.83 L94.67 91.17 L95.67 91.67 L100.17 91.50 L100.33 91.33 L100.17 90.33 L96.50 90.17 L95.83 89.50 L95.83 88.00 L96.50 87.00 L98.83 87.00 L99.50 86.50 L99.33 86.00 L99.00 85.83 L96.33 85.83 L95.83 85.17 L95.83 83.33 L96.50 82.67 L98.67 82.67 L98.83 82.83 L99.83 82.67 L100.17 82.33 L100.17 81.83 L99.33 81.33 L98.50 81.50 L95.67 81.33ZM62.50 81.33 L60.50 82.17 L59.50 83.17 L58.67 84.67 L58.33 86.67 L58.83 89.00 L60.33 90.83 L62.67 91.83 L64.17 91.83 L66.17 91.00 L67.67 89.50 L68.33 87.50 L68.33 85.33 L67.83 83.67 L66.50 82.17 L64.50 81.33ZM62.67 82.67 L64.17 82.67 L65.33 83.00 L66.67 84.33 L67.17 85.83 L67.17 87.00 L66.67 88.50 L65.50 89.83 L64.33 90.33 L62.50 90.33 L61.50 89.83 L60.67 89.00 L60.00 87.83 L59.83 86.17 L60.17 84.67 L61.33 83.17ZM49.33 81.67 L48.17 81.33 L45.67 81.33 L45.17 81.50 L44.67 82.17 L44.67 89.83 L44.50 90.33 L44.67 91.00 L45.17 91.50 L45.83 91.17 L46.00 88.17 L46.50 87.67 L49.17 87.33 L50.17 86.83 L51.00 85.67 L51.00 83.33 L50.67 82.67ZM46.00 83.17 L46.67 82.67 L48.83 83.00 L49.67 84.00 L49.50 85.50 L48.33 86.33 L46.50 86.50 L45.83 85.33ZM289.67 81.17 L287.33 82.00 L286.00 83.17 L285.00 85.17 L285.00 87.67 L286.00 89.67 L287.17 90.83 L288.83 91.67 L290.17 91.83 L292.33 91.17 L293.83 90.00 L294.83 88.33 L295.00 85.67 L294.83 84.67 L293.67 82.83 L292.00 81.67 L291.17 81.33ZM289.33 82.67 L290.67 82.67 L292.33 83.33 L293.83 85.83 L293.67 87.50 L292.67 89.17 L291.33 90.17 L290.33 90.50 L289.67 90.50 L288.00 89.83 L287.17 89.00 L286.33 87.33 L286.33 86.00 L287.00 84.33 L288.33 83.00ZM263.83 81.17 L262.50 81.67 L261.50 82.50 L261.00 83.17 L260.83 84.33 L261.67 85.83 L262.83 86.67 L265.17 87.17 L266.17 88.33 L266.17 89.33 L265.33 90.17 L264.50 90.50 L263.67 90.50 L262.33 89.83 L261.67 89.17 L261.00 89.50 L261.00 90.00 L261.50 90.83 L263.00 91.67 L265.00 91.83 L267.00 90.83 L267.83 89.50 L267.83 88.33 L267.50 87.67 L266.33 86.50 L263.67 85.50 L262.83 84.67 L262.67 83.50 L263.67 82.67 L265.17 82.67 L266.33 83.33 L266.83 83.17 L267.00 82.33 L266.50 81.83 L264.83 81.17ZM249.33 81.17 L247.83 81.83 L247.00 82.67 L246.67 83.50 L246.83 85.00 L247.17 85.67 L248.50 86.67 L250.83 87.33 L251.83 88.33 L251.83 89.50 L251.33 90.00 L249.67 90.50 L248.17 89.83 L247.67 89.33 L247.00 89.33 L246.83 90.50 L247.00 90.83 L248.50 91.67 L250.33 91.83 L251.17 91.67 L252.83 90.50 L253.33 89.50 L253.33 88.17 L253.00 87.33 L252.17 86.50 L251.33 86.00 L249.50 85.50 L248.00 84.33 L248.17 83.33 L249.67 82.50 L251.17 82.83 L252.00 83.33 L252.67 83.17 L252.67 82.33 L252.17 81.83 L250.50 81.17ZM195.67 81.17 L193.67 82.00 L193.00 82.67 L192.83 85.00 L193.83 86.17 L194.67 86.67 L196.50 87.17 L197.33 87.67 L197.83 88.33 L197.83 89.50 L196.33 90.50 L195.50 90.50 L193.33 89.33 L193.00 89.67 L193.00 90.50 L193.50 91.00 L194.83 91.67 L196.33 91.83 L198.67 90.67 L199.33 89.33 L199.33 88.17 L198.33 86.67 L197.17 86.00 L195.67 85.67 L194.17 84.50 L194.17 83.50 L195.67 82.50 L196.33 82.50 L197.83 83.17 L198.67 83.00 L198.67 82.33 L198.17 81.83 L197.00 81.33Z';
+let wordmarkId = 0;
+function NexoraWordmark({ height = 18, light = false, tagline = false, style }: { height?: number; light?: boolean; tagline?: boolean; style?: any }) {
+  // height = the height of the letters. The artwork is 512 wide; letters run from y 8 to 60, the tagline to 92.
+  const gid = React.useMemo(() => `nxwm${++wordmarkId}`, []);
+  const vbH = tagline ? 86 : 54;
+  const w = Math.round((height / 52) * 504 * 10) / 10;
+  const h = Math.round((height / 52) * vbH * 10) / 10;
+  return (
+    <Svg width={w} height={h} viewBox={`4 7 504 ${vbH}`} style={style} accessibilityLabel="NEXORA AI" accessibilityRole="image">
+      <Defs>
+        <LinearGradient id={gid} x1="0" y1="1" x2="1" y2="0">
+          <Stop offset="0" stopColor="#1A9ED8" />
+          <Stop offset="1" stopColor="#06D2F0" />
+        </LinearGradient>
+      </Defs>
+      <Path d={WORDMARK_WORD} fill={light ? '#FFFFFF' : '#0A1E3A'} fillRule="evenodd" />
+      <Path d={WORDMARK_AI} fill={`url(#${gid})`} fillRule="evenodd" />
+      {tagline && <Path d={WORDMARK_TAG} fill={light ? '#9FB0C6' : '#3A4A60'} fillRule="evenodd" />}
+    </Svg>
+  );
+}
+function NexoraMark({ size = 32, style }: { size?: number; style?: any }) {
+  const w = Math.round(size * 1.18);
+  return <Image source={NEXORA_MARK} style={[{ width: w, height: Math.round(w / 1.52) }, style]} resizeMode="contain" accessibilityLabel="Nexora AI" />;
+}
+// The full NEXORA AI lockup, laid out like the brand artwork: the infinity mark, then "NEXORA AI" with
+// "AI-POWERED BUSINESS OPERATING SYSTEM" under it. `letter` = height of the NEXORA letters; everything else
+// is in the artwork's proportions (mark 1.74x the letter height, gap 0.52x). `light` = white letters for dark backgrounds.
+function NexoraLockup({ letter = 16, light = false, tagline = true, style }: { letter?: number; light?: boolean; tagline?: boolean; style?: any }) {
+  const markH = Math.round(letter * 1.74), markW = Math.round(markH * 1.53);
+  return (
+    <View style={[{ flexDirection: 'row', alignItems: 'flex-start' }, style]} accessible accessibilityLabel="NEXORA AI">
+      <Image source={NEXORA_MARK} style={{ width: markW, height: markH }} resizeMode="contain" />
+      <NexoraWordmark height={letter} light={light} tagline={tagline} style={{ marginLeft: Math.round(letter * 0.52), marginTop: Math.round(letter * 0.17) }} />
+    </View>
+  );
+}
 function NexoraLogo({ size = 32 }: { size?: number }) {
-  // The 'assets/icon.png' in Supabase is still Expo's default app icon, so the Nexora sparkle mark is drawn instead.
-  const failed = true;
-  if (failed) {
-    return (
-      <View style={{ width: size, height: size, borderRadius: size * 0.3, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center', marginLeft: 10 }}>
-        <Ionicons name="sparkles" size={size * 0.55} color="#FFFFFF" />
-      </View>
-    );
-  }
-  return <Image source={{ uri: NEXORA_LOGO_URL }} style={{ width: size, height: size, borderRadius: size * 0.3, marginLeft: 10 }} resizeMode="cover" accessibilityLabel="Nexora AI" />;
+  return <NexoraMark size={size} style={{ marginLeft: 10 }} />;
 }
 
 // ---- NEXORA AI Terms of Use (ATOD Tech), from NEXORA_AI_terms_of_use.pdf, last updated October 08, 2026 ----
@@ -2142,7 +2495,7 @@ type LegalBlock = { t: 'p' | 'li' | 'h'; x: string };
 const NEXORA_TERMS: { updated: string; sections: { n: string; title: string; blocks: LegalBlock[] }[] } = {"updated": "October 08, 2026", "sections": [{"n": "1", "title": "Agreement to These Terms", "blocks": [{"t": "p", "x": "These Terms of Use (the “Terms”) are a legally binding agreement between you (personally or on behalf of an organisation) and ATOD Tech (“NEXORA”, “we”, “us” or “our”), a company operating in Lagos, Nigeria. They govern your access to and use of the NEXORA AI mobile application, web portal, administrative portal, application programming interfaces, and related products and services (together, the “Services”)."}, {"t": "p", "x": "By creating an account, connecting an account, or using the Services, you confirm that you have read, understood and agree to these Terms and to our Privacy Notice. If you do not agree, you must not use the Services."}]}, {"n": "2", "title": "Eligibility and Authority", "blocks": [{"t": "li", "x": "You must be at least 18 years old and have the legal capacity to enter into a binding contract."}, {"t": "li", "x": "If you use the Services for an organisation, you confirm that you have authority to bind that organisation, and “you” includes the organisation."}, {"t": "li", "x": "You must provide accurate and current information and keep it updated."}, {"t": "li", "x": "You must not use the Services if you are barred from doing so by law."}]}, {"n": "3", "title": "The Services", "blocks": [{"t": "p", "x": "NEXORA AI is an AI business assistant and marketplace platform. Depending on your plan and country, the Services may include:"}, {"t": "li", "x": "an AI assistant that answers customer questions, qualifies leads, drafts replies, creates tasks and reminders, and prepares reports;"}, {"t": "li", "x": "a unified inbox for supported messages, comments, emails and voice notes;"}, {"t": "li", "x": "an AI calling assistant that answers, screens and routes business calls;"}, {"t": "li", "x": "a social media command center that prepares and publishes campaign content to connected accounts;"}, {"t": "li", "x": "calendar, task and meeting integration with Apple, Google and Microsoft services;"}, {"t": "li", "x": "a marketplace for retail goods, wholesale goods, used items, commercial space rentals and time-limited opportunities;"}, {"t": "li", "x": "business intelligence reports and recommendations; and"}, {"t": "li", "x": "the Business Brain, which stores your approved business knowledge and policies."}, {"t": "p", "x": "Features may be added, changed, limited or removed, and some features may be available only in certain countries or after approval. We do not offer live streaming, live auctions, live events or live hiring in the Services."}]}, {"n": "4", "title": "Your Account", "blocks": [{"t": "li", "x": "You are responsible for all activity under your account and for keeping your login details and devices secure."}, {"t": "li", "x": "You must enable multi-factor authentication where we require it."}, {"t": "li", "x": "You must tell us immediately if you suspect unauthorised access."}, {"t": "li", "x": "Organisation administrators control roles, permissions and the AI authority settings for their users. Sensitive actions may require extra authentication or approval."}]}, {"n": "5", "title": "Artificial Intelligence Features", "blocks": [{"t": "li", "x": "AI can make mistakes. AI outputs may be incomplete, inaccurate or unsuitable. You are responsible for reviewing outputs and for decisions and actions you take or authorise based on them."}, {"t": "li", "x": "You control AI authority. You choose Draft, Approval or Autonomous mode for each task category and set limits such as discounts, refunds and escalation. Actions the AI takes within your settings are treated as your actions."}, {"t": "li", "x": "Not professional advice. AI outputs are not legal, financial, tax, medical or other professional advice."}, {"t": "li", "x": "Human takeover. You must provide a way for your customers to reach a human where the law requires or where they ask."}, {"t": "li", "x": "Disclosure. You must make sure your customers are told when they are communicating with an AI, where the law or good practice requires."}, {"t": "li", "x": "Estimates and forecasts are estimates and are not guarantees of results."}, {"t": "li", "x": "Business Brain. You are responsible for the accuracy, legality and approval status of information you place in the Business Brain."}]}, {"n": "6", "title": "Connected Third-Party Services", "blocks": [{"t": "p", "x": "The Services work with third-party platforms such as WhatsApp, Instagram, Facebook, TikTok, Google, Microsoft and Apple, and with payment, telephony and delivery providers."}, {"t": "li", "x": "You must have the right to connect each account and must comply with that platform’s terms and policies."}, {"t": "li", "x": "NEXORA uses official interfaces only and does not guarantee that every action (such as editing a published post) is available on every platform."}, {"t": "li", "x": "Third-party platforms may change or restrict access at any time. We are not responsible for their availability, content, pricing, policy decisions or actions, including suspension of your accounts."}, {"t": "li", "x": "You may revoke a connection at any time, after which NEXORA will no longer have access."}]}, {"n": "7", "title": "Acceptable Use", "blocks": [{"t": "p", "x": "You must not use the Services to:"}, {"t": "li", "x": "break any law of the Federal Republic of Nigeria or any other applicable law, including laws on data protection, consumer protection, cybercrime, advertising, intellectual property, tax and money laundering;"}, {"t": "li", "x": "send spam, unsolicited bulk messages, or marketing without the consent the law requires;"}, {"t": "li", "x": "harass, defraud, deceive, impersonate or harm any person;"}, {"t": "li", "x": "upload or publish unlawful, defamatory, hateful, obscene or infringing content;"}, {"t": "li", "x": "sell or promote prohibited or restricted goods or services (see section 10);"}, {"t": "li", "x": "use another person’s account, or ask us or anyone for passwords to third-party accounts;"}, {"t": "li", "x": "scrape private messages or private account data, or bypass platform restrictions;"}, {"t": "li", "x": "interfere with, probe, overload or attack the Services, or attempt to access data you are not authorised to access;"}, {"t": "li", "x": "copy, reverse engineer, decompile or resell the Services, except as law permits;"}, {"t": "li", "x": "build a competing product using the Services or our confidential information; or"}, {"t": "li", "x": "use the Services to create or spread malicious software."}, {"t": "p", "x": "We may investigate suspected violations and may suspend, remove content or report matters to the authorities."}]}, {"n": "8", "title": "Calls, Messages and Customer Communications", "blocks": [{"t": "p", "x": "You are responsible for the lawful use of NEXORA to communicate with your customers. This includes giving the notices, obtaining the consents and honouring the opt-outs required for calls, call recording, transcription, SMS, email, WhatsApp and other messages under Nigerian law and the rules of the relevant platform or telecommunications provider. You must not use the Services for unlawful call interception or surveillance."}]}, {"n": "9", "title": "Social Media Publishing", "blocks": [{"t": "p", "x": "You must own or have licensed all text, images, music, video, logos and other material you publish through NEXORA. Publishing is subject to your preview and approval settings. If a platform rejects, removes or limits a post, NEXORA will show the status and may suggest a compliant alternative, but we are not responsible for the platform’s decision."}]}, {"n": "10", "title": "Marketplace Terms", "blocks": [{"t": "h", "x": "10.1 Our role"}, {"t": "p", "x": "NEXORA provides a technology platform where sellers, wholesale sellers, listers and buyers can find each other. NEXORA is not the seller, buyer, landlord, agent or broker, and is not a party to any sale, rental or other contract between users. We do not own, inspect or guarantee any item, space or service, and we do not guarantee the quality, safety, legality, authenticity or availability of listings, or the accuracy of listing information or the ability of users to complete a transaction."}, {"t": "h", "x": "10.2 What can be listed"}, {"t": "p", "x": "Listings may cover retail goods, wholesale goods, used items, commercial spaces (such as shops, stalls, kiosks, warehouses, offices, studios and event spaces) and time-limited opportunities such as surplus stock or open appointment slots."}, {"t": "h", "x": "10.3 Seller and lister duties"}, {"t": "p", "x": "Sellers and listers must:"}, {"t": "li", "x": "have the legal right to sell or let the item or space, and declare ownership or authority to list;"}, {"t": "li", "x": "describe items accurately, including condition, known defects and serial numbers where relevant, and use genuine photographs;"}, {"t": "li", "x": "price honestly, honour accepted orders and stated terms, and set clear delivery, return and refund terms in line with Nigerian consumer protection law;"}, {"t": "li", "x": "comply with all licensing, tax, product safety, import and registration requirements that apply to them; and"}, {"t": "li", "x": "complete any verification we require, including for wholesale and commercial rental listings."}, {"t": "h", "x": "10.4 Buyer and applicant duties"}, {"t": "p", "x": "Buyers and applicants must provide accurate information, pay on time, and complete verification where required (for example for wholesale access). Wholesale prices are confidential and must not be shared or published without the seller’s consent."}, {"t": "h", "x": "10.5 Prohibited and restricted items"}, {"t": "p", "x": "You must not list or promote items or services that are illegal, counterfeit, stolen, hazardous, or restricted in Nigeria, including illegal drugs, weapons and ammunition, counterfeit or pirated goods, human remains or trafficked persons, unlicensed regulated medicines, unlawfully obtained personal data, and any item that infringes another person’s rights. We may maintain a longer list and may remove listings at our discretion."}, {"t": "h", "x": "10.6 Rentals"}, {"t": "p", "x": "A commercial space listing is an advertisement only. Viewings, applications, tenancy or licence agreements, deposits and acceptance are decided between the lister and the applicant. We do not provide property brokerage, valuation or legal services, and final acceptance remains a human decision by the lister."}, {"t": "h", "x": "10.7 Offers, orders and payment"}, {"t": "p", "x": "Orders and offers become binding between users when accepted under the listing terms. Payments are processed by licensed payment service providers. NEXORA does not act as a bank or licensed payment institution, and the payment provider’s terms apply to the payment."}, {"t": "h", "x": "10.8 Disputes between users"}, {"t": "p", "x": "Users should first try to resolve disputes between themselves. NEXORA may offer a reporting and mediation process, but it does not decide legal rights, and a decision of ours does not prevent users from using their legal remedies. We may remove listings, suspend accounts or withhold payments where permitted by law and our payment partners, to address fraud or serious breaches."}]}, {"n": "11", "title": "Fees, Taxes and Payments", "blocks": [{"t": "li", "x": "Fees. You agree to pay the subscription, usage, commission and other fees shown for your plan or transaction, in the currency stated. Fees may change on notice."}, {"t": "li", "x": "Taxes. Fees are stated exclusive of taxes unless we say otherwise. You are responsible for all applicable taxes, including value added tax (VAT) where it applies. You are responsible for your own tax filings and registrations."}, {"t": "li", "x": "Third-party costs. Third-party platform, telephony, messaging, AI usage and payment processing charges may be passed on or billed separately."}, {"t": "li", "x": "Billing and refunds. Subscriptions renew automatically unless cancelled before the renewal date. Except where the law requires otherwise or we state otherwise, fees paid are non-refundable."}, {"t": "li", "x": "Unpaid fees. We may suspend the Services if fees are overdue, after reasonable notice."}, {"t": "li", "x": "Payouts. Where we facilitate seller payouts, they are made through licensed providers after identity verification, net of applicable fees, refunds and chargebacks."}]}, {"n": "12", "title": "Your Content and Our Intellectual Property", "blocks": [{"t": "li", "x": "Your content. You keep ownership of the content and data you submit (“Your Content”). You grant us a limited, worldwide, non-exclusive licence to host, process, display and transmit Your Content only to provide, secure and support the Services and as described in our Privacy Notice."}, {"t": "li", "x": "Your responsibility. You confirm that Your Content is lawful, that you have the rights and consents needed to submit it, and that it does not infringe anyone’s rights."}, {"t": "li", "x": "Our property. NEXORA, its logo, software, design, models, documentation and all related intellectual property belong to us or our licensors. We grant you a limited, non-exclusive, non-transferable, revocable licence to use the Services for your own business purposes in line with these Terms. No other rights are granted."}, {"t": "li", "x": "Feedback. If you give us ideas or suggestions about the Services, we may use them without payment or obligation to you."}, {"t": "li", "x": "Copyright complaints. If you believe content on the Services infringes your rights, tell us through the in-app Help section, and we will review it and may remove the content."}]}, {"n": "13", "title": "Confidentiality", "blocks": [{"t": "p", "x": "Each party must keep the other’s non-public business, technical and financial information confidential, use it only for the purposes of these Terms, and not disclose it except to advisers and personnel who need to know and are bound by confidentiality, or as required by law."}]}, {"n": "14", "title": "Data Protection", "blocks": [{"t": "p", "x": "Both parties will comply with the Nigeria Data Protection Act 2023 and related regulations. Where you use NEXORA to process personal data about your customers or staff, you are the data controller and we are your data processor, and we will process that data on your documented instructions as set out in our Privacy Notice and any data processing agreement between us. You are responsible for having a lawful basis and giving required notices to the people whose data you place in the Services."}]}, {"n": "15", "title": "Suspension and Termination", "blocks": [{"t": "li", "x": "You may stop using the Services and close your account at any time through the app settings, subject to any minimum term or unpaid fees."}, {"t": "li", "x": "We may suspend or terminate your access immediately, with notice where practicable, if you breach these Terms, create risk or legal exposure, fail to pay, or if required by law or by a platform or payment partner."}, {"t": "li", "x": "On termination, your licence ends. You may export your data for a limited period we will notify, after which it is deleted or anonymised under our Privacy Notice. Sections that by their nature should survive (including payment obligations, intellectual property, confidentiality, disclaimers, liability limits, indemnity and governing law) will survive."}]}, {"n": "16", "title": "Availability and Changes", "blocks": [{"t": "p", "x": "We aim to keep the Services available but do not guarantee uninterrupted or error-free operation. Maintenance, outages, third-party failures and events beyond our control may affect access. We may update, suspend or discontinue features, and we will give reasonable notice of material changes where practicable."}]}, {"n": "17", "title": "Disclaimers", "blocks": [{"t": "p", "x": "TO THE FULLEST EXTENT PERMITTED BY LAW, THE SERVICES ARE PROVIDED “AS IS” AND “AS AVAILABLE”. WE DISCLAIM ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. WE DO NOT WARRANT THAT AI OUTPUTS, REPORTS, FORECASTS OR LEAD SCORES WILL BE ACCURATE OR RESULT IN ANY SALES, REVENUE OR OTHER OUTCOME. WE ARE NOT RESPONSIBLE FOR THE ACTS OR OMISSIONS OF USERS, SELLERS, BUYERS, LISTERS OR THIRD-PARTY PLATFORMS AND PROVIDERS."}]}, {"n": "18", "title": "Limitation of Liability", "blocks": [{"t": "p", "x": "TO THE FULLEST EXTENT PERMITTED BY LAW, NEXORA AND ITS DIRECTORS, EMPLOYEES AND AFFILIATES WILL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL OR PUNITIVE DAMAGES, OR FOR LOSS OF PROFITS, REVENUE, BUSINESS, GOODWILL OR DATA, ARISING FROM OR RELATED TO THE SERVICES. OUR TOTAL LIABILITY FOR ALL CLAIMS RELATED TO THE SERVICES WILL NOT EXCEED THE FEES YOU PAID TO US IN THE SIX (6) MONTHS BEFORE THE EVENT GIVING RISE TO THE CLAIM. NOTHING IN THESE TERMS EXCLUDES OR LIMITS LIABILITY THAT CANNOT BE EXCLUDED OR LIMITED UNDER THE STATE LAW, INCLUDING LIABILITY FOR FRAUD, DEATH OR PERSONAL INJURY CAUSED BY NEGLIGENCE, OR RIGHTS UNDER THE FEDERAL COMPETITION AND CONSUMER PROTECTION ACT 2018."}]}, {"n": "19", "title": "Indemnity", "blocks": [{"t": "p", "x": "You agree to defend, indemnify and hold harmless NEXORA, its affiliates, directors, officers and employees against any claim, loss, liability, damage or cost (including reasonable legal fees) arising from: (a) Your Content; (b) your use of the Services in breach of these Terms or the law; (c) your dealings with customers, buyers, sellers, listers or applicants; or (d) your infringement of any third party’s rights."}]}, {"n": "20", "title": "Force Majeure", "blocks": [{"t": "p", "x": "Neither party is liable for delay or failure to perform caused by events beyond its reasonable control, including natural disasters, power or internet failure, strikes, riots, war, terrorism, government action, or failure of third-party platforms and utilities. This does not excuse payment obligations."}]}, {"n": "21", "title": "Governing Law and Dispute Resolution", "blocks": [{"t": "li", "x": "Governing law. These Terms are governed by the laws of the Federal Republic of Nigeria."}, {"t": "li", "x": "Negotiation. The parties will first try to resolve any dispute through good-faith negotiation for at least thirty (30) days after written notice of the dispute."}, {"t": "li", "x": "Arbitration. If the dispute is not resolved, it will be finally resolved by arbitration under the Arbitration and Mediation Act 2023 of Nigeria. There will be one (1) arbitrator, the seat of arbitration will be Lagos, Nigeria, and the language will be English."}, {"t": "li", "x": "Individual claims. To the extent the law allows, disputes will be decided on an individual basis and not as a class or representative action."}, {"t": "li", "x": "Exceptions and courts. Either party may seek urgent injunctive relief, or enforce or protect intellectual property rights, in the courts of Lagos State, Nigeria, which have exclusive jurisdiction over any matter not subject to arbitration. Nothing here removes your statutory rights as a consumer."}]}, {"n": "22", "title": "General", "blocks": [{"t": "li", "x": "Entire agreement. These Terms, the Privacy Notice and any plan, order or data processing terms we agree with you are the entire agreement on their subject and replace earlier understandings."}, {"t": "li", "x": "Changes to Terms. We may update these Terms. We will give notice of material changes in the app or by email. Continued use after the effective date means you accept the changes."}, {"t": "li", "x": "Assignment. You may not assign these Terms without our written consent. We may assign them in connection with a merger, acquisition or sale of assets."}, {"t": "li", "x": "Severability and waiver. If a provision is unenforceable, the rest stays in force. Failure to enforce a right is not a waiver."}, {"t": "li", "x": "Electronic communications. You agree that notices and agreements may be given and signed electronically, and that electronic records are valid evidence."}, {"t": "li", "x": "No partnership. No partnership, joint venture, agency or employment relationship is created between you and NEXORA."}, {"t": "li", "x": "Language. These Terms are in English, and the English version prevails."}]}, {"n": "23", "title": "Contact Us", "blocks": [{"t": "p", "x": "For questions about these Terms, contact us through the Help section in the NEXORA app, or write to:"}, {"t": "p", "x": "ATOD Tech Lagos, Nigeria"}]}]};
 const PUBLIC_PAGE: string | null = (() => {
   if (Platform.OS !== 'web' || typeof window === 'undefined') return null;
-  try { const v = new URLSearchParams(window.location.search).get('page'); return v === 'terms' ? v : null; } catch { return null; }
+  try { const v = new URLSearchParams(window.location.search).get('page'); return v === 'terms' || v === 'privacy' ? v : null; } catch { return null; }
 })();
 // Bullets that open with a short label ("Fees. …", "AI can make mistakes. …") show the label in bold.
 function legalText(x: string, color: string) {
@@ -2150,16 +2503,20 @@ function legalText(x: string, color: string) {
   if (!m || /[,;]/.test(m[1])) return <Text style={{ fontSize: 15, lineHeight: 24, color }}>{x}</Text>;
   return <Text style={{ fontSize: 15, lineHeight: 24, color }}><Text style={{ fontWeight: '700', color: '#0B1220' }}>{m[1]} </Text>{m[2]}</Text>;
 }
-function LegalTermsPage({ onBack }: { onBack?: () => void }) {
+const NEXORA_PRIVACY: { updated: string; sections: { n: string; title: string; blocks: LegalBlock[] }[] } = {"updated": "October 26, 2026", "sections": [{"n": "1", "title": "Who We Are", "blocks": [{"t": "p", "x": "This Privacy Notice explains how ATOD Tech (“NEXORA”, “we”, “us”), a company operating in Lagos, Nigeria, collects, uses, shares and protects personal data when you use the NEXORA AI mobile app, website and related services (the “Services”). It applies together with our Terms of Use. We comply with the Nigeria Data Protection Act 2023 (NDPA) and, where they apply, other data protection laws such as the GDPR."}]}, {"n": "2", "title": "Our Two Roles", "blocks": [{"t": "li", "x": "Controller. We decide how to use the data about you as an account holder (for example your name, email, login activity and billing)."}, {"t": "li", "x": "Processor. When your business uses NEXORA to talk to its own customers, store orders or keep customer records, your business is the controller of that customer data and we process it on your instructions. Your business must give its customers the notices and have the lawful basis the law requires."}]}, {"n": "3", "title": "Data We Collect", "blocks": [{"t": "li", "x": "Account data: name, email address, password (stored only as a secure hash), profile photo, role and team membership."}, {"t": "li", "x": "Business data: business name, industry, country, products, services, prices, policies, documents and photos you upload, goals and the rules you set for the AI."}, {"t": "li", "x": "Customer communications: messages, comments and contact details from the WhatsApp, Instagram and Facebook accounts you connect, and the replies NEXORA drafts or sends."}, {"t": "li", "x": "Commercial records: orders, customers, leads, schedules and invoices you create or that come from your connected channels."}, {"t": "li", "x": "Device and security data: the device type, approximate location from your time zone, sign-in times, push notification tokens, and two-factor settings."}, {"t": "li", "x": "Payment data: plan and payment status from our payment provider. We do not store your card details."}, {"t": "li", "x": "Support and feedback: messages you send us and reports you make about content."}]}, {"n": "4", "title": "How We Use Data", "blocks": [{"t": "li", "x": "To provide the Services: answer and draft messages, organise your knowledge, track orders and goals, prepare insights and find market opportunities."}, {"t": "li", "x": "To keep accounts safe: authentication, two-factor sign-in, login alerts, fraud and abuse prevention."}, {"t": "li", "x": "To send notifications you choose, such as new messages, orders, leads and approvals."}, {"t": "li", "x": "To process payments and manage your plan."}, {"t": "li", "x": "To support you, fix problems and improve the Services."}, {"t": "li", "x": "To meet legal obligations and enforce our Terms."}, {"t": "p", "x": "Our lawful bases are performance of our contract with you, our legitimate interests in running a secure and useful service, your consent where we ask for it (for example notifications and camera access), and legal obligations. We do not sell personal data, and we do not use your business data or your customers’ messages to train AI models."}]}, {"n": "5", "title": "Artificial Intelligence", "blocks": [{"t": "p", "x": "NEXORA uses AI models to read your knowledge, draft replies, analyse documents and photos, and research the web. The text needed for each task is sent to our AI provider to produce the answer. Web research uses public web pages, and NEXORA links to the sources it used. AI output can be wrong; you remain in control through the AI permissions, rules and approvals in the app."}]}, {"n": "6", "title": "Who We Share Data With", "blocks": [{"t": "p", "x": "We share personal data only with service providers who help us run the Services, under contracts that require them to protect it:"}, {"t": "li", "x": "Supabase (database, file storage and sign-in hosting);"}, {"t": "li", "x": "Groq (AI processing);"}, {"t": "li", "x": "Meta Platforms (WhatsApp, Instagram and Facebook messaging for the accounts you connect);"}, {"t": "li", "x": "Paystack (payments);"}, {"t": "li", "x": "Resend (account emails such as verification and password reset);"}, {"t": "li", "x": "Expo (delivery of push notifications to your phone) and Vercel (website hosting)."}, {"t": "p", "x": "We may also disclose data when required by law or to protect rights and safety, or as part of a merger or sale of our business with the same protections."}]}, {"n": "7", "title": "International Transfers", "blocks": [{"t": "p", "x": "Some of our providers process data outside Nigeria. Where this happens we rely on the transfer safeguards allowed by the NDPA, such as adequacy, contractual protections or your consent."}]}, {"n": "8", "title": "How Long We Keep Data", "blocks": [{"t": "li", "x": "Your account and business data are kept while your account is active."}, {"t": "li", "x": "Web research NEXORA saves to your knowledge expires after 7 days; market search results are refreshed every 12 hours."}, {"t": "li", "x": "When you delete your account, your data is deleted from our systems, except records we must keep by law (for example payment records), which are kept only as long as required."}]}, {"n": "9", "title": "Security", "blocks": [{"t": "p", "x": "We use encryption in transit, access controls so each business only sees its own data, optional two-factor and biometric sign-in, login activity and alerts, and an emergency AI pause. No system is perfectly secure; tell us at once if you suspect unauthorised access."}]}, {"n": "10", "title": "Your Rights", "blocks": [{"t": "p", "x": "Subject to the law, you can ask to access, correct, delete or export your personal data, object to or restrict processing, and withdraw consent at any time. You can do much of this yourself in the app: Profile > Security & Privacy > Data & Privacy lets you export your data and delete your account."}, {"t": "p", "x": "You may also complain to the Nigeria Data Protection Commission (NDPC)."}]}, {"n": "11", "title": "Children", "blocks": [{"t": "p", "x": "The Services are for people aged 18 and over. We do not knowingly collect data from children."}]}, {"n": "12", "title": "Changes", "blocks": [{"t": "p", "x": "We may update this Notice. We will tell you about material changes in the app or by email before they take effect."}]}, {"n": "13", "title": "Contact Us", "blocks": [{"t": "p", "x": "Questions or requests about your personal data: support@nexorabusinessai.com, or write to ATOD Tech, Lagos, Nigeria."}]}]};
+
+function LegalTermsPage({ onBack, doc = 'terms' }: { onBack?: () => void; doc?: 'terms' | 'privacy' }) {
+  const DOC = doc === 'privacy' ? NEXORA_PRIVACY : NEXORA_TERMS;
+  const docTitle = doc === 'privacy' ? 'Privacy Notice' : 'Terms of Use';
   const { width } = useWindowDimensions();
   const scrollRef = useRef<ScrollView>(null);
   const offsets = useRef<Record<string, number>>({});
   const wide = width >= 1000;
-  useEffect(() => { if (IS_WEB) { try { document.title = 'Terms of Use · Nexora AI'; } catch { /* ignore */ } } }, []);
+  useEffect(() => { if (IS_WEB) { try { document.title = `${docTitle} · Nexora AI`; } catch { /* ignore */ } } }, []);
   const toc = (
     <View style={{ gap: 2 }}>
       <Text style={{ fontSize: 12, fontWeight: '800', color: '#8A97A6', letterSpacing: 0.6, marginBottom: 8 }}>CONTENTS</Text>
-      {NEXORA_TERMS.sections.map(sec => (
+      {DOC.sections.map(sec => (
         <Pressable key={sec.n} onPress={() => scrollRef.current?.scrollTo({ y: Math.max(0, (offsets.current[sec.n] ?? 0) - 12), animated: true })} style={{ paddingVertical: 5 }}>
           <Text style={{ fontSize: 13, color: '#475569' }}>{sec.n}. {sec.title}</Text>
         </Pressable>
@@ -2171,21 +2528,21 @@ function LegalTermsPage({ onBack }: { onBack?: () => void }) {
       <View style={{ backgroundColor: '#0B1220', paddingHorizontal: 20, paddingTop: 18, paddingBottom: 18 }}>
         <View style={{ width: '100%', maxWidth: 1080, alignSelf: 'center', flexDirection: 'row', alignItems: 'center', gap: 12 }}>
           {onBack && <Pressable onPress={onBack} hitSlop={10} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#FFFFFF" /></Pressable>}
-          <View style={{ width: 36, height: 36, borderRadius: 11, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="sparkles" size={18} color="#FFFFFF" /></View>
+          <NexoraMark size={36} />
           <View style={{ flex: 1 }}>
-            <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '800' }}>Terms of Use</Text>
-            <Text style={{ color: '#9FB0C6', fontSize: 12 }}>Nexora AI · ATOD Tech · Last updated {NEXORA_TERMS.updated}</Text>
+            <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '800' }}>{docTitle}</Text>
+            <Text style={{ color: '#9FB0C6', fontSize: 12 }}>Nexora AI · ATOD Tech · Last updated {DOC.updated}</Text>
           </View>
         </View>
       </View>
       <ScrollView ref={scrollRef} contentContainerStyle={{ padding: 20, paddingBottom: 60 }}>
         <View style={{ width: '100%', maxWidth: 1080, alignSelf: 'center', flexDirection: wide ? 'row' : 'column', gap: 28, alignItems: 'flex-start' }}>
           {wide && <View style={{ width: 260, paddingTop: 8 }}>{toc}</View>}
-          <View style={{ flex: 1, minWidth: 0, backgroundColor: '#FFFFFF', borderRadius: 18, padding: wide ? 36 : 20, borderWidth: 1, borderColor: '#E6ECF3' }}>
+          <View style={{ flex: wide ? 1 : undefined, alignSelf: wide ? undefined : 'stretch', minWidth: 0, backgroundColor: '#FFFFFF', borderRadius: 18, padding: wide ? 36 : 20, borderWidth: 1, borderColor: '#E6ECF3' }}>
             <View style={{ padding: 14, borderRadius: 12, backgroundColor: '#F2F8FD', marginBottom: 8 }}>
-              <Text style={{ fontSize: 14, color: '#1E3A5F', lineHeight: 21 }}>These Terms are a binding agreement between you and ATOD Tech for your use of Nexora AI. By creating an account or using the Services you agree to them and to the Privacy Notice.</Text>
+              <Text style={{ fontSize: 14, color: '#1E3A5F', lineHeight: 21 }}>{doc === 'privacy' ? 'How ATOD Tech collects, uses and protects personal data in Nexora AI, and the choices and rights you have.' : 'These Terms are a binding agreement between you and ATOD Tech for your use of Nexora AI. By creating an account or using the Services you agree to them and to the Privacy Notice.'}</Text>
             </View>
-            {NEXORA_TERMS.sections.map(sec => (
+            {DOC.sections.map(sec => (
               <View key={sec.n} onLayout={e => { offsets.current[sec.n] = e.nativeEvent.layout.y; }} style={{ marginTop: 22 }}>
                 <Text style={{ fontSize: 19, fontWeight: '800', color: '#0B1220' }}>{sec.n}. {sec.title}</Text>
                 {sec.blocks.map((b, i) => b.t === 'h' ? (
@@ -2200,7 +2557,7 @@ function LegalTermsPage({ onBack }: { onBack?: () => void }) {
                 ))}
               </View>
             ))}
-            <Text style={{ fontSize: 12, color: '#8A97A6', marginTop: 28 }}>Questions about these Terms: use Contact support in the Nexora app, or write to ATOD Tech, Lagos, Nigeria.</Text>
+            <Text style={{ fontSize: 12, color: '#8A97A6', marginTop: 28 }}>Questions about this {doc === 'privacy' ? 'Notice' : 'agreement'}: support@nexorabusinessai.com, or write to ATOD Tech, Lagos, Nigeria.</Text>
           </View>
         </View>
       </ScrollView>
@@ -2215,18 +2572,36 @@ const PUBLIC_SHOP_SLUG: string | null = (() => {
   try { const s = new URLSearchParams(window.location.search).get('shop'); return s && /^[a-z0-9-]{3,40}$/i.test(s) ? s.toLowerCase() : null; } catch { return null; }
 })();
 const SHOP_BASE_URL = SITE_URL;
-async function shopCall(body: Record<string, unknown>): Promise<any> {
+// Referral links (<site>/?ref=CODE): remembered in this browser until the visitor signs up, then credited once.
+(() => {
+  try {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    const r = new URLSearchParams(window.location.search).get('ref');
+    if (r && /^[A-Za-z0-9]{6,10}$/.test(r)) window.localStorage.setItem('nexora_ref', r.toUpperCase());
+  } catch { /* storage blocked */ }
+})();
+async function shopCall(body: Record<string, unknown>, token = ''): Promise<any> {
   const res = await fetch(`${SUPABASE_FUNCTIONS_URL}/nexora-shop`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+    headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token || SUPABASE_ANON_KEY}` },
     body: JSON.stringify(body),
   });
   const out = await res.json().catch(() => ({}));
   if (!res.ok || out?.success === false) { const e: any = new Error(out?.message || `Request failed (${res.status})`); e.code = out?.code; throw e; }
   return out;
 }
-type ShopCard = { id: string; name: string; subtitle: string; overview: string; price: string; image: string; features: string[] };
-type ShopData = { shop: { slug: string; name: string; industry: string; country: string; headline: string; about: string; whatsapp: string }; products: ShopCard[]; services: ShopCard[]; faqs: { q: string; a: string }[]; policies: { title: string; text: string }[] };
+type ShopCard = { id: string; kind?: 'product' | 'service'; name: string; subtitle: string; overview: string; price: string; amount?: number | null; currency?: string; image: string; features: string[]; availability?: '' | 'in' | 'low' | 'out'; left?: number | null };
+type ShopInfo = { coupons?: boolean; slug: string; name: string; industry: string; country: string; headline: string; about: string; whatsapp: string; logo?: string; color?: string; email?: string; phone?: string; address?: string; delivery?: string; accept_orders?: boolean; show_prices?: boolean; preview?: boolean };
+type ShopData = { shop: ShopInfo; products: ShopCard[]; services: ShopCard[]; faqs: { q: string; a: string }[]; policies: { title: string; text: string }[] };
+type ShopTrack = { number: string; status: string; payment_status: string; items: any; subtotal: number | null; delivery_fee: number; discount: number; total: number; currency: string; created_at: string; tracking: string; steps: { at: string; text: string }[] };
+const CCY_SYMBOL: Record<string, string> = { NGN: '₦', USD: '$', EUR: '€', GBP: '£', GHS: 'GH₵', KES: 'KSh ', ZAR: 'R' };
+const fmtMoney = (n: number | null | undefined, ccy?: string) => `${CCY_SYMBOL[ccy || ''] ?? (ccy ? `${ccy} ` : '')}${Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+const ORDER_STATUS_LABEL: Record<string, string> = { pending: 'Received', processing: 'Being prepared', shipped: 'On the way', delivered: 'Delivered', completed: 'Completed', cancelled: 'Cancelled' };
+const PAYMENT_STATUS_LABEL: Record<string, string> = { unknown: 'Not recorded', unpaid: 'Not paid yet', pending: 'Payment being checked', paid: 'Paid', partially_refunded: 'Partly refunded', refunded: 'Refunded' };
+const SHOP_PARAMS = (() => {
+  try { if (Platform.OS !== 'web' || typeof window === 'undefined') return { src: '', order: '', t: '', preview: false }; const q = new URLSearchParams(window.location.search); return { src: (q.get('src') || '').slice(0, 30), order: (q.get('order') || '').slice(0, 20), t: (q.get('t') || '').slice(0, 64), preview: q.get('preview') === '1' }; }
+  catch { return { src: '', order: '', t: '', preview: false }; }
+})();
 function PublicShop({ slug }: { slug: string }) {
   const { width } = useWindowDimensions();
   const [data, setData] = useState<ShopData | null>(null);
@@ -2240,11 +2615,34 @@ function PublicShop({ slug }: { slug: string }) {
   const [leadDone, setLeadDone] = useState('');
   const [leadError, setLeadError] = useState('');
   const [openFaq, setOpenFaq] = useState<number | null>(null);
+  const [query, setQuery] = useState('');
+  const [tab, setTab] = useState<'all' | 'products' | 'services'>('all');
+  const [cart, setCart] = useState<Record<string, number>>({});
+  const [checkout, setCheckout] = useState(false);
+  const [buyer, setBuyer] = useState({ name: '', phone: '', email: '', address: '', note: '' });
+  const [orderBusy, setOrderBusy] = useState(false);
+  const [orderError, setOrderError] = useState('');
+  const [coupon, setCoupon] = useState<{ code: string; applied: string; discount: number; msg: string; ok: boolean; busy: boolean }>({ code: '', applied: '', discount: 0, msg: '', ok: false, busy: false });
+  const [placed, setPlaced] = useState<{ number: string; token: string; total: number; currency: string; payment_info: string } | null>(null);
+  const [enquiry, setEnquiry] = useState<{ kind: 'enquiry' | 'quote'; item: string; name: string; contact: string; message: string; busy: boolean; done: string; error: string } | null>(null);
+  const [track, setTrack] = useState<{ loading: boolean; order: ShopTrack | null; payment_info: string; error: string } | null>(SHOP_PARAMS.order && SHOP_PARAMS.t ? { loading: true, order: null, payment_info: '', error: '' } : null);
   const scrollRef = useRef<ScrollView>(null);
   const chatY = useRef(0);
+  const src = SHOP_PARAMS.src;
   useEffect(() => {
-    shopCall({ action: 'get', slug }).then(d => { setData(d); try { document.title = `${d.shop.name} · Chat with us`; } catch { /* ignore */ } })
-      .catch((e: any) => setError(e?.code === 'not_found' ? "This shop link isn't active." : (e?.message || "Couldn't open this shop.")));
+    // ?preview=1: the signed-in owner can look at their shop before switching it on (nothing can be ordered).
+    const load = async () => {
+      let token = '';
+      if (SHOP_PARAMS.preview) { try { token = (await supabase.auth.getSession()).data.session?.access_token || ''; } catch { /* not signed in */ } }
+      return shopCall({ action: 'get', slug, src, ...(token ? { preview: true } : {}) }, token);
+    };
+    load().then(d => { setData(d); try { document.title = `${d.shop.name} · Shop and chat`; } catch { /* ignore */ } })
+      .catch((e: any) => setError(e?.code === 'not_found' ? (SHOP_PARAMS.preview ? "Sign in to Nexora in this browser to preview your shop, or switch it on." : "This shop link isn't active.") : (e?.message || "Couldn't open this shop.")));
+    if (SHOP_PARAMS.order && SHOP_PARAMS.t) {
+      shopCall({ action: 'track', slug, order_number: SHOP_PARAMS.order, token: SHOP_PARAMS.t })
+        .then(r => setTrack({ loading: false, order: r.order, payment_info: r.payment_info || '', error: '' }))
+        .catch((e: any) => setTrack({ loading: false, order: null, payment_info: '', error: e?.message || "Couldn't find this order." }));
+    }
   }, [slug]);
   const send = async (text?: string) => {
     const t = (text ?? draft).trim();
@@ -2253,7 +2651,7 @@ function PublicShop({ slug }: { slug: string }) {
     setMsgs(next); setDraft(''); setSending(true);
     setTimeout(() => scrollRef.current?.scrollTo({ y: chatY.current, animated: true }), 50);
     try {
-      const r = await shopCall({ action: 'chat', slug, messages: next });
+      const r = await shopCall({ action: 'chat', slug, messages: next, src });
       setMsgs(m => [...m, { role: 'assistant', content: r.reply }]);
       if (r.wants_contact) setAskContact(true);
     } catch (e: any) {
@@ -2266,66 +2664,208 @@ function PublicShop({ slug }: { slug: string }) {
     setLeadBusy(true); setLeadError('');
     try {
       const summary = lead.message || msgs.filter(m => m.role === 'user').map(m => m.content).slice(-3).join(' / ');
-      const r = await shopCall({ action: 'lead', slug, name: lead.name, contact: lead.contact, message: summary });
+      const r = await shopCall({ action: 'lead', slug, name: lead.name, contact: lead.contact, message: summary, src });
       setLeadDone(r.message || 'Thanks! We will contact you soon.');
     } catch (e: any) { setLeadError(e?.message || "Couldn't send your details."); }
     finally { setLeadBusy(false); }
   };
-  const wide = width >= 760;
-  const card = { backgroundColor: '#FFFFFF', borderRadius: 18, padding: 16, borderWidth: 1, borderColor: '#E6ECF3' } as const;
+  const sendEnquiry = async () => {
+    const e = enquiry;
+    if (!e) return;
+    setEnquiry({ ...e, busy: true, error: '' });
+    try {
+      const r = await shopCall({ action: 'lead', slug, kind: e.kind, item: e.item, name: e.name, contact: e.contact, message: e.message, src });
+      setEnquiry(x => x && { ...x, busy: false, done: r.message || 'Thanks! We will contact you soon.' });
+    } catch (err: any) { setEnquiry(x => x && { ...x, busy: false, error: err?.message || "Couldn't send your request." }); }
+  };
   if (error) {
     return (
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, backgroundColor: '#F4F7FB' }}>
         <Ionicons name="storefront-outline" size={36} color="#1E56A0" />
-        <Text style={{ fontSize: 18, fontWeight: '800', color: '#0B1220', marginTop: 10 }}>{error}</Text>
+        <Text style={{ fontSize: 18, fontWeight: '800', color: '#0B1220', marginTop: 10, textAlign: 'center' }}>{error}</Text>
         <Pressable onPress={() => Linking.openURL(SHOP_BASE_URL)} style={{ marginTop: 16 }}><Text style={{ color: '#1E56A0', fontWeight: '700' }}>Go to Nexora AI</Text></Pressable>
       </View>
     );
   }
   if (!data) return <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F4F7FB' }}><ActivityIndicator color="#1E56A0" /></View>;
   const s = data.shop;
+  const C = s.color && /^#[0-9a-f]{6}$/i.test(s.color) ? s.color : '#1E56A0';
+  const tint = `${C}1A`;
+  const wide = width >= 760;
+  const card = { backgroundColor: '#FFFFFF', borderRadius: 18, padding: 16, borderWidth: 1, borderColor: '#E6ECF3' } as const;
+  const input = { marginTop: 8, borderWidth: 1, borderColor: '#D5DEE8', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, backgroundColor: '#FFF', color: '#0B1220' } as const;
+  const all = [...data.products, ...data.services];
+  const canOrder = !!s.accept_orders;
+  const buyable = (it: ShopCard) => canOrder && typeof it.amount === 'number' && it.amount > 0 && it.availability !== 'out';
+  const cartLines = all.filter(it => cart[it.id] > 0).map(it => ({ it, qty: cart[it.id], total: (it.amount || 0) * cart[it.id] }));
+  const cartCount = cartLines.reduce((n, l) => n + l.qty, 0);
+  const cartCcy = cartLines[0]?.it.currency || '';
+  const cartTotal = cartLines.reduce((n, l) => n + l.total, 0);
+  const setQty = (it: ShopCard, q: number) => { if (coupon.ok) setCoupon(c => ({ ...c, ok: false, applied: '', discount: 0, msg: 'Your order changed. Tap Apply again.' })); setCartQty(it, q); };
+  const setCartQty = (it: ShopCard, q: number) => setCart(c => {
+    const max = it.left ?? 99;
+    const next = Math.max(0, Math.min(q, max, 99));
+    if (next > 0 && cartLines.length && cartLines[0].it.currency !== it.currency && !c[it.id]) return c;   // one currency per order
+    return { ...c, [it.id]: next };
+  });
+  const q = query.trim().toLowerCase();
+  const shown = (list: ShopCard[]) => list.filter(it => !q || `${it.name} ${it.subtitle} ${it.overview}`.toLowerCase().includes(q));
+  const placeOrder = async () => {
+    setOrderBusy(true); setOrderError('');
+    try {
+      const r = await shopCall({ action: 'order', slug, src, items: cartLines.map(l => ({ id: l.it.id, qty: l.qty })), ...buyer, ...(coupon.ok && coupon.applied ? { coupon: coupon.applied } : {}) });
+      setPlaced({ number: r.order.number, token: r.order.token, total: r.order.total, currency: r.order.currency, payment_info: r.payment_info || '' });
+      setCart({}); setCoupon({ code: '', applied: '', discount: 0, msg: '', ok: false, busy: false });
+    } catch (e: any) { setOrderError(e?.message || "Couldn't place your order."); if (e?.code === 'coupon') setCoupon(c => ({ ...c, ok: false, applied: '', discount: 0 })); }
+    finally { setOrderBusy(false); }
+  };
+  const applyCoupon = async () => {
+    const code = coupon.code.trim().toUpperCase();
+    if (!code) return;
+    setCoupon(c => ({ ...c, busy: true, msg: '' }));
+    try { const r = await shopCall({ action: 'coupon', slug, code, subtotal: cartTotal }); setCoupon(c => ({ ...c, busy: false, ok: true, applied: r.code, discount: Number(r.discount) || 0, msg: r.message })); }
+    catch (e: any) { setCoupon(c => ({ ...c, busy: false, ok: false, applied: '', discount: 0, msg: e?.message || "That code isn't valid." })); }
+  };
+  const payable = Math.max(0, cartTotal - (coupon.ok ? coupon.discount : 0));
+  const trackUrl = (num: string, tok: string) => `${SHOP_BASE_URL}/?shop=${slug}&order=${encodeURIComponent(num)}&t=${tok}`;
+  const copy = async (text: string) => { try { await (globalThis as any).navigator?.clipboard?.writeText(text); } catch { /* ignore */ } };
+  const waTo = s.whatsapp ? s.whatsapp.replace(/[^\d]/g, '') : '';
   const starters = [
     data.products[0] ? `How much is the ${data.products[0].name}?` : 'What do you sell?',
-    data.services[0] ? `Tell me about ${data.services[0].name}` : 'Do you deliver?',
-    'How can I order?',
+    s.delivery ? 'How does delivery work?' : 'Do you deliver?',
+    canOrder ? 'How do I pay?' : 'How can I order?',
   ];
-  const itemCard = (it: ShopCard) => (
-    <View key={it.id} style={[card, { width: wide ? '48.5%' : '100%', padding: 0, overflow: 'hidden' }]}>
-      {!!it.image && <Image source={{ uri: it.image }} style={{ width: '100%', height: 150, backgroundColor: '#EEF2F7' }} resizeMode="cover" />}
-      <View style={{ padding: 14 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8 }}>
-          <Text style={{ flex: 1, fontSize: 15, fontWeight: '800', color: '#0B1220' }}>{it.name}</Text>
-          {!!it.price && <Text style={{ fontSize: 15, fontWeight: '800', color: '#1E56A0' }}>{it.price}</Text>}
+  const badge = (it: ShopCard) => it.availability === 'out' ? ['Out of stock', '#B42318', '#FDECEC'] : it.availability === 'low' ? [it.left ? `Only ${it.left} left` : 'Few left', '#B7791F', '#FFF6E5'] : it.availability === 'in' ? ['In stock', '#15803D', '#E9F8EE'] : null;
+  const itemCard = (it: ShopCard) => {
+    const b = badge(it);
+    const qty = cart[it.id] || 0;
+    return (
+      <View key={it.id} style={[card, { width: wide ? '48.5%' : '100%', padding: 0, overflow: 'hidden' }]}>
+        {!!it.image && <Image source={{ uri: it.image }} style={{ width: '100%', height: 170, backgroundColor: '#EEF2F7' }} resizeMode="cover" />}
+        <View style={{ padding: 14 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8 }}>
+            <Text style={{ flex: 1, fontSize: 15, fontWeight: '800', color: '#0B1220' }}>{it.name}</Text>
+            {!!it.price && <Text style={{ fontSize: 15, fontWeight: '800', color: C }}>{it.price}</Text>}
+          </View>
+          {!!it.subtitle && <Text style={{ fontSize: 12, color: '#64748B', marginTop: 2 }}>{it.subtitle}</Text>}
+          {!!b && <View style={{ alignSelf: 'flex-start', marginTop: 6, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8, backgroundColor: b[2] }}><Text style={{ fontSize: 11, fontWeight: '700', color: b[1] }}>{b[0]}</Text></View>}
+          {!!it.overview && <Text style={{ fontSize: 13, color: '#334155', marginTop: 6, lineHeight: 19 }} numberOfLines={4}>{it.overview}</Text>}
+          {it.features.length > 0 && <Text style={{ fontSize: 12, color: '#475569', marginTop: 6 }} numberOfLines={2}>{it.features.join(' · ')}</Text>}
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginTop: 12 }}>
+            {buyable(it) && (qty === 0 ? (
+              <Pressable onPress={() => setQty(it, 1)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 14, backgroundColor: C }} accessibilityRole="button" accessibilityLabel={`Add ${it.name} to order`}>
+                <Ionicons name="add" size={16} color="#FFF" /><Text style={{ color: '#FFF', fontWeight: '700', fontSize: 13 }}>Add to order</Text>
+              </Pressable>
+            ) : (
+              <View style={{ flexDirection: 'row', alignItems: 'center', borderRadius: 14, borderWidth: 1, borderColor: C, overflow: 'hidden' }}>
+                <Pressable onPress={() => setQty(it, qty - 1)} style={{ paddingHorizontal: 12, paddingVertical: 7 }} accessibilityLabel="Remove one"><Ionicons name="remove" size={16} color={C} /></Pressable>
+                <Text style={{ minWidth: 26, textAlign: 'center', fontWeight: '800', color: '#0B1220' }}>{qty}</Text>
+                <Pressable onPress={() => setQty(it, qty + 1)} style={{ paddingHorizontal: 12, paddingVertical: 7 }} accessibilityLabel="Add one"><Ionicons name="add" size={16} color={C} /></Pressable>
+              </View>
+            ))}
+            {!it.amount && (
+              <Pressable onPress={() => setEnquiry({ kind: 'quote', item: it.name, name: '', contact: '', message: '', busy: false, done: '', error: '' })} style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 14, backgroundColor: C }}>
+                <Text style={{ color: '#FFF', fontWeight: '700', fontSize: 13 }}>Request a quote</Text>
+              </Pressable>
+            )}
+            <Pressable onPress={() => ask(`I'm interested in the ${it.name}. ${it.availability === 'out' ? 'When will it be back?' : 'Is it available?'}`)} style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 14, backgroundColor: tint }}>
+              <Text style={{ color: C, fontWeight: '700', fontSize: 13 }}>Ask about this</Text>
+            </Pressable>
+          </View>
         </View>
-        {!!it.subtitle && <Text style={{ fontSize: 12, color: '#64748B', marginTop: 2 }}>{it.subtitle}</Text>}
-        {!!it.overview && <Text style={{ fontSize: 13, color: '#334155', marginTop: 6, lineHeight: 19 }} numberOfLines={3}>{it.overview}</Text>}
-        {it.features.length > 0 && <Text style={{ fontSize: 12, color: '#475569', marginTop: 6 }} numberOfLines={2}>{it.features.join(' · ')}</Text>}
-        <Pressable onPress={() => ask(`I'm interested in the ${it.name}. Is it available?`)} style={{ marginTop: 10, alignSelf: 'flex-start', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 14, backgroundColor: '#EAF1FB' }}>
-          <Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>Ask about this</Text>
-        </Pressable>
       </View>
+    );
+  };
+  const section = (title: string, list: ShopCard[]) => list.length > 0 && (
+    <View>
+      <Text style={{ fontSize: 18, fontWeight: '800', color: '#0B1220', marginBottom: 10 }}>{title}</Text>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>{list.map(itemCard)}</View>
     </View>
   );
+  const sheet = (visible: boolean, onClose: () => void, children: React.ReactNode) => (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.5)', justifyContent: 'center', padding: 14 }}>
+        <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center' }} keyboardShouldPersistTaps="handled">
+          <View style={{ width: '100%', maxWidth: 520, alignSelf: 'center', backgroundColor: '#FFF', borderRadius: 20, padding: 18 }}>{children}</View>
+        </ScrollView>
+      </View>
+    </Modal>
+  );
+  const trackSteps = ['pending', 'processing', 'shipped', 'delivered'];
   return (
     <View style={{ flex: 1, backgroundColor: '#F4F7FB' }}>
-      <ScrollView ref={scrollRef} contentContainerStyle={{ paddingBottom: 40 }} keyboardShouldPersistTaps="handled">
+      <ScrollView ref={scrollRef} contentContainerStyle={{ paddingBottom: cartCount ? 110 : 40 }} keyboardShouldPersistTaps="handled">
+        {!!s.preview && (
+          <View style={{ backgroundColor: '#FFF6E5', paddingHorizontal: 16, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Ionicons name="eye-outline" size={16} color="#92400E" />
+            <Text style={{ flex: 1, color: '#92400E', fontSize: 13 }}><Text style={{ fontWeight: '800' }}>Preview: only you can see this.</Text> Your shop is switched off, so customers can't open it or order yet. Switch it on in Nexora, AI shop link.</Text>
+          </View>
+        )}
         <View style={{ backgroundColor: '#0B1220', paddingTop: 36, paddingBottom: 56, paddingHorizontal: 16 }}>
-          <View style={{ width: '100%', maxWidth: 820, alignSelf: 'center', flexDirection: 'row', alignItems: 'center', gap: 14 }}>
-            <View style={{ width: 58, height: 58, borderRadius: 18, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}>
-              <Text style={{ color: '#FFFFFF', fontSize: 26, fontWeight: '800' }}>{s.name.charAt(0).toUpperCase()}</Text>
-            </View>
+          <View style={{ width: '100%', maxWidth: 860, alignSelf: 'center', flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+            {s.logo ? <Image source={{ uri: s.logo }} style={{ width: 62, height: 62, borderRadius: 18, backgroundColor: '#FFF' }} resizeMode="cover" /> : (
+              <View style={{ width: 62, height: 62, borderRadius: 18, backgroundColor: C, alignItems: 'center', justifyContent: 'center' }}>
+                <Text style={{ color: '#FFFFFF', fontSize: 26, fontWeight: '800' }}>{s.name.charAt(0).toUpperCase()}</Text>
+              </View>
+            )}
             <View style={{ flex: 1, minWidth: 0 }}>
               <Text style={{ color: '#FFFFFF', fontSize: 22, fontWeight: '800' }}>{s.name}</Text>
               {!!(s.industry || s.country) && <Text style={{ color: '#9FB0C6', fontSize: 13, marginTop: 2 }}>{[s.industry, s.country].filter(Boolean).join(' · ')}</Text>}
             </View>
           </View>
-          <View style={{ width: '100%', maxWidth: 820, alignSelf: 'center' }}>
+          <View style={{ width: '100%', maxWidth: 860, alignSelf: 'center' }}>
             {!!s.headline && <Text style={{ color: '#E2E8F0', fontSize: 17, fontWeight: '700', marginTop: 16 }}>{s.headline}</Text>}
             {!!s.about && <Text style={{ color: '#B6C3D4', fontSize: 14, marginTop: 6, lineHeight: 21 }}>{s.about}</Text>}
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14 }}>
+              {!!waTo && <Pressable onPress={() => Linking.openURL(`https://wa.me/${waTo}`)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.10)' }}><Ionicons name="logo-whatsapp" size={15} color="#4ADE80" /><Text style={{ color: '#FFF', fontSize: 13, fontWeight: '600' }}>WhatsApp</Text></Pressable>}
+              {!!s.phone && <Pressable onPress={() => Linking.openURL(`tel:${s.phone!.replace(/[^\d+]/g, '')}`)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.10)' }}><Ionicons name="call-outline" size={15} color="#FFF" /><Text style={{ color: '#FFF', fontSize: 13, fontWeight: '600' }}>{s.phone}</Text></Pressable>}
+              {!!s.email && <Pressable onPress={() => Linking.openURL(`mailto:${s.email}`)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.10)' }}><Ionicons name="mail-outline" size={15} color="#FFF" /><Text style={{ color: '#FFF', fontSize: 13, fontWeight: '600' }}>{s.email}</Text></Pressable>}
+              <Pressable onPress={() => setEnquiry({ kind: 'enquiry', item: '', name: '', contact: '', message: '', busy: false, done: '', error: '' })} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 16, backgroundColor: C }}><Ionicons name="create-outline" size={15} color="#FFF" /><Text style={{ color: '#FFF', fontSize: 13, fontWeight: '700' }}>Send an enquiry</Text></Pressable>
+            </View>
           </View>
         </View>
 
-        <View style={{ width: '100%', maxWidth: 820, alignSelf: 'center', paddingHorizontal: 16, marginTop: -36, gap: 16 }}>
+        <View style={{ width: '100%', maxWidth: 860, alignSelf: 'center', paddingHorizontal: 16, marginTop: -36, gap: 16 }}>
+          {track && (
+            <View style={[card, { borderColor: C, borderWidth: 1.5 }]}>
+              <Text style={{ fontSize: 16, fontWeight: '800', color: '#0B1220' }}>Your order {SHOP_PARAMS.order.toUpperCase()}</Text>
+              {track.loading ? <ActivityIndicator color={C} style={{ marginTop: 12 }} /> : track.error ? <Text style={{ color: '#B42318', marginTop: 8 }}>{track.error}</Text> : track.order && (() => {
+                const o = track.order;
+                const at = trackSteps.indexOf(o.status === 'completed' ? 'delivered' : o.status);
+                const lines = Array.isArray(o.items) ? o.items : [];
+                return (
+                  <>
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                      <Text style={{ fontSize: 12, fontWeight: '800', color: o.status === 'cancelled' ? '#B42318' : C, backgroundColor: o.status === 'cancelled' ? '#FDECEC' : tint, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, overflow: 'hidden' }}>{ORDER_STATUS_LABEL[o.status] || o.status}</Text>
+                      <Text style={{ fontSize: 12, fontWeight: '800', color: o.payment_status === 'paid' ? '#15803D' : '#B7791F', backgroundColor: o.payment_status === 'paid' ? '#E9F8EE' : '#FFF6E5', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, overflow: 'hidden' }}>{PAYMENT_STATUS_LABEL[o.payment_status] || o.payment_status}</Text>
+                    </View>
+                    {o.status !== 'cancelled' && (
+                      <View style={{ flexDirection: 'row', marginTop: 14 }}>
+                        {trackSteps.map((st, i) => (
+                          <View key={st} style={{ flex: 1, alignItems: 'center' }}>
+                            <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: i <= at ? C : '#E2E8F0', alignItems: 'center', justifyContent: 'center' }}>{i <= at && <Ionicons name="checkmark" size={13} color="#FFF" />}</View>
+                            <Text style={{ fontSize: 11, color: i <= at ? '#0B1220' : '#94A3B8', marginTop: 4, textAlign: 'center' }}>{ORDER_STATUS_LABEL[st]}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+                    {lines.map((l: any, i: number) => <Text key={i} style={{ fontSize: 13, color: '#334155', marginTop: i ? 2 : 12 }}>{l.qty} × {l.name}  ·  {fmtMoney(l.total, o.currency)}</Text>)}
+                    {typeof o.items === 'string' && <Text style={{ fontSize: 13, color: '#334155', marginTop: 12 }}>{o.items}</Text>}
+                    <Text style={{ fontSize: 15, fontWeight: '800', color: '#0B1220', marginTop: 8 }}>Total {fmtMoney(o.total, o.currency)}</Text>
+                    {!!o.tracking && <Text style={{ fontSize: 13, color: '#334155', marginTop: 6 }}>Tracking: {o.tracking}</Text>}
+                    {o.steps.length > 0 && o.steps.slice().reverse().map((h, i) => <Text key={i} style={{ fontSize: 12, color: '#64748B', marginTop: i ? 2 : 10 }}>{new Date(h.at).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })} · {h.text}</Text>)}
+                    {!!track.payment_info && o.status !== 'cancelled' && (
+                      <View style={{ marginTop: 12, padding: 12, borderRadius: 12, backgroundColor: '#FFF6E5' }}>
+                        <Text style={{ fontWeight: '800', color: '#7A4A00' }}>How to pay</Text>
+                        <Text selectable style={{ color: '#7A4A00', marginTop: 4, lineHeight: 19 }}>{track.payment_info}</Text>
+                      </View>
+                    )}
+                  </>
+                );
+              })()}
+            </View>
+          )}
+
           <View style={card} onLayout={e => { chatY.current = Math.max(0, e.nativeEvent.layout.y - 10); }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: '#22C55E' }} />
@@ -2335,26 +2875,26 @@ function PublicShop({ slug }: { slug: string }) {
             <Text style={{ fontSize: 12, color: '#64748B', marginTop: 4 }}>You're chatting with {s.name}'s AI assistant. Ask for a person at any time and the team will contact you.</Text>
             {msgs.length === 0 && (
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
-                {starters.map(q => (
-                  <Pressable key={q} onPress={() => ask(q)} style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16, backgroundColor: '#F1F5F9' }}>
-                    <Text style={{ fontSize: 13, color: '#1E293B' }}>{q}</Text>
+                {starters.map(t => (
+                  <Pressable key={t} onPress={() => ask(t)} style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16, backgroundColor: '#F1F5F9' }}>
+                    <Text style={{ fontSize: 13, color: '#1E293B' }}>{t}</Text>
                   </Pressable>
                 ))}
               </View>
             )}
             {msgs.map((m, i) => (
-              <View key={i} style={{ marginTop: 10, alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '85%', paddingHorizontal: 12, paddingVertical: 9, borderRadius: 16, backgroundColor: m.role === 'user' ? '#1E56A0' : '#F1F5F9' }}>
+              <View key={i} style={{ marginTop: 10, alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '85%', paddingHorizontal: 12, paddingVertical: 9, borderRadius: 16, backgroundColor: m.role === 'user' ? C : '#F1F5F9' }}>
                 <Text style={{ fontSize: 14, lineHeight: 20, color: m.role === 'user' ? '#FFFFFF' : '#0B1220' }}>{m.content}</Text>
               </View>
             ))}
-            {sending && <View style={{ marginTop: 10, flexDirection: 'row', gap: 6, alignItems: 'center' }}><ActivityIndicator size="small" color="#1E56A0" /><Text style={{ fontSize: 12, color: '#64748B' }}>Typing…</Text></View>}
+            {sending && <View style={{ marginTop: 10, flexDirection: 'row', gap: 6, alignItems: 'center' }}><ActivityIndicator size="small" color={C} /><Text style={{ fontSize: 12, color: '#64748B' }}>Typing…</Text></View>}
             {(askContact || msgs.length >= 4) && !leadDone && (
               <View style={{ marginTop: 14, padding: 12, borderRadius: 14, backgroundColor: '#F2F8FD', borderWidth: 1, borderColor: '#C9DDF5' }}>
                 <Text style={{ fontSize: 14, fontWeight: '700', color: '#0B1220' }}>Want {s.name} to contact you?</Text>
-                <TextInput value={lead.name} onChangeText={v => setLead(l => ({ ...l, name: v }))} placeholder="Your name" placeholderTextColor="#94A3B8" maxLength={80} style={{ marginTop: 8, borderWidth: 1, borderColor: '#D5DEE8', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, fontSize: 14, backgroundColor: '#FFF', color: '#0B1220' }} />
-                <TextInput value={lead.contact} onChangeText={v => setLead(l => ({ ...l, contact: v }))} placeholder="Phone, WhatsApp or email" placeholderTextColor="#94A3B8" maxLength={80} autoCapitalize="none" style={{ marginTop: 8, borderWidth: 1, borderColor: '#D5DEE8', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, fontSize: 14, backgroundColor: '#FFF', color: '#0B1220' }} />
+                <TextInput value={lead.name} onChangeText={v => setLead(l => ({ ...l, name: v }))} placeholder="Your name" placeholderTextColor="#94A3B8" maxLength={80} style={input} />
+                <TextInput value={lead.contact} onChangeText={v => setLead(l => ({ ...l, contact: v }))} placeholder="Phone, WhatsApp or email" placeholderTextColor="#94A3B8" maxLength={80} autoCapitalize="none" style={input} />
                 {!!leadError && <Text style={{ color: '#C2410C', fontSize: 13, marginTop: 6 }}>{leadError}</Text>}
-                <Pressable disabled={leadBusy} onPress={submitLead} style={{ marginTop: 10, height: 42, borderRadius: 12, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}>
+                <Pressable disabled={leadBusy} onPress={submitLead} style={{ marginTop: 10, height: 42, borderRadius: 12, backgroundColor: C, alignItems: 'center', justifyContent: 'center' }}>
                   {leadBusy ? <ActivityIndicator color="#FFF" /> : <Text style={{ color: '#FFF', fontWeight: '700' }}>Send my details</Text>}
                 </Pressable>
                 <Text style={{ fontSize: 11, color: '#64748B', marginTop: 6 }}>Only {s.name} sees your details.</Text>
@@ -2364,28 +2904,38 @@ function PublicShop({ slug }: { slug: string }) {
             <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 8, marginTop: 14 }}>
               <TextInput value={draft} onChangeText={setDraft} onSubmitEditing={() => send()} placeholder="Type your question…" placeholderTextColor="#94A3B8" maxLength={600} returnKeyType="send"
                 style={{ flex: 1, minWidth: 0, borderRadius: 20, backgroundColor: '#F1F5F9', paddingHorizontal: 14, paddingVertical: 10, fontSize: 14, color: '#0B1220' }} />
-              <Pressable disabled={!draft.trim() || sending} onPress={() => send()} accessibilityLabel="Send" style={{ width: 42, height: 42, flexShrink: 0, borderRadius: 21, alignItems: 'center', justifyContent: 'center', backgroundColor: draft.trim() ? '#1E56A0' : '#CBD5E1' }}>
+              <Pressable disabled={!draft.trim() || sending} onPress={() => send()} accessibilityLabel="Send" style={{ width: 42, height: 42, flexShrink: 0, borderRadius: 21, alignItems: 'center', justifyContent: 'center', backgroundColor: draft.trim() ? C : '#CBD5E1' }}>
                 <Ionicons name="send" size={18} color="#FFFFFF" />
               </Pressable>
             </View>
-            {!!s.whatsapp && (
-              <Pressable onPress={() => Linking.openURL(`https://wa.me/${s.whatsapp.replace(/^\+/, '')}`)} style={{ marginTop: 10, flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start' }}>
-                <Ionicons name="logo-whatsapp" size={16} color="#16A34A" />
-                <Text style={{ color: '#16A34A', fontWeight: '700', fontSize: 13 }}>Prefer WhatsApp? Message us</Text>
-              </Pressable>
-            )}
           </View>
 
-          {data.products.length > 0 && (
-            <View>
-              <Text style={{ fontSize: 18, fontWeight: '800', color: '#0B1220', marginBottom: 10 }}>Products</Text>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>{data.products.map(itemCard)}</View>
+          {all.length > 4 && (
+            <View style={{ gap: 10 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#FFF', borderRadius: 14, borderWidth: 1, borderColor: '#DCE2EA', paddingHorizontal: 12, height: 44 }}>
+                <Ionicons name="search-outline" size={17} color="#8A97A6" />
+                <TextInput value={query} onChangeText={setQuery} placeholder={`Search ${s.name}`} placeholderTextColor="#94A3B8" style={{ flex: 1, fontSize: 14, color: '#0B1220', outlineStyle: 'none' } as any} />
+              </View>
+              {data.products.length > 0 && data.services.length > 0 && (
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  {([['all', 'All'], ['products', 'Products'], ['services', 'Services']] as const).map(([k, l]) => (
+                    <Pressable key={k} onPress={() => setTab(k)} style={{ paddingHorizontal: 14, paddingVertical: 7, borderRadius: 16, backgroundColor: tab === k ? C : '#FFF', borderWidth: 1, borderColor: tab === k ? C : '#DCE2EA' }}>
+                      <Text style={{ fontSize: 13, fontWeight: '700', color: tab === k ? '#FFF' : '#334155' }}>{l}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              )}
             </View>
           )}
-          {data.services.length > 0 && (
-            <View>
-              <Text style={{ fontSize: 18, fontWeight: '800', color: '#0B1220', marginBottom: 10 }}>Services</Text>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>{data.services.map(itemCard)}</View>
+          {tab !== 'services' && section('Products', shown(data.products))}
+          {tab !== 'products' && section('Services', shown(data.services))}
+          {!!q && !shown(all).length && <Text style={{ color: '#64748B', textAlign: 'center' }}>Nothing matches “{query}”. Ask us in the chat.</Text>}
+
+          {!!(s.delivery || s.address) && (
+            <View style={card}>
+              <Text style={{ fontSize: 18, fontWeight: '800', color: '#0B1220', marginBottom: 4 }}>Delivery and pickup</Text>
+              {!!s.delivery && <Text style={{ fontSize: 14, color: '#334155', lineHeight: 21 }}>{s.delivery}</Text>}
+              {!!s.address && <Text style={{ fontSize: 14, color: '#334155', marginTop: 6 }}><Text style={{ fontWeight: '700' }}>Address: </Text>{s.address}</Text>}
             </View>
           )}
           {data.faqs.length > 0 && (
@@ -2418,6 +2968,117 @@ function PublicShop({ slug }: { slug: string }) {
           </Pressable>
         </View>
       </ScrollView>
+
+      {cartCount > 0 && (
+        <View style={{ position: 'absolute', left: 0, right: 0, bottom: 0, padding: 12, backgroundColor: 'rgba(244,247,251,0.96)', borderTopWidth: 1, borderTopColor: '#DCE2EA' }}>
+          <Pressable onPress={() => { setCheckout(true); setOrderError(''); }} style={{ width: '100%', maxWidth: 560, alignSelf: 'center', height: 52, borderRadius: 16, backgroundColor: C, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 18 }} accessibilityRole="button">
+            <Text style={{ color: '#FFF', fontWeight: '700' }}>{cartCount} item{cartCount === 1 ? '' : 's'} · {fmtMoney(cartTotal, cartCcy)}</Text>
+            <Text style={{ color: '#FFF', fontWeight: '800' }}>Review order ›</Text>
+          </Pressable>
+        </View>
+      )}
+
+      {sheet(checkout, () => setCheckout(false), placed ? (
+        <View style={{ alignItems: 'center' }}>
+          <Ionicons name="checkmark-circle" size={48} color="#16A34A" />
+          <Text style={{ fontSize: 20, fontWeight: '800', color: '#0B1220', marginTop: 8 }}>Order {placed.number} placed</Text>
+          <Text style={{ fontSize: 14, color: '#475569', marginTop: 4, textAlign: 'center' }}>{s.name} has your order and will confirm it with you. Total: <Text style={{ fontWeight: '800' }}>{fmtMoney(placed.total, placed.currency)}</Text></Text>
+          {!!placed.payment_info && (
+            <View style={{ alignSelf: 'stretch', marginTop: 14, padding: 12, borderRadius: 12, backgroundColor: '#FFF6E5' }}>
+              <Text style={{ fontWeight: '800', color: '#7A4A00' }}>How to pay</Text>
+              <Text selectable style={{ color: '#7A4A00', marginTop: 4, lineHeight: 19 }}>{placed.payment_info}</Text>
+              <Text style={{ color: '#7A4A00', marginTop: 6, fontSize: 12 }}>Use {placed.number} as the payment reference. Only pay using the details above.</Text>
+            </View>
+          )}
+          <View style={{ alignSelf: 'stretch', marginTop: 12, padding: 12, borderRadius: 12, backgroundColor: '#F1F5F9' }}>
+            <Text style={{ fontWeight: '700', color: '#0B1220' }}>Track your order</Text>
+            <Text selectable style={{ fontSize: 12, color: '#475569', marginTop: 4 }} numberOfLines={2}>{trackUrl(placed.number, placed.token)}</Text>
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+              <Pressable onPress={() => copy(trackUrl(placed.number, placed.token))} style={{ paddingHorizontal: 12, paddingVertical: 7, borderRadius: 12, backgroundColor: '#FFF', borderWidth: 1, borderColor: '#DCE2EA' }}><Text style={{ fontWeight: '700', color: '#334155', fontSize: 13 }}>Copy link</Text></Pressable>
+              {!!waTo && <Pressable onPress={() => Linking.openURL(`https://wa.me/${waTo}?text=${encodeURIComponent(`Hi ${s.name}, I just placed order ${placed.number} (${fmtMoney(placed.total, placed.currency)}).`)}`)} style={{ paddingHorizontal: 12, paddingVertical: 7, borderRadius: 12, backgroundColor: '#16A34A' }}><Text style={{ fontWeight: '700', color: '#FFF', fontSize: 13 }}>Message on WhatsApp</Text></Pressable>}
+            </View>
+          </View>
+          <Pressable onPress={() => { setCheckout(false); setPlaced(null); }} style={{ alignSelf: 'stretch', marginTop: 14, height: 46, borderRadius: 14, backgroundColor: C, alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#FFF', fontWeight: '700' }}>Done</Text></Pressable>
+        </View>
+      ) : (
+        <>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <Text style={{ flex: 1, fontSize: 18, fontWeight: '800', color: '#0B1220' }}>Your order</Text>
+            <Pressable onPress={() => setCheckout(false)} hitSlop={8} accessibilityLabel="Close"><Ionicons name="close" size={22} color="#475569" /></Pressable>
+          </View>
+          {cartLines.map(l => (
+            <View key={l.it.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#EEF2F7' }}>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={{ fontWeight: '700', color: '#0B1220' }} numberOfLines={1}>{l.it.name}</Text>
+                <Text style={{ fontSize: 12, color: '#64748B' }}>{fmtMoney(l.it.amount, l.it.currency)} each</Text>
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', borderRadius: 12, borderWidth: 1, borderColor: '#DCE2EA' }}>
+                <Pressable onPress={() => setQty(l.it, l.qty - 1)} style={{ paddingHorizontal: 10, paddingVertical: 6 }}><Ionicons name="remove" size={15} color="#334155" /></Pressable>
+                <Text style={{ minWidth: 22, textAlign: 'center', fontWeight: '800' }}>{l.qty}</Text>
+                <Pressable onPress={() => setQty(l.it, l.qty + 1)} style={{ paddingHorizontal: 10, paddingVertical: 6 }}><Ionicons name="add" size={15} color="#334155" /></Pressable>
+              </View>
+              <Text style={{ width: 90, textAlign: 'right', fontWeight: '700', color: '#0B1220' }}>{fmtMoney(l.total, l.it.currency)}</Text>
+            </View>
+          ))}
+          {!!s.coupons && (
+            <View style={{ marginTop: 10 }}>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <TextInput value={coupon.code} onChangeText={v => setCoupon(c => ({ ...c, code: v.toUpperCase().replace(/[^A-Z0-9_-]/g, ''), ok: false, applied: '', discount: 0, msg: '' }))} placeholder="Discount code" placeholderTextColor="#94A3B8" autoCapitalize="characters" maxLength={20} style={[input, { flex: 1, marginTop: 0 }]} />
+                <Pressable disabled={coupon.busy || !coupon.code.trim()} onPress={() => { applyCoupon().catch(() => {}); }} style={{ paddingHorizontal: 16, borderRadius: 12, backgroundColor: coupon.code.trim() ? C : '#CBD5E1', alignItems: 'center', justifyContent: 'center' }}>
+                  {coupon.busy ? <ActivityIndicator color="#FFF" size="small" /> : <Text style={{ color: '#FFF', fontWeight: '700' }}>Apply</Text>}
+                </Pressable>
+              </View>
+              {!!coupon.msg && <Text style={{ fontSize: 12.5, marginTop: 4, color: coupon.ok ? '#15803D' : '#B42318' }}>{coupon.msg}</Text>}
+            </View>
+          )}
+          {coupon.ok && coupon.discount > 0 && (
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 }}>
+              <Text style={{ fontSize: 14, color: '#15803D' }}>Discount ({coupon.applied})</Text>
+              <Text style={{ fontSize: 14, color: '#15803D' }}>-{fmtMoney(coupon.discount, cartCcy)}</Text>
+            </View>
+          )}
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 }}>
+            <Text style={{ fontSize: 15, fontWeight: '800', color: '#0B1220' }}>Total</Text>
+            <Text style={{ fontSize: 15, fontWeight: '800', color: '#0B1220' }}>{fmtMoney(payable, cartCcy)}</Text>
+          </View>
+          <Text style={{ fontSize: 12, color: '#64748B', marginTop: 2 }}>Delivery costs, if any, are confirmed by {s.name}.</Text>
+          <Text style={{ fontSize: 14, fontWeight: '800', color: '#0B1220', marginTop: 14 }}>Your details</Text>
+          <TextInput value={buyer.name} onChangeText={v => setBuyer(b => ({ ...b, name: v }))} placeholder="Full name" placeholderTextColor="#94A3B8" maxLength={80} style={input} />
+          <TextInput value={buyer.phone} onChangeText={v => setBuyer(b => ({ ...b, phone: v }))} placeholder="Phone or WhatsApp" placeholderTextColor="#94A3B8" maxLength={40} keyboardType="phone-pad" style={input} />
+          <TextInput value={buyer.email} onChangeText={v => setBuyer(b => ({ ...b, email: v }))} placeholder="Email (optional)" placeholderTextColor="#94A3B8" maxLength={120} autoCapitalize="none" keyboardType="email-address" style={input} />
+          <TextInput value={buyer.address} onChangeText={v => setBuyer(b => ({ ...b, address: v }))} placeholder="Delivery address (or say pickup)" placeholderTextColor="#94A3B8" maxLength={300} multiline style={[input, { minHeight: 64, textAlignVertical: 'top' }]} />
+          <TextInput value={buyer.note} onChangeText={v => setBuyer(b => ({ ...b, note: v }))} placeholder="Note for the business (size, colour, time…)" placeholderTextColor="#94A3B8" maxLength={500} multiline style={[input, { minHeight: 54, textAlignVertical: 'top' }]} />
+          {!!s.delivery && <Text style={{ fontSize: 12, color: '#475569', marginTop: 8, lineHeight: 17 }}><Text style={{ fontWeight: '700' }}>Delivery: </Text>{s.delivery}</Text>}
+          {!!orderError && <Text style={{ color: '#B42318', fontSize: 13, marginTop: 8 }}>{orderError}</Text>}
+          <Pressable disabled={orderBusy || !cartLines.length} onPress={() => { placeOrder().catch(() => {}); }} style={{ marginTop: 14, height: 50, borderRadius: 14, backgroundColor: C, alignItems: 'center', justifyContent: 'center', opacity: cartLines.length ? 1 : 0.5 }}>
+            {orderBusy ? <ActivityIndicator color="#FFF" /> : <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 15 }}>Place order · {fmtMoney(payable, cartCcy)}</Text>}
+          </Pressable>
+          <Text style={{ fontSize: 11, color: '#64748B', marginTop: 8, textAlign: 'center' }}>No payment is taken here. {s.name} confirms your order and tells you how to pay. Only {s.name} sees your details.</Text>
+        </>
+      ))}
+
+      {sheet(!!enquiry, () => setEnquiry(null), enquiry && (enquiry.done ? (
+        <View style={{ alignItems: 'center' }}>
+          <Ionicons name="checkmark-circle" size={46} color="#16A34A" />
+          <Text style={{ fontSize: 16, fontWeight: '700', color: '#0B1220', marginTop: 8, textAlign: 'center' }}>{enquiry.done}</Text>
+          <Pressable onPress={() => setEnquiry(null)} style={{ alignSelf: 'stretch', marginTop: 14, height: 46, borderRadius: 14, backgroundColor: C, alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#FFF', fontWeight: '700' }}>Done</Text></Pressable>
+        </View>
+      ) : (
+        <>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <Text style={{ flex: 1, fontSize: 18, fontWeight: '800', color: '#0B1220' }}>{enquiry.kind === 'quote' ? `Request a quote${enquiry.item ? `: ${enquiry.item}` : ''}` : `Contact ${s.name}`}</Text>
+            <Pressable onPress={() => setEnquiry(null)} hitSlop={8} accessibilityLabel="Close"><Ionicons name="close" size={22} color="#475569" /></Pressable>
+          </View>
+          <TextInput value={enquiry.name} onChangeText={v => setEnquiry(e => e && { ...e, name: v })} placeholder="Your name" placeholderTextColor="#94A3B8" maxLength={80} style={input} />
+          <TextInput value={enquiry.contact} onChangeText={v => setEnquiry(e => e && { ...e, contact: v })} placeholder="Phone, WhatsApp or email" placeholderTextColor="#94A3B8" maxLength={80} autoCapitalize="none" style={input} />
+          <TextInput value={enquiry.message} onChangeText={v => setEnquiry(e => e && { ...e, message: v })} placeholder={enquiry.kind === 'quote' ? 'What do you need? Quantity, date, location…' : 'Your message'} placeholderTextColor="#94A3B8" maxLength={800} multiline style={[input, { minHeight: 90, textAlignVertical: 'top' }]} />
+          {!!enquiry.error && <Text style={{ color: '#B42318', fontSize: 13, marginTop: 8 }}>{enquiry.error}</Text>}
+          <Pressable disabled={enquiry.busy} onPress={() => { sendEnquiry().catch(() => {}); }} style={{ marginTop: 14, height: 48, borderRadius: 14, backgroundColor: C, alignItems: 'center', justifyContent: 'center' }}>
+            {enquiry.busy ? <ActivityIndicator color="#FFF" /> : <Text style={{ color: '#FFF', fontWeight: '800' }}>Send</Text>}
+          </Pressable>
+          <Text style={{ fontSize: 11, color: '#64748B', marginTop: 8, textAlign: 'center' }}>Only {s.name} sees your details.</Text>
+        </>
+      )))}
     </View>
   );
 }
@@ -2448,8 +3109,8 @@ export default function HomeScreen() {
   const shell = useWebShell();
   const epoch = useAccountEpoch();
   if (PUBLIC_SHOP_SLUG) return <PublicShop slug={PUBLIC_SHOP_SLUG} />;
-  if (PUBLIC_PAGE === 'terms') return <LegalTermsPage onBack={IS_WEB && typeof window !== 'undefined' && window.history.length > 1 ? () => window.history.back() : undefined} />;
-  const app = (<><HomeScreenInner key={`account-${epoch}`} /><ToastHost /><DrawerHost />{IS_WEB && <WebDialogHost />}</>);
+  if (PUBLIC_PAGE) return <LegalTermsPage doc={PUBLIC_PAGE === 'privacy' ? 'privacy' : 'terms'} onBack={IS_WEB && typeof window !== 'undefined' && window.history.length > 1 ? () => window.history.back() : undefined} />;
+  const app = (<><HomeScreenInner key={`account-${epoch}`} /><ToastHost /><DrawerHost /><BusyHost />{IS_WEB && <WebDialogHost />}</>);
   if (!IS_WEB) return app;
   // Web layout. Signed in on a desktop-sized window: a sidebar plus full-width working screens (Home and other
   // phone-design screens stay a phone-shaped card). Before signing in: the phone card between two feature panels.
@@ -2507,6 +3168,14 @@ function inCompact(v: number): string {
   return `${Math.round(v)}`;
 }
 const IN_SYMBOL: Record<string, string> = { NGN: '₦', USD: '$', GBP: '£', EUR: '€', GHS: 'GH₵', KES: 'KSh ', ZAR: 'R', INR: '₹', AED: 'AED ', CAD: 'CA$', EGP: 'E£', RWF: 'RF ', UGX: 'USh ', TZS: 'TSh ', XAF: 'FCFA ', XOF: 'CFA ' };
+// "21:00" -> "9:00 PM"
+function fmtClock(t?: string): string {
+  const m = /^(\d{1,2}):(\d{2})/.exec(t || '');
+  if (!m) return t || '';
+  const h = +m[1];
+  return `${h % 12 || 12}:${m[2]} ${h < 12 ? 'AM' : 'PM'}`;
+}
+const SERVICE_TYPES = ['Installation', 'Repair & Maintenance', 'Delivery & Logistics', 'Design & Creative'];
 function inMoney(v: number | null | undefined, cur: string, compact = false): string {
   if (v === null || v === undefined || !isFinite(v)) return '—';
   const sym = IN_SYMBOL[cur] ?? '';
@@ -2553,14 +3222,18 @@ function InSparkline({ values, width = 96, height = 30, color = IN_C[0] }: { val
   );
 }
 
-function InChange({ value, suffix = 'vs previous 30 days' }: { value: number | null | undefined; suffix?: string }) {
-  if (value === null || value === undefined) return <Text style={{ fontSize: 11.5, color: IN_FAINT }}>No earlier data to compare</Text>;
+// `significance` comes from Nexora's check on the order counts: 'too_few' and 'noise' mean the change is within
+// normal ups and downs, so it is shown in grey instead of green/red.
+function InChange({ value, suffix = 'vs previous 30 days', significance }: { value: number | null | undefined; suffix?: string; significance?: string }) {
+  if (value === null || value === undefined) return <Text style={{ fontSize: 11.5, color: IN_FAINT }}>{significance === 'too_few' ? 'Too early to compare' : 'No earlier data to compare'}</Text>;
   const up = value >= 0;
+  const weak = significance === 'too_few' || significance === 'noise';
+  const color = weak ? IN_FAINT : up ? IN_GOOD : IN_BAD;
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
-      <Ionicons name={up ? 'arrow-up' : 'arrow-down'} size={12} color={up ? IN_GOOD : IN_BAD} />
-      <Text style={{ fontSize: 11.5, fontWeight: '700', color: up ? IN_GOOD : IN_BAD }}>{Math.abs(value)}%</Text>
-      <Text style={{ fontSize: 11.5, color: IN_FAINT }}>{suffix}</Text>
+      <Ionicons name={up ? 'arrow-up' : 'arrow-down'} size={12} color={color} />
+      <Text style={{ fontSize: 11.5, fontWeight: '700', color }}>{Math.abs(value)}%</Text>
+      <Text style={{ fontSize: 11.5, color: IN_FAINT }}>{weak ? (significance === 'too_few' ? 'few orders yet, not a trend' : 'normal ups and downs') : suffix}</Text>
     </View>
   );
 }
@@ -2897,10 +3570,10 @@ function HomeScreenInner(){
   const[resetStep,setResetStep]=useState<'email'|'otp'|'password'|'success'>('email');
   const[resetOtpDigits,setResetOtpDigits]=useState(['','','','']);
   const[resetOtpTimer,setResetOtpTimer]=useState(60);
-  type MainTab = 'home' | 'brain' | 'inbox' | 'profile';
+  type MainTab = 'home' | 'brain' | 'inbox' | 'market' | 'profile';
   // RAG sources: the knowledge passages an answer was built from.
   type RagSource = { n: number; title: string; type: 'item' | 'document' | 'web'; category: string; item_id: string | null; document_id: string | null; snippet: string; similarity?: number; url?: string | null };
-  type ChatMessage = { id: string; role: 'user' | 'ai'; text: string; imageUri?: string; sources?: RagSource[] };
+  type ChatMessage = { id: string; role: 'user' | 'ai'; text: string; imageUri?: string; sources?: RagSource[]; at?: number };
 
   const [mainTab, setMainTab] = useState<MainTab>('home');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -2969,6 +3642,9 @@ function HomeScreenInner(){
   const addOriginRef = useRef<'train' | 'post'>('post');
   const [tellOpen, setTellOpen] = useState(false);
   const [tellText, setTellText] = useState('');
+  // "Tell Nexora" progress shown inside the box: starting -> (searching the web) -> reading -> uploading.
+  const [tellStage, setTellStage] = useState<null | { step: 'boot' | 'search' | 'read' | 'upload'; label: string; searched: boolean }>(null);
+  const [addMenuLevel, setAddMenuLevel] = useState<'main' | 'upload'>('main');
   // Train AI "+" -> Add a product / Add a service: a real form (the design picture
   // screens for these were titled "Add Customer" and had a button covering Continue).
   type AddItemForm = { kind: 'product' | 'service'; name: string; model: string; specs: string; price: string; type: string; description: string; image: string };
@@ -3009,7 +3685,7 @@ function HomeScreenInner(){
   const [reportSending, setReportSending] = useState(false);
   // Live Leads & Customers (customers table). A row whose segment is
   // Lead / Contacted / Qualified is a lead; New / VIP / Active is a customer.
-  type ContactRow = { id: string; name: string; channel: string; handle: string; segment: string; location: string | null; total_orders: number | null; total_spent: number | null; last_order_at: string | null; customer_since: string | null; ai_recommendation: string | null; segments: string[] | null; tags: string[] | null; last_interaction_at: string | null; created_at: string };
+  type ContactRow = { id: string; name: string; channel: string; handle: string; segment: string; location: string | null; total_orders: number | null; total_spent: number | null; last_order_at: string | null; customer_since: string | null; ai_recommendation: string | null; segments: string[] | null; tags: string[] | null; last_interaction_at: string | null; created_at: string; follow_up_at?: string | null; follow_up_note?: string; notes?: string; phone?: string; email?: string };
   const [contacts, setContacts] = useState<ContactRow[]>([]);
   const [contactsLoading, setContactsLoading] = useState(false);
   const [contactFilter, setContactFilter] = useState('All');
@@ -3021,6 +3697,7 @@ function HomeScreenInner(){
   const customersReturnRef = useRef<() => void>(() => {});
   // Home insight card: 'auto' follows Away mode; the chip on the card flips between the two.
   const [homeView, setHomeView] = useState<'auto' | 'now' | 'away'>('auto');
+  const [homeCardIdx, setHomeCardIdx] = useState(0);
   const [awayStartedAt, setAwayStartedAt] = useState<number | null>(null);
   const [awayStats, setAwayStats] = useState<null | { actions: number; opportunities: number }>(null);
   // Company workspace + subscription (businesses / plans tables).
@@ -3046,6 +3723,7 @@ function HomeScreenInner(){
   const [joinCode, setJoinCode] = useState('');
   const [staffInviteCode, setStaffInviteCode] = useState('');
   const billingReturnRef = useRef<() => void>(() => {});
+  const billingAfterCreateRef = useRef<() => void>(() => {});
   // Real channel connection (channel-connect function).
   const [waForm, setWaForm] = useState<null | { phoneNumberId: string; token: string }>(null);
   const [channelBusy, setChannelBusy] = useState<string | null>(null);
@@ -3107,7 +3785,7 @@ function HomeScreenInner(){
     setWebShell({
       signedIn,
       active: screen === 'main' ? mainTab : screen,
-      wide: WEB_WIDE_SCREENS.includes(screen) || (screen === 'main' && (WEB_WIDE_TABS.includes(mainTab) || (mainTab === 'home' && hookWidth >= WEB_DESKTOP_HOME_MIN)))
+      wide: WEB_WIDE_SCREENS.includes(screen) || (screen === 'truth' && hookWidth >= 1000) || (screen === 'main' && (WEB_WIDE_TABS.includes(mainTab) || (mainTab === 'home' && hookWidth >= WEB_DESKTOP_HOME_MIN)))
         || (['launch', 'onboarding', 'signup', 'login', 'forgotPassword'].includes(screen) && hookWidth >= WEB_AUTH_PAGE_MIN),
     });
   }, [screen, mainTab, userId, hookWidth]);
@@ -3134,7 +3812,13 @@ function HomeScreenInner(){
       }
       if (screen === 'terms') { setMainTab(termsReturnRef.current.tab); setScreen(termsReturnRef.current.screen); return true; }
       if (screen === 'communityPost') { setScreen('community'); return true; }
+      if (screen === 'settings') { settingsBack(); return true; }
+      if (screen === 'opportunityDetail') { setScreen('opportunities'); return true; }
+      if (screen === 'opportunities') { marketBackRef.current(); return true; }
+      if ((screen === 'explore' || screen === 'trends' || screen === 'community') && exploreBackRef.current) { exploreBackRef.current(); return true; }
+      if (screen === 'campaigns' || screen === 'automations') { goTab('home'); return true; }
       if (screen === 'explore' || screen === 'trends' || screen === 'network' || screen === 'community' || screen === 'storefront') { setMainTab('brain'); setScreen('main'); return true; }
+      if (screen === 'main' && mainTab === 'market') { goTab('home'); return true; }
       if (screen === 'learned') { setScreen('knowledgeHealth'); return true; }
       if (screen === 'billing') { billingReturnRef.current(); return true; }
       if (contactForm) { setContactForm(null); return true; }
@@ -3151,10 +3835,14 @@ function HomeScreenInner(){
       if (screen === 'aiPermissions') { setScreen('channelSettings'); return true; }
       if (screen === 'inboxChat') { if (inboxModal) setInboxModal(null); else { setMainTab('inbox'); setScreen('main'); } return true; }
       if (screen === 'main' && homeCommandExpanded && mainTab === 'home') { setHomeCommandExpanded(false); return true; }
+      if (screen === 'main' && (mainTab === 'inbox' || mainTab === 'profile' || mainTab === 'brain')) { goTab('home'); return true; }
+      if (screen === 'knowledgeHealth') { setScreen('main'); return true; }
+      if (screen === 'forgotPassword') { setScreen('login'); return true; }
+      if (screen === 'login' || (screen === 'signup' && signupIndex === 0)) { setScreen('onboarding'); return true; }
       return false;
     });
     return () => sub.remove();
-  }, [screen, truthKey, inboxModal, homeCommandExpanded, mainTab, contactForm, showAddMenu, browserNav.canGoBack, readerMode, readerHistory]);
+  }, [screen, signupIndex, truthKey, inboxModal, homeCommandExpanded, mainTab, contactForm, showAddMenu, browserNav.canGoBack, readerMode, readerHistory]);
   const [humanHandling, setHumanHandling] = useState<Record<string, boolean>>({});
   // True pixel dimensions of the file actually sitting in Supabase, read off
   // the image itself once it loads. The PNG exports don't share one fixed
@@ -3221,7 +3909,12 @@ function HomeScreenInner(){
   const [scheduleDraft, setScheduleDraft] = useState({ title: '', withWhom: '', date: todayIso, time: '10:00 AM', endTime: '11:00 AM', notes: '' });
   // ---- Orders / agenda / escalations / away mode ----
   const [orders, setOrders] = useState<OrderRow[]>([]);
-  const [ordersFilter, setOrdersFilter] = useState<'Unshipped' | 'Shipped' | 'All'>('Unshipped');
+  const [ordersFilter, setOrdersFilter] = useState<'Unshipped' | 'Unpaid' | 'Shipped' | 'Cancelled' | 'All'>('Unshipped');
+  const [ordersQuery, setOrdersQuery] = useState('');
+  const [orderOpenId, setOrderOpenId] = useState<string | null>(null);
+  const [orderForm, setOrderForm] = useState<{ tracking: string; delivery_fee: string; discount: string; refund: string; cancel_reason: string; note: string } | null>(null);
+  const [ordersUpgraded, setOrdersUpgraded] = useState(true);
+  const [newOrder, setNewOrder] = useState<{ name: string; phone: string; items: string; total: string; paid: boolean; busy: boolean; error: string } | null>(null);
   const [agendaEvents, setAgendaEvents] = useState<AgendaEvent[]>([]);
   const [escalations, setEscalations] = useState<EscalationRow[]>([]);
   const [escAlerts, setEscAlerts] = useState<Record<string, any>>({});
@@ -3244,6 +3937,15 @@ function HomeScreenInner(){
   const [brainImageFailed, setBrainImageFailed] = useState(false);
   const [gaugeImageFailed, setGaugeImageFailed] = useState(false);
   const [processingOrbFailed, setProcessingOrbFailed] = useState(false);
+  // What the "NEXORA is analyzing" screen shows: real steps for Tell Nexora, then a timed walk through the
+  // extraction steps (the last one keeps spinning until the server answers).
+  const FILE_STEPS = ['Reading documents', 'Extracting information', 'Understanding content', 'Organizing knowledge', 'Looking for images'];
+  const [procFlow, setProcFlow] = useState<{ title: string; steps: string[]; done: number; auto: boolean; detail?: string }>({ title: 'NEXORA is analyzing your file\u2026', steps: FILE_STEPS, done: 0, auto: true });
+  useEffect(() => {
+    if (screen !== 'addKnowledge' || addKnowledgeStep !== 'processing' || !procFlow.auto) return;
+    const t = setInterval(() => setProcFlow(f => (f.auto && f.done < f.steps.length - 1 ? { ...f, done: f.done + 1 } : f)), 2200);
+    return () => clearInterval(t);
+  }, [screen, addKnowledgeStep, procFlow.auto]);
 
   const popularQuestions = [
     'How are my sales doing?',
@@ -3490,7 +4192,7 @@ function HomeScreenInner(){
     supabase.auth.resend({type:'signup',email:cleanEmail,options:{emailRedirectTo:IS_WEB?(globalThis as any).location?.origin:undefined}}).catch(()=>{});
     setAuthError(`Please confirm your email first. We've sent a new confirmation link to ${cleanEmail}. Check your inbox and spam folder, then log in.`);
   }else if(/invalid login credentials/i.test(String(error?.message))){
-    setAuthError('Wrong email or password. If you are new, tap Sign up to create an account.');
+    setAuthError(`Wrong email or password. If you are new to Nexora, tap ${IS_WEB ? 'Create account' : 'Sign up'} to make an account.`);
   }else{
     setAuthError(error?.message||'Invalid email or password');
   }
@@ -3500,6 +4202,9 @@ function HomeScreenInner(){
   };
 
   const handleLogout=async()=>{
+    // This phone stops getting the account's notifications.
+    if (pushTokenRef.current) { await supabase.from('push_tokens').delete().eq('token', pushTokenRef.current).then(() => {}, () => {}); pushTokenRef.current = ''; }
+    setBioLocked(false);
     await supabase.auth.signOut();
     setInfoMessage('');
     setScreen('login');
@@ -3780,15 +4485,50 @@ function HomeScreenInner(){
         // Many Android file managers label CSV files as application/vnd.ms-excel or
         // application/octet-stream, which greyed them out. Allow any file here and
         // check the extension (PDF, CSV, TXT) in startKnowledgeUpload instead.
-        type: Platform.OS === 'android' ? '*/*' : ['application/pdf', 'text/csv', 'text/comma-separated-values', 'text/plain', 'public.comma-separated-values-text'],
+        type: Platform.OS === 'android' ? '*/*' : ['application/pdf', 'text/csv', 'text/comma-separated-values', 'text/plain', 'public.comma-separated-values-text', 'image/jpeg', 'image/png', 'image/webp', 'image/heic'],
         copyToCacheDirectory: true,
         multiple: false,
       });
       if (result.canceled || !result.assets?.[0]) return null;
-      return result.assets[0];
+      const a = result.assets[0];
+      // Photos from the file explorer are shrunk like camera photos so Nexora can read them (about 4 MB max).
+      if (/\.(jpe?g|png|webp|heic|heif)$/i.test(a.name || '') || /^image\//.test(a.mimeType || '')) {
+        try {
+          const m = await ImageManipulator.manipulateAsync(a.uri, [{ resize: { width: 1600 } }], { compress: 0.75, format: ImageManipulator.SaveFormat.JPEG });
+          return { ...a, uri: m.uri, name: `${(a.name || 'photo').replace(/\.[^.]+$/, '')}.jpg`, size: null as any };
+        } catch { return a; }
+      }
+      return a;
     } catch (error: any) {
       if (__DEV__) console.log('[NEXORA DOCUMENT PICKER ERROR]', error?.message, error);
       return null;
+    }
+  };
+  // Train AI > + > camera. 'product': the photo goes on a new product. 'document': Nexora reads the price list,
+  // menu, label or flyer in the photo and suggests knowledge items to add (same review step as a PDF).
+  const takeKnowledgePhoto = async (purpose: 'product' | 'document') => {
+    try {
+      if (Platform.OS !== 'web') {
+        const perm = await ImagePicker.requestCameraPermissionsAsync();
+        if (perm.status !== 'granted') { flash("Nexora needs your camera. Allow it in your phone's Settings, then try again."); return; }
+      }
+      // On the web this opens the phone's camera (or a file chooser on a computer).
+      const r = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.8, exif: false, allowsEditing: purpose === 'product' });
+      if (r.canceled || !r.assets?.[0]?.uri) return;
+      let uri = r.assets[0].uri;
+      try {
+        const m = await ImageManipulator.manipulateAsync(uri, [{ resize: { width: purpose === 'document' ? 1600 : 1024 } }], { compress: 0.75, format: ImageManipulator.SaveFormat.JPEG });
+        uri = m.uri;
+      } catch { /* keep the original if resizing fails */ }
+      if (purpose === 'product') {
+        setAddItemForm({ kind: 'product', name: '', model: '', specs: '', price: '', type: '', description: '', image: uri });
+        flash('Photo added. Fill in the name and price, then save.');
+        return;
+      }
+      await startKnowledgeUpload({ uri, name: `photo-${Date.now()}.jpg`, size: null });
+    } catch (e: any) {
+      if (__DEV__) console.log('[knowledge photo]', e?.message);
+      flash(Platform.OS === 'web' ? "Couldn't open the camera. Try Upload a file instead." : "Couldn't open the camera. Please try again.");
     }
   };
   const handleAttachOption = async (option: string) => {
@@ -3947,8 +4687,12 @@ function HomeScreenInner(){
       // was joining the raw feature strings with no bullet prefix at all.
       ...(item.features ? [{ label: activeCategory === 'policies' ? 'Policy details' : 'Key Features', value: item.features.map(f => `\u2022 ${f}`).join('\n') }] : []),
       ...(item.overview && (activeCategory === 'products' || activeCategory === 'services') ? [{ label: 'Description', value: item.overview }] : []),
+      // Stock tracking (products): how many are left, and when Nexora should remind you to restock.
+      ...(activeCategory === 'products' && !item.fields.some(f => f.label === STOCK_LABEL) ? [{ label: STOCK_LABEL, value: '' }] : []),
+      ...(activeCategory === 'products' && !item.fields.some(f => f.label === STOCK_ALERT_LABEL) ? [{ label: STOCK_ALERT_LABEL, value: '' }] : []),
     ];
     setEditDraft(draft);
+    setListingAI(null);
     setScreen('itemEdit');
   };
 
@@ -3983,8 +4727,70 @@ function HomeScreenInner(){
     const { data, error } = await supabase.from('chat_messages')
       .select('id,role,text,image_url,created_at').order('created_at', { ascending: false }).limit(50);
     if (error) throw error;
-    const history: ChatMessage[] = (data ?? []).reverse().map(m => ({ id: m.id, role: m.role as 'user' | 'ai', text: m.text, imageUri: m.image_url ?? undefined }));
+    const history: ChatMessage[] = (data ?? []).reverse().map(m => ({ id: m.id, role: m.role as 'user' | 'ai', text: m.text, imageUri: m.image_url ?? undefined, at: Date.parse(m.created_at) || undefined }));
     setChatMessages(prev => (prev.length ? prev : history));
+  };
+  // ---- AI chat: every message is dated and timed, and past chats are kept in Chat history (company guide) ----
+  const msgTime = (m: ChatMessage) => m.at ?? (/^\d{12,}$/.test(m.id) ? Number(m.id) : Date.now());
+  const dayLabel = (t: number) => {
+    const d = new Date(t), today = new Date(); const y = new Date(); y.setDate(today.getDate() - 1);
+    if (d.toDateString() === today.toDateString()) return 'Today';
+    if (d.toDateString() === y.toDateString()) return 'Yesterday';
+    return d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: d.getFullYear() === today.getFullYear() ? undefined : 'numeric' });
+  };
+  const clockLabel = (t: number) => new Date(t).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  type ChatDay = { key: string; label: string; msgs: ChatMessage[] };
+  const [chatHist, setChatHist] = useState<{ loading: boolean; days: ChatDay[]; openKey: string; query: string; error: string } | null>(null);
+  const openChatHistory = async () => {
+    setChatHist({ loading: true, days: [], openKey: '', query: '', error: '' });
+    const { data, error } = await supabase.from('chat_messages').select('id,role,text,image_url,created_at').order('created_at', { ascending: false }).limit(1500);
+    if (error) { setChatHist(h => h && { ...h, loading: false, error: "Couldn't load your chat history." }); return; }
+    const byDay = new Map<string, ChatDay>();
+    for (const r of [...(data ?? [])].reverse()) {
+      const t = Date.parse(r.created_at) || Date.now();
+      const key = new Date(t).toDateString();
+      if (!byDay.has(key)) byDay.set(key, { key, label: dayLabel(t), msgs: [] });
+      byDay.get(key)!.msgs.push({ id: r.id, role: r.role as 'user' | 'ai', text: r.text, imageUri: r.image_url ?? undefined, at: t });
+    }
+    setChatHist(h => h && { ...h, loading: false, days: [...byDay.values()].reverse() });
+  };
+  // ---- Brain AI tools and saved work library ----
+  const [aiTool, setAiTool] = useState<{ tool: AiTool | null; topic: string; extra: string } | null>(null);
+  const lastToolRef = useRef<AiTool | null>(null);
+  const runAiTool = () => {
+    const t = aiTool?.tool;
+    if (!t || !aiTool?.topic.trim()) return;
+    lastToolRef.current = t;
+    const prompt = t.build(aiTool.topic.trim(), aiTool.extra.trim());
+    setAiTool(null);
+    goTab('brain');
+    setTimeout(() => { sendChatMessage(prompt).catch(() => {}); }, 50);
+  };
+  type SavedItem = { id: string; kind: string; title: string; content: string; tags: string[]; pinned: boolean; created_at: string };
+  const [savedLib, setSavedLib] = useState<{ loading: boolean; items: SavedItem[]; query: string; kind: string; openId: string; error: string } | null>(null);
+  const [savedIds, setSavedIds] = useState<Record<string, boolean>>({});
+  const openSavedLib = async () => {
+    setSavedLib({ loading: true, items: [], query: '', kind: 'all', openId: '', error: '' });
+    const { data, error } = await supabase.from('ai_saved_items').select('id,kind,title,content,tags,pinned,created_at').order('pinned', { ascending: false }).order('created_at', { ascending: false }).limit(500);
+    if (error) { setSavedLib(x => x && { ...x, loading: false, error: /does not exist|schema cache/i.test(error.message) ? 'The saved library needs one setup step: run the "brain library" SQL script in Supabase.' : "Couldn't load your saved work." }); return; }
+    setSavedLib(x => x && { ...x, loading: false, items: (data ?? []) as SavedItem[] });
+  };
+  const saveAiAnswer = async (msgId: string, content: string, asked: string) => {
+    if (!userId || !content.trim()) return;
+    const tool = lastToolRef.current;
+    const firstLine = content.split('\n').map(l => l.replace(/^[#*\s-]+|\*+$/g, '').trim()).find(l => l.length > 3) || '';
+    const title = (tool ? `${tool.label}: ${asked.replace(/^.*?"([^"]+)".*$/s, '$1').slice(0, 80)}` : (asked || firstLine)).replace(/\s+/g, ' ').trim().slice(0, 140) || 'Saved answer';
+    const { error } = await supabase.from('ai_saved_items').insert({ user_id: userId, kind: tool?.kind ?? 'note', title, content: content.slice(0, 20000), tags: tool ? [tool.label] : [] });
+    if (error) { flash(/does not exist|schema cache/i.test(error.message) ? 'Run the "brain library" SQL script in Supabase to save AI work.' : /full/i.test(error.message) ? error.message : "Couldn't save that."); return; }
+    setSavedIds(p => ({ ...p, [msgId]: true }));
+    flash('Saved to your library');
+  };
+  const exportSaved = (it: SavedItem) => {
+    const text = `${it.title}\n${'='.repeat(Math.min(60, it.title.length))}\n\n${it.content}\n`;
+    if (IS_WEB && typeof document !== 'undefined') {
+      try { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'text/markdown' })); a.download = `${it.title.replace(/[^a-z0-9]+/gi, '-').slice(0, 50) || 'nexora'}.md`; a.click(); return; } catch { /* share */ }
+    }
+    Share.share({ message: text }).catch(() => {});
   };
   const loadingWorkspaceRef = useRef(false);
   const loadWorkspace = async () => {
@@ -3996,7 +4802,17 @@ function HomeScreenInner(){
     setUserId(user.id);
     setUserEmail(user.email ?? '');
     try {
-      const { data: profile } = await supabase.from('profiles').select('full_name,sample_data_seeded,is_away,business_name').eq('id', user.id).maybeSingle();
+      const { data: profile } = await supabase.from('profiles').select('full_name,sample_data_seeded,is_away,business_name,avatar_url').eq('id', user.id).maybeSingle();
+      setAvatarUrl(profile?.avatar_url ?? '');
+      checkMfaGate().catch(() => {});
+      recordLogin(user.id).catch(() => {});
+      // A new account that arrived through someone's referral link is credited to them (once, within 7 days of signing up).
+      try {
+        const ref = IS_WEB && typeof window !== 'undefined' ? window.localStorage.getItem('nexora_ref') : null;
+        if (ref) supabase.rpc('claim_referral', { p_code: ref }).then(({ error }) => { if (!error) { try { window.localStorage.removeItem('nexora_ref'); } catch { /* ignore */ } } });
+      } catch { /* storage blocked */ }
+      loadBioSetting().catch(() => {});
+      registerPush(user.id).catch(() => {});
       const name = profile?.full_name || (user.user_metadata?.full_name as string | undefined) || '';
       if (name) setFullName(name);
       setAwayMode(!!profile?.is_away);
@@ -4021,7 +4837,7 @@ function HomeScreenInner(){
         setKnowledgeData(EMPTY_KNOWLEDGE); setKnowledgeDocs([]); setDocStats({ count: 0, bytes: 0 });
         setChatMessages([]); setChannelRows({}); setExtractedItems([]);
         setOrders([]); setAgendaEvents([]); setEscalations([]); setAwayMode(false); autoHandledRef.current.clear();
-        setConversations(SHOW_DEMO_INBOX ? CONVERSATIONS : []); setWorkspace(null); setWorkspaceChecked(false); setContacts([]); setAwayStats(null); setHomeView('auto');
+        setConversations(SHOW_DEMO_INBOX ? CONVERSATIONS : []); setWorkspace(null); setAvatarUrl(''); setMfaGate(null); setOwnerPrefs(null); setTeam(null); setLogins(null); setMarket({}); setWorkspaceChecked(false); setContacts([]); setAwayStats(null); setHomeView('auto');
         setConnectedChannels(Object.fromEntries(CONNECT_CHANNELS.map(c => [c.key, false])));
       }
     }
@@ -4080,6 +4896,7 @@ function HomeScreenInner(){
   };
   const openBilling = (back?: () => void) => {
     billingReturnRef.current = back ?? (() => goTab('profile'));
+    billingAfterCreateRef.current = back ?? (() => goTab('home'));   // a brand-new company goes to Home, not Profile
     setStaffInviteCode('');
     loadWorkspaceInfo().catch(() => {});
     loadPayConfig().catch(() => {});
@@ -4096,7 +4913,7 @@ function HomeScreenInner(){
       if (userId) supabase.from('profiles').update({ business_name: name }).eq('id', userId).then(() => {});
       setBusinessName(name);
       await loadWorkspaceInfo();
-      flash('Company created. You are on the Free plan: upgrade any time in Plans & billing.');
+      flash(`Welcome to Nexora, ${name}! You're on the Free plan: upgrade any time in Plans & billing.`);
       return true;
     } catch (e: any) { flash(rpcError(e, "Couldn't create the company.")); return false; }
     finally { setBillingBusy(null); }
@@ -4298,12 +5115,18 @@ function HomeScreenInner(){
   // "While you were away" numbers for the Home card.
   useEffect(() => {
     if (!dataLoaded || screen !== 'main' || mainTab !== 'home') return;
-    const recentAway = awayMode || (awayEndedAt !== null && Date.now() - awayEndedAt < 12 * 3600_000);
-    if (!(homeView === 'away' || (homeView === 'auto' && recentAway))) return;
+    // Home's cards rotate through "what Nexora did", so its numbers are kept fresh while Home is open.
     loadAwayStats().catch(() => {});
+    if (!trendsData) loadTrends({ quiet: true }).catch(() => {});
     const id = setInterval(() => loadAwayStats().catch(() => {}), 60000);
     return () => clearInterval(id);
   }, [screen, mainTab, dataLoaded, homeView, awayMode, awayEndedAt]);
+  // Home insight cards (business state, what's trending, what Nexora did) change every 30 seconds.
+  useEffect(() => {
+    if (screen !== 'main' || mainTab !== 'home') return;
+    const id = setInterval(() => setHomeCardIdx(i => i + 1), 30_000);
+    return () => clearInterval(id);
+  }, [screen, mainTab]);
   // The "+" menu never stays open when you leave Train AI and come back.
   useEffect(() => { if (screen !== 'knowledgeHealth') setShowAddMenu(false); }, [screen]);
   // Train AI: refresh the knowledge-search (RAG) index status when the screen opens.
@@ -4411,8 +5234,7 @@ function HomeScreenInner(){
     setContactsLoading(true);
     try {
       const { data, error } = await supabase.from('customers')
-        .select('id,name,channel,handle,segment,location,total_orders,total_spent,last_order_at,customer_since,ai_recommendation,segments,tags,last_interaction_at,created_at')
-        .order('created_at', { ascending: false }).limit(500);
+        .select('*').order('created_at', { ascending: false }).limit(1000);
       if (error) throw error;
       setContacts((data ?? []) as ContactRow[]);
     } finally { setContactsLoading(false); }
@@ -4423,9 +5245,38 @@ function HomeScreenInner(){
     loadContacts().catch(() => flash("Couldn't load your customers."));
     setScreen('customersLive');
   };
-  const openContact = (c: ContactRow) => { setActiveContactId(c.id); setContactTab('Overview'); setScreen(isLead(c) ? 'leadDetail' : 'customerDetail'); };
-  const contactPhone = (c: ContactRow) => (/^\+?[\d\s()-]{7,}$/.test(c.handle || '') ? c.handle.replace(/[^\d+]/g, '') : '');
-  const contactEmail = (c: ContactRow) => (EMAIL_REGEX.test(c.handle || '') ? c.handle : '');
+  // ---- CRM: one record per person with follow-up date, private notes and a timeline (company guide, 29 Oct 2026) ----
+  type TimelineRow = { id: string; type: string; title: string; detail: string | null; created_at: string };
+  const [contactTimeline, setContactTimeline] = useState<{ id: string; loading: boolean; rows: TimelineRow[] } | null>(null);
+  const [crmForm, setCrmForm] = useState<{ id: string; notes: string; logType: string; logText: string; date: string; dateNote: string } | null>(null);
+  const crmUpgraded = (c?: ContactRow) => !!c && 'follow_up_at' in c;
+  const loadTimeline = async (id: string) => {
+    setContactTimeline({ id, loading: true, rows: [] });
+    const { data } = await supabase.from('customer_interactions').select('id,type,title,detail,created_at').eq('customer_id', id).order('created_at', { ascending: false }).limit(100);
+    setContactTimeline({ id, loading: false, rows: (data ?? []) as TimelineRow[] });
+  };
+  const openContact = (c: ContactRow) => {
+    setActiveContactId(c.id); setContactTab('Overview'); setScreen(isLead(c) ? 'leadDetail' : 'customerDetail');
+    setCrmForm({ id: c.id, notes: c.notes || '', logType: 'Notes', logText: '', date: c.follow_up_at || '', dateNote: c.follow_up_note || '' });
+    loadTimeline(c.id).catch(() => {});
+    if (!orders.length) refreshOrders().catch(() => {});
+  };
+  const logInteraction = async (c: ContactRow, type: string, title: string, detail = '') => {
+    if (!userId) return false;
+    const { error } = await supabase.from('customer_interactions').insert({ user_id: userId, customer_id: c.id, type, title: title.slice(0, 200), detail: detail.slice(0, 1000) });
+    if (error) { flash(/check constraint/i.test(error.message) ? 'Run the CRM SQL script in Supabase to log notes, meetings and emails.' : "Couldn't save that."); return false; }
+    await supabase.from('customers').update({ last_interaction_at: new Date().toISOString() }).eq('id', c.id);
+    loadTimeline(c.id).catch(() => {});
+    return true;
+  };
+  const setFollowUp = async (c: ContactRow, date: string | null, note = '') => {
+    if (!crmUpgraded(c)) { flash('Run the CRM SQL script in Supabase to set follow-up dates.'); return; }
+    await updateContact(c, { follow_up_at: date, follow_up_note: note }, date ? `Follow-up set for ${new Date(`${date}T12:00:00`).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}` : 'Follow-up cleared');
+    if (date) logInteraction(c, 'Follow-ups', `Follow-up planned for ${date}`, note).catch(() => {});
+  };
+  const followUpsDue = () => { const today = localIsoDate(); return contacts.filter(c => c.follow_up_at && c.follow_up_at <= today); };
+  const contactPhone = (c: ContactRow) => (c.phone ? c.phone.replace(/[^\d+]/g, '') : /^\+?[\d\s()-]{7,}$/.test(c.handle || '') ? c.handle.replace(/[^\d+]/g, '') : '');
+  const contactEmail = (c: ContactRow) => (c.email && EMAIL_REGEX.test(c.email) ? c.email : EMAIL_REGEX.test(c.handle || '') ? c.handle : '');
   const contactConversation = (c: ContactRow) => conversations.find(v => v.live && v.channel === String(c.channel || '').toLowerCase()
     && ((!!c.handle && (v.handle === c.handle || v.externalId === c.handle.replace(/[^\d]/g, ''))) || v.name.toLowerCase() === c.name.toLowerCase()));
   const messageContact = (c: ContactRow) => {
@@ -4498,7 +5349,11 @@ function HomeScreenInner(){
     loadContacts().catch(() => {});
     flash(`${conv.name} saved as a lead`);
   };
-  const ordersFor = (c: ContactRow) => orders.filter(o => (o.customer_name || '').trim().toLowerCase() === c.name.trim().toLowerCase());
+  // A customer's orders: matched by phone or email first, then by name.
+  const ordersFor = (c: ContactRow) => {
+    const ph = contactPhone(c).replace(/\D/g, '').slice(-9), em = contactEmail(c).toLowerCase();
+    return orders.filter(o => (ph.length >= 7 && (o.customer_phone || '').replace(/\D/g, '').endsWith(ph)) || (!!em && (o.customer_email || '').toLowerCase() === em) || (o.customer_name || '').trim().toLowerCase() === c.name.trim().toLowerCase());
+  };
   const money = (n: number) => (n >= 1e6 ? `$${(n / 1e6).toFixed(2)}M` : n >= 1e4 ? `$${(n / 1e3).toFixed(1)}K` : `$${n.toFixed(2)}`);
   const contactLastSeen = (c: ContactRow) => relTime(c.last_interaction_at || c.created_at);
   const renderContactForm = () => {
@@ -4515,11 +5370,11 @@ function HomeScreenInner(){
           <Text style={[styles.detailFieldLabel, { marginTop: 12 }]}>Full name*</Text>
           <TextInput value={f.name} onChangeText={set('name')} placeholder="Enter name" placeholderTextColor="#A5AFBB" style={styles.editInput} autoCapitalize="words" maxLength={120} />
           <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Phone number (WhatsApp)</Text>
-          <TextInput value={f.phone} onChangeText={set('phone')} placeholder="+234 803 000 0000" placeholderTextColor="#A5AFBB" style={styles.editInput} keyboardType="phone-pad" maxLength={20} />
+          <TextInput value={f.phone} onChangeText={set('phone')} placeholder="+1 555 123 4567" placeholderTextColor="#A5AFBB" style={styles.editInput} keyboardType="phone-pad" maxLength={20} />
           <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Email address</Text>
           <TextInput value={f.email} onChangeText={set('email')} placeholder="name@example.com" placeholderTextColor="#A5AFBB" style={styles.editInput} keyboardType="email-address" autoCapitalize="none" maxLength={200} />
           <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Location</Text>
-          <TextInput value={f.location} onChangeText={set('location')} placeholder="e.g. Lagos, Nigeria" placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={80} />
+          <TextInput value={f.location} onChangeText={set('location')} placeholder="e.g. City, Country" placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={80} />
           <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>{f.kind === 'lead' ? 'What are they interested in?' : 'Note'}</Text>
           <TextInput value={f.note} onChangeText={set('note')} placeholder={f.kind === 'lead' ? 'e.g. Wants the blue headphone in bulk' : 'Optional'} placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={300} />
           {!!contactFormError && (
@@ -4697,6 +5552,7 @@ function HomeScreenInner(){
   const [exploreResult, setExploreResult] = useState<null | { query: string; summary: string; results: FoundLink[] }>(null);
   const [exploreError, setExploreError] = useState('');
   const openExplore = (q?: string) => {
+    exploreBackRef.current = null;
     setExploreError('');
     setScreen('explore');
     if (q) { setExploreQuery(q); runExplore(q); }
@@ -4706,7 +5562,8 @@ function HomeScreenInner(){
     if (!q || exploreLoading) return;
     setExploreLoading(true); setExploreError('');
     try {
-      const r = await callFn('nexora-web', { action: 'find', query: q }, 60000);
+      const r = await nexoraBusy({ heading: 'Find Online', title: 'NEXORA is searching the web\u2026', detail: `\u201c${q}\u201d`, steps: ['Understanding your request', 'Searching the web', 'Checking the sources', 'Picking the best results'] },
+        () => callFn('nexora-web', { action: 'find', query: q }, 60000));
       setExploreResult({ query: q, summary: r.summary || '', results: r.results || [] });
     } catch (e: any) {
       setExploreResult(null);
@@ -4714,7 +5571,7 @@ function HomeScreenInner(){
     } finally { setExploreLoading(false); }
   };
 
-  // ---- Trending for your business (live web research, cached on the phone for 6 hours) ----
+  // ---- Trending for your business (live web research; refreshed every hour on paid plans, every 3 hours on Free) ----
   type Trend = { title: string; type: string; summary: string; why_it_matters: string; action: string; sources: { title: string; url: string }[] };
   type TrendingBusiness = { name: string; summary: string; opportunity: string; sources: { title: string; url: string }[] };
   type TrendsData = { generated_at: string; business: string; industry: string; country: string; trends: Trend[]; businesses?: TrendingBusiness[]; next_refresh_at?: string; focus: string };
@@ -4723,7 +5580,7 @@ function HomeScreenInner(){
   const [trendsError, setTrendsError] = useState('');
   const [trendsFocus, setTrendsFocus] = useState('');
   const trendsCachePath = () => (FileSystem.documentDirectory && userId ? `${FileSystem.documentDirectory}nexora-trends-${userId}.json` : '');
-  const loadTrends = async (opts: { force?: boolean; focus?: string } = {}) => {
+  const loadTrends = async (opts: { force?: boolean; focus?: string; quiet?: boolean } = {}) => {
     const focus = opts.focus ?? trendsFocus;
     const path = trendsCachePath();
     if (!opts.force && !focus && path) {
@@ -4733,7 +5590,7 @@ function HomeScreenInner(){
           const cached = JSON.parse(await FileSystem.readAsStringAsync(path)) as TrendsData;
           if (cached?.trends?.length) {
             setTrendsData(cached);
-            // Shown straight away; the server copy (refreshed every 6 hours by the scheduler) is checked below.
+            // Shown straight away; the server copy (refreshed hourly by the scheduler) is checked below.
             if (Date.now() - new Date(cached.generated_at).getTime() < 15 * 60_000) return;
           }
         }
@@ -4742,8 +5599,10 @@ function HomeScreenInner(){
     if (trendsLoading) return;
     setTrendsLoading(true); setTrendsError('');
     try {
-      // The server keeps trends for 6 hours and a scheduler refreshes them, so this is usually instant.
-      const r = await callFn('nexora-web', { action: 'trends', focus, refresh: !!opts.force && !focus }, 90000);
+      // The server keeps trends for 1 hour (paid) or 3 hours (Free) and a scheduler refreshes them, so this is usually instant.
+      const run = () => callFn('nexora-web', { action: 'trends', focus, refresh: !!opts.force && !focus }, 90000);
+      const r = opts.quiet ? await run() : await nexoraBusy({ heading: 'Trending', title: 'NEXORA is checking what\u2019s trending\u2026', steps: ['Looking at your business', 'Searching the web', 'Checking what\u2019s new', 'Organizing trends for you'] },
+        () => callFn('nexora-web', { action: 'trends', focus, refresh: !!opts.force && !focus }, 90000));
       const data: TrendsData = { generated_at: r.generated_at, business: r.business, industry: r.industry, country: r.country, trends: r.trends || [], businesses: r.businesses || [], next_refresh_at: r.next_refresh_at, focus };
       setTrendsData(data);
       if (!focus && path) FileSystem.writeAsStringAsync(path, JSON.stringify(data)).catch(() => {});
@@ -4751,7 +5610,738 @@ function HomeScreenInner(){
       setTrendsError(e?.message || "Couldn't check what's trending right now.");
     } finally { setTrendsLoading(false); }
   };
-  const openTrends = () => { setScreen('trends'); loadTrends().catch(() => {}); };
+  const openTrends = () => { exploreBackRef.current = null; setScreen('trends'); loadTrends().catch(() => {}); };
+
+  // ---- Market (Figma "Marketplace", "Find Online", "AI Opportunities"): live opportunities found by nexora-market ----
+  type MarketCat = 'all' | 'wholesale' | 'supplier' | 'used' | 'rental' | 'auction' | 'grant';
+  type Opportunity = { id: string; title: string; category: Exclude<MarketCat, 'all'>; category_label: string; supplier: string; location: string; summary: string; savings: string; moq: string; valid_until: string; why: string; match: string; url: string; source: string; image: string };
+  type MarketSet = { items: Opportunity[]; loading: boolean; error: string; at: number };
+  const MARKET_CATS: { k: MarketCat; label: string; icon: string }[] = [
+    { k: 'wholesale', label: 'Wholesales', icon: 'bus-outline' },
+    { k: 'used', label: 'Used Items', icon: 'repeat-outline' },
+    { k: 'rental', label: 'Rentals', icon: 'sync-circle-outline' },
+    { k: 'auction', label: 'Auctions', icon: 'hammer-outline' },
+    { k: 'supplier', label: 'Suppliers', icon: 'cube-outline' },
+    { k: 'grant', label: 'Grant & deals', icon: 'gift-outline' },
+  ];
+  const [market, setMarket] = useState<Partial<Record<MarketCat, MarketSet>>>({});
+  const [marketCat, setMarketCat] = useState<MarketCat>('all');       // tab on the AI Opportunities list
+  const [marketOpp, setMarketOpp] = useState<Opportunity | null>(null);
+  const [marketQuote, setMarketQuote] = useState<null | { loading: boolean; subject: string; message: string; error: string }>(null);
+  // In-app email composer and share sheet (Market quote requests).
+  type MailBox = { to: string; subject: string; message: string; sending: boolean; error: string; sent: boolean; finding: boolean; found: string[]; looked: boolean; pageUrl?: string };
+  const [mailBox, setMailBox] = useState<MailBox | null>(null);
+  const [shareBox, setShareBox] = useState<null | { title: string; text: string; url?: string; wa?: { phone: string; finding: boolean; found: string[]; looked: boolean } }>(null);
+  // Phone numbers on a page: wa.me / tel: links first, then numbers written in international format (+234...).
+  const findPhones = (raw: string) => {
+    const out: string[] = [];
+    for (const m of raw.matchAll(/(?:wa\.me\/|api\.whatsapp\.com\/send\?phone=|tel:)\+?(\d{8,15})/gi)) out.push(`+${m[1]}`);
+    for (const m of raw.matchAll(/\+\d[\d\s().-]{8,18}\d/g)) { const d = m[0].replace(/[^\d+]/g, ''); if (d.length >= 11 && d.length <= 16) out.push(d); }
+    return [...new Set(out)].slice(0, 5);
+  };
+  const findSupplierPhone = async (pageUrl?: string) => {
+    if (!pageUrl) return;
+    setShareBox(b => b && b.wa ? { ...b, wa: { ...b.wa, finding: true } } : b);
+    let found: string[] = [];
+    try {
+      const r = await callFn('nexora-web', { action: 'read', url: pageUrl }, 30000);
+      found = findPhones(JSON.stringify(r));
+      if (!found.length) {
+        const contact = (r?.page?.links ?? r?.links ?? []).find((l: any) => /contact|about|support/i.test(`${l?.text ?? ''} ${l?.url ?? ''}`))?.url;
+        if (contact) found = findPhones(JSON.stringify(await callFn('nexora-web', { action: 'read', url: contact }, 30000)));
+      }
+    } catch { /* nothing found */ }
+    setShareBox(b => b && b.wa ? { ...b, wa: { ...b.wa, finding: false, looked: true, found, phone: b.wa.phone || found[0] || '' } } : b);
+  };
+  const findEmails = (raw: string) => [...new Set((raw.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) ?? []).map(e => e.toLowerCase().replace(/\.$/, '')))]
+    .filter(e => !/\.(png|jpe?g|gif|webp|svg)$/.test(e) && !/(example|sentry|wixpress|domain)\./.test(e)).slice(0, 6);
+  // Looks for the supplier's email on their page (and their contact page) with Nexora's page reader.
+  const findSupplierEmail = async (pageUrl?: string) => {
+    if (!pageUrl) return;
+    setMailBox(m => m && { ...m, finding: true, error: '' });
+    let found: string[] = [];
+    try {
+      const r = await callFn('nexora-web', { action: 'read', url: pageUrl }, 30000);
+      found = findEmails(JSON.stringify(r));
+      if (!found.length) {
+        const contact = (r?.page?.links ?? r?.links ?? []).find((l: any) => /contact|about|support/i.test(`${l?.text ?? ''} ${l?.url ?? ''}`))?.url;
+        if (contact) found = findEmails(JSON.stringify(await callFn('nexora-web', { action: 'read', url: contact }, 30000)));
+      }
+    } catch { /* nothing found */ }
+    setMailBox(m => m && { ...m, finding: false, looked: true, found, to: m.to || found[0] || '' });
+  };
+  const openMailBox = (o: { subject: string; message: string; to?: string; pageUrl?: string }) => {
+    setShareBox(null);
+    setMailBox({ to: o.to ?? '', subject: o.subject, message: o.message, sending: false, error: '', sent: false, finding: false, found: [], looked: false, pageUrl: o.pageUrl });
+    if (!o.to && o.pageUrl) setTimeout(() => { findSupplierEmail(o.pageUrl).catch(() => {}); }, 0);
+  };
+  const sendMailBox = async () => {
+    const m = mailBox;
+    if (!m) return;
+    if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(m.to.trim())) { setMailBox({ ...m, error: 'Enter the supplier’s email address.' }); return; }
+    setMailBox({ ...m, sending: true, error: '' });
+    try {
+      const r = await callFn('nexora-mail', { to: m.to.trim(), subject: m.subject, message: m.message }, 30000);
+      if (r?.success === false) throw new Error(r.message || 'The email couldn’t be sent.');
+      setMailBox(x => x && { ...x, sending: false, sent: true });
+    } catch (e: any) {
+      setMailBox(x => x && { ...x, sending: false, error: e?.message || 'The email couldn’t be sent.' });
+    }
+  };
+  const renderMailShare = () => {
+    const m = mailBox, sh = shareBox;
+    const sheet = { width: '100%', maxWidth: 560, alignSelf: 'center', backgroundColor: '#FFFFFF', borderRadius: 20, padding: 20 } as const;
+    const copy = async (t: string) => {
+      try { await (globalThis as any).navigator?.clipboard?.writeText(t); flash('Copied'); } catch { flash('Couldn’t copy on this device'); }
+    };
+    return (
+      <>
+        <Modal visible={!!m} transparent animationType="fade" onRequestClose={() => setMailBox(null)} statusBarTranslucent>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.55)', justifyContent: 'center', padding: 16 }}>
+            {!!m && (
+              <View style={sheet}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+                  <Ionicons name="mail-outline" size={22} color="#1E56A0" />
+                  <Text style={{ flex: 1, fontSize: 18, fontWeight: '700', color: '#0B1220' }}>{m.sent ? 'Email sent' : 'Send email'}</Text>
+                  <Pressable onPress={() => setMailBox(null)} hitSlop={10} accessibilityLabel="Close"><Ionicons name="close" size={22} color="#5C6B7A" /></Pressable>
+                </View>
+                {m.sent ? (
+                  <>
+                    <View style={{ alignItems: 'center', paddingVertical: 18 }}>
+                      <Ionicons name="checkmark-circle" size={54} color="#1E9E6D" />
+                      <Text style={{ fontSize: 15, color: '#0B1220', marginTop: 10, textAlign: 'center' }}>Your request was sent to {m.to}.</Text>
+                      <Text style={{ fontSize: 13, color: '#6B7A8C', marginTop: 6, textAlign: 'center' }}>Replies go straight to your own email address.</Text>
+                    </View>
+                    <Pressable onPress={() => setMailBox(null)} style={{ height: 46, borderRadius: 23, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#FFFFFF', fontWeight: '600' }}>Done</Text></Pressable>
+                  </>
+                ) : (
+                  <ScrollView style={{ maxHeight: hookHeight * 0.75 }} keyboardShouldPersistTaps="handled">
+                    <Text style={[styles.detailFieldLabel, { marginTop: 8 }]}>To</Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <TextInput value={m.to} onChangeText={t => setMailBox(x => x && { ...x, to: t, error: '' })} placeholder="supplier@example.com" placeholderTextColor="#A5AFBB" autoCapitalize="none" keyboardType="email-address" autoCorrect={false} style={[styles.editInput, { flex: 1 }]} />
+                      {m.finding && <ActivityIndicator color="#1E56A0" />}
+                    </View>
+                    {m.finding && <Text style={{ fontSize: 12.5, color: '#6B7A8C', marginTop: 4 }}>Nexora is looking for the supplier’s email on their page…</Text>}
+                    {!m.finding && m.found.length > 1 && (
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+                        {m.found.map(e => <Pressable key={e} onPress={() => setMailBox(x => x && { ...x, to: e })} style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, backgroundColor: m.to === e ? '#1E56A0' : '#EAF1FB' }}><Text style={{ fontSize: 12.5, color: m.to === e ? '#FFFFFF' : '#1E56A0' }}>{e}</Text></Pressable>)}
+                      </View>
+                    )}
+                    {!m.finding && m.looked && !m.found.length && <Text style={{ fontSize: 12.5, color: '#8A6A1E', marginTop: 4 }}>No email was listed on the supplier’s page. Type it in, or use Share to send the request on WhatsApp.</Text>}
+                    {!m.finding && !m.looked && !!m.pageUrl && <Pressable onPress={() => { findSupplierEmail(m.pageUrl).catch(() => {}); }} style={{ alignSelf: 'flex-start', marginTop: 6 }}><Text style={{ color: '#1E56A0', fontSize: 13, fontWeight: '600' }}>Find the supplier’s email for me</Text></Pressable>}
+                    <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Subject</Text>
+                    <TextInput value={m.subject} onChangeText={t => setMailBox(x => x && { ...x, subject: t })} maxLength={150} style={styles.editInput} />
+                    <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Message</Text>
+                    <TextInput value={m.message} onChangeText={t => setMailBox(x => x && { ...x, message: t })} multiline maxLength={4000} style={[styles.editInput, { height: 170, textAlignVertical: 'top', paddingTop: 10 }]} />
+                    <Text style={{ fontSize: 12, color: '#8A97A6', marginTop: 6 }}>Sent by Nexora on your behalf. Replies come to your own email{userEmail ? ` (${userEmail})` : ''}.</Text>
+                    {!!m.error && <Text style={{ color: '#C0392B', fontSize: 13, marginTop: 8 }}>{m.error}</Text>}
+                    <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
+                      <Pressable onPress={() => setMailBox(null)} style={{ flex: 1, height: 46, borderRadius: 23, backgroundColor: '#F2F4F7', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#0B1220', fontWeight: '600' }}>Cancel</Text></Pressable>
+                      <Pressable onPress={() => { sendMailBox().catch(() => {}); }} disabled={m.sending} style={{ flex: 1.4, height: 46, borderRadius: 23, backgroundColor: '#1E56A0', flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'center', opacity: m.sending ? 0.7 : 1 }}>
+                        {m.sending ? <ActivityIndicator color="#FFFFFF" /> : <><Ionicons name="send" size={16} color="#FFFFFF" /><Text style={{ color: '#FFFFFF', fontWeight: '600' }}>Send email</Text></>}
+                      </Pressable>
+                    </View>
+                  </ScrollView>
+                )}
+              </View>
+            )}
+          </KeyboardAvoidingView>
+        </Modal>
+        <Modal visible={!!sh} transparent animationType="fade" onRequestClose={() => setShareBox(null)} statusBarTranslucent>
+          <Pressable style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.55)', justifyContent: 'center', padding: 16 }} onPress={() => setShareBox(null)}>
+            {!!sh && (
+              <Pressable style={sheet} onPress={() => {}}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                  <Ionicons name="share-social-outline" size={22} color="#1E56A0" />
+                  <Text style={{ flex: 1, fontSize: 18, fontWeight: '700', color: '#0B1220' }}>Share</Text>
+                  <Pressable onPress={() => setShareBox(null)} hitSlop={10} accessibilityLabel="Close"><Ionicons name="close" size={22} color="#5C6B7A" /></Pressable>
+                </View>
+                <Text numberOfLines={4} style={{ fontSize: 13, lineHeight: 18, color: '#4B5B6E', backgroundColor: '#F4F7FB', borderRadius: 12, padding: 12 }}>{sh.text}</Text>
+                {sh.wa ? (() => {
+                  const wa = sh.wa;
+                  const digits = wa.phone.replace(/[^\d]/g, '');
+                  const open = () => {
+                    if (digits && digits.length < 8) { flash('Check the WhatsApp number'); return; }
+                    Linking.openURL(`https://wa.me/${digits}?text=${encodeURIComponent(sh.text)}`).catch(() => flash('Couldn’t open WhatsApp'));
+                    setShareBox(null);
+                  };
+                  return (
+                    <View style={{ marginTop: 14 }}>
+                      <Text style={styles.detailFieldLabel}>Send to (WhatsApp number)</Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        <TextInput value={wa.phone} onChangeText={t => setShareBox(b => b && b.wa ? { ...b, wa: { ...b.wa, phone: t } } : b)} placeholder="+15551234567" placeholderTextColor="#A5AFBB" keyboardType="phone-pad" style={[styles.editInput, { flex: 1 }]} />
+                        {wa.finding && <ActivityIndicator color="#25D366" />}
+                      </View>
+                      {wa.finding && <Text style={{ fontSize: 12.5, color: '#6B7A8C', marginTop: 4 }}>Nexora is looking for the supplier’s number on their page…</Text>}
+                      {!wa.finding && wa.found.length > 1 && (
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+                          {wa.found.map(n => <Pressable key={n} onPress={() => setShareBox(b => b && b.wa ? { ...b, wa: { ...b.wa, phone: n } } : b)} style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, backgroundColor: wa.phone === n ? '#25D366' : '#E8F8EE' }}><Text style={{ fontSize: 12.5, color: wa.phone === n ? '#FFFFFF' : '#1E9E6D' }}>{n}</Text></Pressable>)}
+                        </View>
+                      )}
+                      {!wa.finding && wa.looked && !wa.found.length && <Text style={{ fontSize: 12.5, color: '#8A6A1E', marginTop: 4 }}>No WhatsApp number was listed on the supplier’s page. Type it in, or leave it empty to pick a chat in WhatsApp.</Text>}
+                      <Text style={{ fontSize: 12, color: '#8A97A6', marginTop: 8 }}>WhatsApp doesn’t allow other apps to show it inside them, so the chat opens in WhatsApp with your message ready to send.</Text>
+                      <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
+                        <Pressable onPress={() => setShareBox({ ...sh, wa: undefined })} style={{ flex: 1, height: 46, borderRadius: 23, backgroundColor: '#F2F4F7', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#0B1220', fontWeight: '600' }}>Back</Text></Pressable>
+                        <Pressable onPress={open} style={{ flex: 1.4, height: 46, borderRadius: 23, backgroundColor: '#25D366', flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'center' }}>
+                          <Ionicons name="logo-whatsapp" size={18} color="#FFFFFF" /><Text style={{ color: '#FFFFFF', fontWeight: '600' }}>{digits ? 'Open chat' : 'Choose chat'}</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  );
+                })() : ([
+                  ['logo-whatsapp', '#25D366', 'WhatsApp', () => { setShareBox({ ...sh, wa: { phone: '', finding: false, found: [], looked: false } }); if (sh.url) setTimeout(() => { findSupplierPhone(sh.url).catch(() => {}); }, 0); }],
+                  ['mail-outline', '#1E56A0', 'Email (send from Nexora)', () => openMailBox({ subject: sh.title, message: sh.text, pageUrl: sh.url })],
+                  ['logo-linkedin', '#0A66C2', 'LinkedIn', () => { Linking.openURL(`https://www.linkedin.com/feed/?shareActive=true&text=${encodeURIComponent(sh.text)}`).catch(() => {}); setShareBox(null); }],
+                  ['paper-plane-outline', '#229ED9', 'Telegram', () => { Linking.openURL(`https://t.me/share/url?url=${encodeURIComponent(sh.url || '')}&text=${encodeURIComponent(sh.text)}`).catch(() => {}); setShareBox(null); }],
+                  ...(IS_WEB ? [['copy-outline', '#0B1220', 'Copy text', () => { copy(sh.text); setShareBox(null); }]] : [['ellipsis-horizontal-circle-outline', '#0B1220', 'More apps', () => { Share.share({ message: sh.text }).catch(() => {}); setShareBox(null); }]]),
+                ] as [string, string, string, () => void][]).map(([ic, col, label, go]) => (
+                  <Pressable key={label} onPress={go} accessibilityRole="button" style={(st: any) => ({ flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 13, paddingHorizontal: 6, borderBottomWidth: 1, borderBottomColor: '#F1F5F9', backgroundColor: st.hovered ? '#F7F9FC' : 'transparent', cursor: 'pointer' } as any)}>
+                    <Ionicons name={ic as any} size={22} color={col} />
+                    <Text style={{ flex: 1, fontSize: 15, color: '#0B1220' }}>{label}</Text>
+                    <Ionicons name="chevron-forward" size={16} color="#8A97A6" />
+                  </Pressable>
+                ))}
+              </Pressable>
+            )}
+          </Pressable>
+        </Modal>
+      </>
+    );
+  };
+  const marketBackRef = useRef<() => void>(() => goTab('market'));
+  const exploreBackRef = useRef<null | (() => void)>(null);
+  const loadMarket = async (cat: MarketCat = 'all', refresh = false, show = false) => {
+    const cur = market[cat];
+    if (cur?.loading) return;
+    if (!refresh && cur && !cur.error && cur.items.length && Date.now() - cur.at < 6 * 3600_000) return;
+    setMarket(m => ({ ...m, [cat]: { items: cur?.items ?? [], loading: true, error: '', at: cur?.at ?? 0 } }));
+    try {
+      // A fresh web search runs on the server in the background (up to ~2 minutes): keep checking until it's ready.
+      const fetchAll = async () => {
+        let r = await callFn('nexora-market', { action: 'opportunities', category: cat, refresh }, 30000);
+        for (let i = 0; r?.pending && i < 30; i++) {
+          if (r.opportunities?.length) setMarket(m => ({ ...m, [cat]: { items: r.opportunities as Opportunity[], loading: true, error: '', at: m[cat]?.at ?? 0 } }));
+          await new Promise(res => setTimeout(res, 6000));
+          r = await callFn('nexora-market', { action: 'opportunities', category: cat }, 30000);
+        }
+        return r;
+      };
+      // Opened by the owner: show the "NEXORA is working" screen. Background refreshes on the Market tab stay quiet.
+      const r = show
+        ? await nexoraBusy({ heading: 'AI Opportunities', title: 'NEXORA is finding opportunities\u2026', detail: cat === 'all' ? 'Suppliers, wholesale deals, used items and grants' : MARKET_CATS.find(c => c.k === cat)?.label, steps: ['Looking at your business', 'Searching suppliers and deals', 'Checking the sources', 'Matching them to your business', 'Looking for images'] }, fetchAll)
+        : await fetchAll();
+      if (r?.pending) throw new Error('The search is taking longer than usual. Please check again in a minute.');
+      setMarket(m => ({ ...m, [cat]: { items: (r.opportunities ?? []) as Opportunity[], loading: false, error: '', at: Date.now() } }));
+    } catch (e: any) {
+      setMarket(m => ({ ...m, [cat]: { items: cur?.items ?? [], loading: false, error: e?.code === 'quota' ? e.message : (e?.message || "Couldn't look for opportunities right now."), at: cur?.at ?? 0 } }));
+    }
+  };
+  const openOpportunities = (cat: MarketCat = 'all', back?: () => void) => {
+    marketBackRef.current = back ?? (() => goTab('market'));
+    setMarketCat(cat);
+    setScreen('opportunities');
+    loadMarket(cat, false, true).catch(() => {});
+  };
+  const openOpportunity = (o: Opportunity) => { setMarketOpp(o); setMarketQuote(null); setScreen('opportunityDetail'); };
+  const requestQuote = async () => {
+    if (!marketOpp || marketQuote?.loading) return;
+    setMarketQuote({ loading: true, subject: '', message: '', error: '' });
+    try {
+      const r = await nexoraBusy({ heading: 'Request a quote', title: 'NEXORA is writing your request\u2026', detail: marketOpp.supplier || marketOpp.title, steps: ['Reading the opportunity', 'Writing your request', 'Checking the details'] },
+        () => callFn('nexora-market', { action: 'quote', opportunity: marketOpp }, 45000));
+      setMarketQuote({ loading: false, subject: r.subject || `Quote request: ${marketOpp.title}`, message: r.message || '', error: '' });
+    } catch (e: any) {
+      setMarketQuote({ loading: false, subject: '', message: '', error: e?.message || "Nexora couldn't write the request right now." });
+    }
+  };
+  const openFindOnline = (back?: () => void) => { exploreBackRef.current = back ?? null; setExploreError(''); setScreen('explore'); };
+
+  // ---- Profile & settings (Figma "Profile", "AI permissions", "Security & Privacy" ...): saved in owner_settings / login_activity ----
+  type SettingsPage = 'personal' | 'business' | 'preferences' | 'notifications' | 'aiPerms' | 'aiInteraction' | 'quietHours' | 'apps' | 'team' | 'security' | 'accountSecurity' | 'password' | 'twoFactor' | 'loginActivity' | 'dataPrivacy' | 'transparency';
+  type TeamRow = { member_id: string; user_id: string; full_name: string; email: string; role: string; status: string; joined_at: string; is_me: boolean };
+  type LoginRow = { id: string; device: string; platform: string; place: string; device_key: string; created_at: string };
+  // Quiet hours & safety: when Nexora rests. Days use 0 = Sunday. tz_offset_min is the owner's time zone, so the
+  // server (nexora-agent) knows when the window is, even when the phone is off.
+  type QuietPrefs = { on: boolean; start: string; end: string; days: number[]; tz_offset_min: number; pause_replies: boolean; urgent_alerts: boolean; allow_posts: boolean; escalate_urgent: boolean };
+  const QUIET_DEFAULTS: QuietPrefs = { on: false, start: '21:00', end: '07:00', days: [0, 1, 2, 3, 4, 5, 6], tz_offset_min: -new Date().getTimezoneOffset(), pause_replies: true, urgent_alerts: true, allow_posts: true, escalate_urgent: true };
+  // "Let Nexora find partners for me" (Find partners). The weekly run happens on the server (nexora-automations).
+  type PartnerAuto = { weekly?: boolean; auto_connect?: boolean; last_run?: string; last_result?: { at?: string; matches?: number; new_strong?: number; sent?: string[]; note?: string }; seen?: string[] };
+  const AI_DEFAULTS: { paused: boolean; interaction: string; knowledge: boolean; escalate_low_confidence: boolean; process_orders: boolean; manage_inventory: boolean; handle_refunds: boolean; quiet?: QuietPrefs; partner_autopilot?: PartnerAuto } = { paused: false, interaction: 'rules', knowledge: true, escalate_low_confidence: true, process_orders: true, manage_inventory: true, handle_refunds: true };
+  const NOTIFY_DEFAULTS = { new_messages: true, leads: true, orders: true, system: true, campaign_results: false, content_suggestions: true, login_alerts: false };
+  const [settingsPage, setSettingsPage] = useState<SettingsPage>('security');
+  const settingsStackRef = useRef<SettingsPage[]>([]);
+  const settingsExitRef = useRef<() => void>(() => goTab('profile'));
+  const [ownerPrefs, setOwnerPrefs] = useState<{ ai: typeof AI_DEFAULTS; notifications: typeof NOTIFY_DEFAULTS; missing?: boolean } | null>(null);
+  const [interactionDraft, setInteractionDraft] = useState('rules');
+  const [quietDraft, setQuietDraft] = useState<QuietPrefs | null>(null);
+  const [quietPick, setQuietPick] = useState<null | 'start' | 'end'>(null);
+  const [quietSaving, setQuietSaving] = useState(false);
+  const [avatarUrl, setAvatarUrl] = useState('');
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const [team, setTeam] = useState<TeamRow[] | null>(null);
+  const [logins, setLogins] = useState<LoginRow[] | null>(null);
+  const [bizEdit, setBizEdit] = useState<null | { id: string; name: string; industry: string; country: string; saving: boolean }>(null);
+  const [personalName, setPersonalName] = useState('');
+  const [pwForm, setPwForm] = useState({ pw: '', pw2: '', saving: false, error: '' });
+  const [mfa, setMfa] = useState<null | { loading: boolean; factorId: string; enabled: boolean }>(null);
+  const [mfaEnroll, setMfaEnroll] = useState<null | { factorId: string; qr: string; secret: string; uri: string; code: string; busy: boolean; error: string }>(null);
+  const [mfaGate, setMfaGate] = useState<null | { factorId: string; code: string; busy: boolean; error: string }>(null);
+  const [exportBusy, setExportBusy] = useState(false);
+  const deviceKeyRef = useRef('');
+
+  const openSettings = (page: SettingsPage, opts: { reset?: boolean; exit?: () => void } = {}) => {
+    if (opts.reset !== false && screen !== 'settings') { settingsStackRef.current = []; settingsExitRef.current = opts.exit ?? (() => goTab('profile')); }
+    else if (screen === 'settings') settingsStackRef.current.push(settingsPage);
+    setSettingsPage(page);
+    setScreen('settings');
+    if (['aiPerms', 'aiInteraction', 'notifications', 'security', 'quietHours'].includes(page)) loadOwnerPrefs().catch(() => {});
+    if (page === 'quietHours') { setQuietDraft(null); setQuietPick(null); }
+    if (page === 'team') { loadTeam().catch(() => {}); loadMemberPerms().catch(() => {}); loadTeamTasks().catch(() => {}); }
+    if (page === 'loginActivity') loadLogins().catch(() => {});
+    if (page === 'accountSecurity' || page === 'twoFactor' || page === 'security') loadMfa().catch(() => {});
+    if (page === 'business') loadBizForm().catch(() => {});
+    if (page === 'personal') setPersonalName(fullName);
+    if (page === 'password') setPwForm({ pw: '', pw2: '', saving: false, error: '' });
+    if (page === 'twoFactor') setMfaEnroll(null);
+  };
+  const settingsBack = () => {
+    const prev = settingsStackRef.current.pop();
+    if (prev) { setSettingsPage(prev); return; }
+    settingsExitRef.current();
+  };
+  // Back from a screen opened inside settings (quiet hours, rules, billing ...) returns to that settings page.
+  const backToSettings = (page: SettingsPage) => () => { setSettingsPage(page); setScreen('settings'); };
+
+  const loadOwnerPrefs = async () => {
+    if (!userId) return;
+    const { data, error } = await supabase.from('owner_settings').select('ai,notifications').eq('user_id', userId).maybeSingle();
+    if (error) { setOwnerPrefs({ ai: { ...AI_DEFAULTS }, notifications: { ...NOTIFY_DEFAULTS }, missing: true }); return; }
+    const ai = { ...AI_DEFAULTS, ...((data?.ai as any) ?? {}) };
+    setOwnerPrefs({ ai, notifications: { ...NOTIFY_DEFAULTS, ...((data?.notifications as any) ?? {}) } });
+    setInteractionDraft(ai.interaction);
+  };
+  const saveOwnerPrefs = async (patch: { ai?: Partial<typeof AI_DEFAULTS>; notifications?: Partial<typeof NOTIFY_DEFAULTS> }, okMsg?: string) => {
+    if (!userId) return false;
+    const base = ownerPrefs ?? { ai: { ...AI_DEFAULTS }, notifications: { ...NOTIFY_DEFAULTS } };
+    const next = { ai: { ...base.ai, ...(patch.ai ?? {}) }, notifications: { ...base.notifications, ...(patch.notifications ?? {}) } };
+    setOwnerPrefs({ ...next, missing: base.missing });
+    const { error } = await supabase.from('owner_settings').upsert({ user_id: userId, ai: next.ai, notifications: next.notifications, updated_at: new Date().toISOString() });
+    if (error) { setOwnerPrefs(base); flash(/owner_settings/.test(error.message) ? 'These settings need the latest Nexora database update.' : "Couldn't save that setting."); return false; }
+    if (okMsg) flash(okMsg);
+    return true;
+  };
+  const setEmergencyPause = (on: boolean) => {
+    const run = async () => {
+      const ok = await saveOwnerPrefs({ ai: { paused: on } }, on ? 'Nexora is paused. It won’t reply to customers until you resume it.' : 'Nexora is back on.');
+      if (ok && on && awayMode) setAway(false);
+    };
+    if (!on) { run(); return; }
+    Alert.alert('Pause Nexora now?', 'Nexora stops replying to customers on every channel and takes no actions for you until you resume it.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Pause AI', style: 'destructive', onPress: () => { run(); } },
+    ]);
+  };
+  const loadTeam = async () => {
+    const { data, error } = await supabase.rpc('business_team');
+    if (error) { setTeam([]); if (__DEV__) console.log('[team]', error.message); return; }
+    setTeam((data ?? []) as TeamRow[]);
+  };
+  // ---- Referrals (tracking only, no payouts) ----
+  const [referral, setReferral] = useState<{ loading: boolean; code: string; signups: number; paid: number; error: string } | null>(null);
+  const openReferral = async () => {
+    setReferral({ loading: true, code: '', signups: 0, paid: 0, error: '' });
+    const { data, error } = await supabase.rpc('my_referrals');
+    const row = Array.isArray(data) ? data[0] : data;
+    if (error || !row) { setReferral({ loading: false, code: '', signups: 0, paid: 0, error: /function|does not exist/i.test(error?.message || '') ? 'Run the automation, team and referrals SQL script in Supabase first.' : "Couldn't load your referral link." }); return; }
+    setReferral({ loading: false, code: row.code, signups: row.signups ?? 0, paid: row.paid ?? 0, error: '' });
+  };
+  // ---- Team workspace: staff permissions (enforced by the database) and tasks assigned to people ----
+  type MemberPerms = { orders_view?: boolean; orders_manage?: boolean; customers_view?: boolean; customers_manage?: boolean };
+  type TeamTask = { id: string; title: string; details: string; due_date: string | null; status: 'open' | 'done'; assigned_to: string | null; created_by: string; created_at: string };
+  const [memberPerms, setMemberPerms] = useState<Record<string, MemberPerms>>({});
+  const [memberUser, setMemberUser] = useState<Record<string, string>>({});
+  const [teamTasks, setTeamTasks] = useState<TeamTask[] | null>(null);
+  const [taskForm, setTaskForm] = useState<{ title: string; assigned_to: string; due: string; busy: boolean } | null>(null);
+  const loadTeamTasks = async () => {
+    if (!workspace?.business_id) return;
+    const { data, error } = await supabase.from('team_tasks').select('*').eq('business_id', workspace.business_id).order('status', { ascending: true }).order('due_date', { ascending: true, nullsFirst: false }).limit(200);
+    setTeamTasks(error ? null : ((data ?? []) as TeamTask[]));
+  };
+  const loadMemberPerms = async () => {
+    if (!workspace?.business_id) return;
+    const { data } = await supabase.from('business_members').select('id,user_id,permissions').eq('business_id', workspace.business_id);
+    const perms: Record<string, MemberPerms> = {}, users: Record<string, string> = {};
+    for (const r of (data ?? []) as any[]) { perms[r.id] = r.permissions || {}; users[r.id] = r.user_id; }
+    setMemberPerms(perms); setMemberUser(users);
+  };
+  const myOpenTasks = () => (teamTasks ?? []).filter(t => t.status === 'open' && (t.assigned_to === userId || (!t.assigned_to && workspace?.role === 'owner')));
+  const toggleMemberPerm = async (memberId: string, key: keyof MemberPerms, value: boolean) => {
+    const next = { ...(memberPerms[memberId] || {}), [key]: value };
+    if (key === 'orders_manage' && value) next.orders_view = true;
+    if (key === 'customers_manage' && value) next.customers_view = true;
+    if (key === 'orders_view' && !value) next.orders_manage = false;
+    if (key === 'customers_view' && !value) next.customers_manage = false;
+    setMemberPerms(p => ({ ...p, [memberId]: next }));
+    const { error } = await supabase.rpc('set_member_permissions', { p_member: memberId, p_permissions: next });
+    if (error) { flash(/function|does not exist/i.test(error.message) ? 'Run the automation, team and referrals SQL script in Supabase first.' : "Couldn't change access."); loadMemberPerms().catch(() => {}); }
+  };
+  const saveTask = async () => {
+    const f = taskForm;
+    if (!f || !workspace?.business_id || !userId) return;
+    if (!f.title.trim()) return;
+    if (f.due && !/^\d{4}-\d{2}-\d{2}$/.test(f.due)) { flash('Due date should look like 2026-11-30.'); return; }
+    setTaskForm({ ...f, busy: true });
+    const { error } = await supabase.from('team_tasks').insert({ business_id: workspace.business_id, created_by: userId, title: f.title.trim().slice(0, 200), assigned_to: f.assigned_to || null, due_date: f.due || null });
+    if (error) { setTaskForm(x => x && { ...x, busy: false }); flash(/does not exist|schema cache/i.test(error.message) ? 'Run the automation, team and referrals SQL script in Supabase first.' : "Couldn't add the task."); return; }
+    setTaskForm(null); loadTeamTasks().catch(() => {}); flash('Task added');
+  };
+  const removeMember = (m: TeamRow) => {
+    Alert.alert('Remove from team?', `${m.full_name} will lose access to ${workspace?.name || 'your business'} on Nexora.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Remove', style: 'destructive', onPress: async () => {
+        const { error } = await supabase.from('business_members').delete().eq('id', m.member_id);
+        if (error) { flash("Couldn't remove that person."); return; }
+        flash(`${m.full_name} was removed`);
+        loadTeam().catch(() => {});
+      } },
+    ]);
+  };
+  const loadLogins = async () => {
+    const { data, error } = await supabase.from('login_activity').select('id,device,platform,place,device_key,created_at').order('created_at', { ascending: false }).limit(30);
+    setLogins(error ? [] : ((data ?? []) as LoginRow[]));
+  };
+  const loadBizForm = async () => {
+    if (!userId) return;
+    const { data } = await supabase.from('businesses').select('id,name,industry,country').eq('owner_id', userId).maybeSingle();
+    setBizEdit(data ? { id: data.id, name: data.name ?? '', industry: data.industry ?? '', country: data.country ?? '', saving: false } : null);
+  };
+  const saveBizForm = async () => {
+    if (!bizEdit || bizEdit.saving) return;
+    if (!bizEdit.name.trim()) { flash('Add your business name.'); return; }
+    setBizEdit({ ...bizEdit, saving: true });
+    const { error } = await supabase.from('businesses').update({ name: bizEdit.name.trim(), industry: bizEdit.industry.trim(), country: bizEdit.country.trim(), updated_at: new Date().toISOString() }).eq('id', bizEdit.id);
+    setBizEdit(f => f && { ...f, saving: false });
+    if (error) { flash("Couldn't save your business details."); return; }
+    loadWorkspaceInfo().catch(() => {});
+    flash('Business details saved');
+  };
+  const savePersonal = async () => {
+    if (!userId) return;
+    const name = personalName.trim();
+    if (!name) { flash('Add your name.'); return; }
+    const { error } = await supabase.from('profiles').update({ full_name: name }).eq('id', userId);
+    if (error) { flash("Couldn't save your name."); return; }
+    setFullName(name);
+    supabase.auth.updateUser({ data: { full_name: name } }).catch(() => {});
+    flash('Saved');
+  };
+  const changeAvatar = async (from: 'camera' | 'library') => {
+    if (!userId || avatarBusy) return;
+    try {
+      if (from === 'camera') {
+        const p = await ImagePicker.requestCameraPermissionsAsync();
+        if (!p.granted) { flash('Allow camera access to take a photo.'); return; }
+      }
+      const opts: any = { mediaTypes: ['images'], allowsEditing: true, aspect: [1, 1], quality: 0.8 };
+      const r = from === 'camera' ? await ImagePicker.launchCameraAsync(opts) : await ImagePicker.launchImageLibraryAsync(opts);
+      if (r.canceled || !r.assets?.[0]?.uri) return;
+      setAvatarBusy(true);
+      const url = await uploadKnowledgeImage(r.assets[0].uri);
+      if (!url) throw new Error('upload');
+      const { error } = await supabase.from('profiles').update({ avatar_url: url }).eq('id', userId);
+      if (error) throw error;
+      setAvatarUrl(url);
+      flash('Profile photo updated');
+    } catch { flash("Couldn't update your photo. Please try again."); }
+    finally { setAvatarBusy(false); }
+  };
+  const pickAvatar = () => {
+    if (IS_WEB) { changeAvatar('library'); return; }
+    Alert.alert('Profile photo', undefined, [
+      { text: 'Take photo', onPress: () => { changeAvatar('camera'); } },
+      { text: 'Choose from photos', onPress: () => { changeAvatar('library'); } },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+  const changePassword = async () => {
+    if (pwForm.saving) return;
+    if (pwForm.pw.length < 8) { setPwForm(f => ({ ...f, error: 'Use at least 8 characters.' })); return; }
+    if (pwForm.pw !== pwForm.pw2) { setPwForm(f => ({ ...f, error: "The passwords don't match." })); return; }
+    setPwForm(f => ({ ...f, saving: true, error: '' }));
+    const { error } = await supabase.auth.updateUser({ password: pwForm.pw });
+    if (error) { setPwForm(f => ({ ...f, saving: false, error: /reauth|recent/i.test(error.message) ? 'For your safety, sign out and use "Forgot password" to set a new one.' : error.message })); return; }
+    setPwForm({ pw: '', pw2: '', saving: false, error: '' });
+    flash('Password changed');
+    settingsBack();
+  };
+  const loadMfa = async () => {
+    setMfa(m => ({ loading: true, factorId: m?.factorId ?? '', enabled: m?.enabled ?? false }));
+    try {
+      const { data, error } = await supabase.auth.mfa.listFactors();
+      if (error) throw error;
+      const f = (data?.totp ?? []).find((x: any) => x.status === 'verified');
+      setMfa({ loading: false, factorId: f?.id ?? '', enabled: !!f });
+    } catch { setMfa({ loading: false, factorId: '', enabled: false }); }
+  };
+  const startMfaEnroll = async () => {
+    try {
+      // Unfinished set-ups are cleared first (Supabase allows only a few pending factors).
+      const { data: list } = await supabase.auth.mfa.listFactors();
+      for (const f of ((list as any)?.all ?? []).filter((x: any) => x.status !== 'verified')) await supabase.auth.mfa.unenroll({ factorId: f.id }).catch(() => {});
+      const { data, error } = await supabase.auth.mfa.enroll({ factorType: 'totp', friendlyName: `Nexora ${Date.now().toString(36)}` });
+      if (error) throw error;
+      setMfaEnroll({ factorId: data.id, qr: (data as any).totp?.qr_code ?? '', secret: (data as any).totp?.secret ?? '', uri: (data as any).totp?.uri ?? '', code: '', busy: false, error: '' });
+    } catch (e: any) { flash(/mfa|factor/i.test(String(e?.message)) && /disabled|not enabled/i.test(String(e?.message)) ? 'Two-factor sign-in isn’t switched on for Nexora yet.' : (e?.message || "Couldn't start two-factor set-up.")); }
+  };
+  const verifyMfaEnroll = async () => {
+    if (!mfaEnroll || mfaEnroll.busy) return;
+    const code = mfaEnroll.code.replace(/\D/g, '');
+    if (code.length !== 6) { setMfaEnroll({ ...mfaEnroll, error: 'Enter the 6-digit code from your app.' }); return; }
+    setMfaEnroll({ ...mfaEnroll, busy: true, error: '' });
+    const { error } = await supabase.auth.mfa.challengeAndVerify({ factorId: mfaEnroll.factorId, code });
+    if (error) { setMfaEnroll(m => m && { ...m, busy: false, error: 'That code didn’t work. Check the time on your phone and try the newest code.' }); return; }
+    setMfaEnroll(null);
+    flash('Two-factor authentication is on');
+    loadMfa().catch(() => {});
+  };
+  const disableMfa = () => {
+    if (!mfa?.factorId) return;
+    Alert.alert('Turn off two-factor?', 'Signing in will only need your password.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Turn off', style: 'destructive', onPress: async () => {
+        const { error } = await supabase.auth.mfa.unenroll({ factorId: mfa.factorId });
+        if (error) { flash(/aal2/i.test(error.message) ? 'Sign out and sign in again with your code, then try once more.' : "Couldn't turn it off."); return; }
+        flash('Two-factor authentication is off');
+        loadMfa().catch(() => {});
+      } },
+    ]);
+  };
+  // After sign-in: an account with two-factor needs the code before the app opens.
+  const checkMfaGate = async () => {
+    try {
+      const { data } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+      if (data?.nextLevel === 'aal2' && data.currentLevel !== 'aal2') {
+        const { data: list } = await supabase.auth.mfa.listFactors();
+        const f = (list?.totp ?? []).find((x: any) => x.status === 'verified');
+        if (f) setMfaGate({ factorId: f.id, code: '', busy: false, error: '' });
+      }
+    } catch { /* older auth server: no two-factor */ }
+  };
+  const submitMfaGate = async () => {
+    if (!mfaGate || mfaGate.busy) return;
+    const code = mfaGate.code.replace(/\D/g, '');
+    if (code.length !== 6) { setMfaGate({ ...mfaGate, error: 'Enter the 6-digit code.' }); return; }
+    setMfaGate({ ...mfaGate, busy: true, error: '' });
+    const { error } = await supabase.auth.mfa.challengeAndVerify({ factorId: mfaGate.factorId, code });
+    if (error) { setMfaGate(g => g && { ...g, busy: false, error: 'That code didn’t work. Try the newest code in your app.' }); return; }
+    setMfaGate(null);
+  };
+  // Login activity: one row per device per sign-in (at most every 6 hours, so app restarts don't flood it).
+  const deviceName = (): { device: string; platform: string } => {
+    if (IS_WEB) {
+      const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+      const os = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android phone' : /Mac OS X/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows PC' : /Linux/.test(ua) ? 'Linux PC' : 'Computer';
+      const br = /Edg\//.test(ua) ? 'Edge' : /Chrome\//.test(ua) ? 'Chrome' : /Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : 'Browser';
+      return { device: `${os} · ${br}`, platform: 'Web' };
+    }
+    const c: any = (Platform as any).constants ?? {};
+    const model = Platform.OS === 'android' ? [c.Brand, c.Model].filter(Boolean).join(' ').replace(/^(\w)/, (m: string) => m.toUpperCase()) : (Platform as any).isPad ? 'iPad' : 'iPhone';
+    return { device: model || (Platform.OS === 'ios' ? 'iPhone' : 'Android phone'), platform: 'Mobile App' };
+  };
+  const placeName = () => {
+    try { const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; return tz.split('/').pop()!.replace(/_/g, ' '); } catch { return ''; }
+  };
+  const getDeviceKey = async () => {
+    if (deviceKeyRef.current) return deviceKeyRef.current;
+    const fresh = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    let k = '';
+    try {
+      if (IS_WEB) { k = window.localStorage.getItem('nexora-device-key') || ''; if (!k) { k = fresh(); window.localStorage.setItem('nexora-device-key', k); } }
+      else if (FileSystem.documentDirectory) {
+        const p = `${FileSystem.documentDirectory}nexora-device-key.txt`;
+        const info = await FileSystem.getInfoAsync(p);
+        if (info.exists) k = (await FileSystem.readAsStringAsync(p)).trim();
+        if (!k) { k = fresh(); await FileSystem.writeAsStringAsync(p, k); }
+      }
+    } catch { /* storage blocked */ }
+    deviceKeyRef.current = k || fresh();
+    return deviceKeyRef.current;
+  };
+  const recordLogin = async (uid: string) => {
+    try {
+      const key = await getDeviceKey();
+      const { data } = await supabase.from('login_activity').select('created_at').eq('device_key', key).order('created_at', { ascending: false }).limit(1);
+      if (data?.[0] && Date.now() - new Date(data[0].created_at).getTime() < 6 * 3600_000) return;
+      const d = deviceName();
+      await supabase.from('login_activity').insert({ user_id: uid, device: d.device.slice(0, 120), platform: d.platform, place: placeName().slice(0, 120), device_key: key });
+    } catch { /* table not installed yet */ }
+  };
+  const signOutOthers = () => {
+    Alert.alert('Sign out other devices?', 'Every other phone or browser signed in to your account will be signed out. This device stays signed in.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Sign out others', style: 'destructive', onPress: async () => {
+        const { error } = await supabase.auth.signOut({ scope: 'others' });
+        flash(error ? "Couldn't sign out the other devices." : 'Other devices were signed out');
+      } },
+    ]);
+  };
+  const exportMyData = async () => {
+    if (!userId || exportBusy) return;
+    setExportBusy(true);
+    await nexoraBusy({ heading: 'Data export', title: 'NEXORA is preparing your data\u2026', steps: ['Collecting your data', 'Packaging your file', 'Preparing the download'] }, async () => {
+    try {
+      const pick = async (table: string, cols = '*', limit = 5000) => { const { data } = await supabase.from(table).select(cols).limit(limit); return data ?? []; };
+      const [profile, business, knowledge, customers, orders, schedule, chats, goals, rules, settings, logs] = await Promise.all([
+        pick('profiles'), pick('businesses'), pick('knowledge_items'), pick('customers'), pick('orders'), pick('schedule_events'),
+        pick('chat_messages', 'role,text,created_at', 2000), pick('business_goals'), pick('owner_rules'), pick('owner_settings'), pick('login_activity'),
+      ]);
+      const out = { exported_at: new Date().toISOString(), account: { email: userEmail }, profile, business, knowledge, customers, orders, schedule, chats, goals, rules, settings, login_activity: logs };
+      const text = JSON.stringify(out, null, 2);
+      const name = `nexora-data-${localIsoDate()}.json`;
+      if (IS_WEB) {
+        const blob = new Blob([text], { type: 'application/json' });
+        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+        flash('Your data was downloaded');
+      } else if (Platform.OS === 'android' && (FileSystem as any).StorageAccessFramework) {
+        const SAF = (FileSystem as any).StorageAccessFramework;
+        const perm = await SAF.requestDirectoryPermissionsAsync();
+        if (!perm.granted) { flash('Choose a folder to save your data.'); return; }
+        const uri = await SAF.createFileAsync(perm.directoryUri, name.replace(/\.json$/, ''), 'application/json');
+        await FileSystem.writeAsStringAsync(uri, text);
+        flash('Your data was saved');
+      } else {
+        const p = `${FileSystem.documentDirectory}${name}`;
+        await FileSystem.writeAsStringAsync(p, text);
+        await Share.share({ url: p, title: name });
+      }
+    } catch { flash("Couldn't export your data. Please try again."); }
+    });
+    setExportBusy(false);
+  };
+
+  // ---- Push notifications (phones): register this phone so Nexora can alert the owner (see nexora-push) ----
+  const pushTokenRef = useRef('');
+  const [pushStatus, setPushStatus] = useState<'unknown' | 'on' | 'off' | 'denied' | 'unsupported'>('unknown');
+  const registerPush = async (uid: string, ask = true) => {
+    try {
+      // Expo Go and the web can't receive push notifications (only the real app built with EAS can).
+      if (!Notifications || IS_WEB || !Device.isDevice) { setPushStatus('unsupported'); return; }
+      if (Platform.OS === 'android') await Notifications.setNotificationChannelAsync('default', { name: 'Nexora', importance: Notifications.AndroidImportance.HIGH, lightColor: '#1E56A0' });
+      let { status } = await Notifications.getPermissionsAsync();
+      if (status !== 'granted' && ask) status = (await Notifications.requestPermissionsAsync()).status;
+      if (status !== 'granted') { setPushStatus(ask ? 'denied' : 'off'); return; }
+      const projectId = (Constants.expoConfig as any)?.extra?.eas?.projectId ?? (Constants as any).easConfig?.projectId;
+      const token = (await Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined)).data;
+      pushTokenRef.current = token;
+      await supabase.from('push_tokens').upsert({ token, user_id: uid, platform: Platform.OS, device_key: await getDeviceKey(), updated_at: new Date().toISOString() });
+      setPushStatus('on');
+    } catch (e: any) {
+      if (__DEV__) console.log('[push]', e?.message);
+      setPushStatus('off');
+    }
+  };
+  // Tapping a notification opens the right place.
+  useEffect(() => {
+    if (!Notifications) return;
+    const sub = Notifications.addNotificationResponseReceivedListener(r => {
+      const d: any = r.notification.request.content.data ?? {};
+      switch (d.screen) {
+        case 'attention': refreshEscalations().catch(() => {}); setScreen('agendaPriority'); break;
+        case 'orders': openOrders('Unshipped'); break;
+        case 'leads': openLeads(); break;
+        case 'inbox': goTab('inbox'); loadConversations().catch(() => {}); break;
+        case 'loginActivity': openSettings('loginActivity'); break;
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
+  // ---- Biometric login: Face ID / fingerprint unlocks the app on this phone ----
+  const BIO_KEY = 'nexora-biometric-lock';
+  const [bioEnabled, setBioEnabled] = useState(false);
+  const [bioLocked, setBioLocked] = useState(false);
+  const [bioLabel, setBioLabel] = useState('fingerprint or face');
+  const bgAtRef = useRef(0);
+  const bioAvailable = async () => {
+    if (IS_WEB) return false;
+    try {
+      if (!(await LocalAuthentication.hasHardwareAsync()) || !(await LocalAuthentication.isEnrolledAsync())) return false;
+      const types = await LocalAuthentication.supportedAuthenticationTypesAsync();
+      setBioLabel(types.includes(LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION) ? (Platform.OS === 'ios' ? 'Face ID' : 'face unlock') : Platform.OS === 'ios' ? 'Touch ID' : 'fingerprint');
+      return true;
+    } catch { return false; }
+  };
+  const unlockWithBio = async () => {
+    try {
+      const r = await LocalAuthentication.authenticateAsync({ promptMessage: 'Unlock Nexora', cancelLabel: 'Cancel', disableDeviceFallback: false });
+      if (r.success) setBioLocked(false);
+    } catch { /* stays locked */ }
+  };
+  const loadBioSetting = async () => {
+    if (IS_WEB) return;
+    try {
+      const on = (await SecureStore.getItemAsync(BIO_KEY)) === '1';
+      setBioEnabled(on);
+      if (on && (await bioAvailable())) { setBioLocked(true); unlockWithBio(); }
+    } catch { /* no secure storage */ }
+  };
+  const toggleBio = async (v: boolean) => {
+    if (!v) { await SecureStore.deleteItemAsync(BIO_KEY).catch(() => {}); setBioEnabled(false); flash('Biometric login is off'); return; }
+    if (!(await bioAvailable())) { flash('Set up a fingerprint or face unlock in your phone settings first.'); return; }
+    const r = await LocalAuthentication.authenticateAsync({ promptMessage: 'Confirm it’s you' }).catch(() => null);
+    if (!r?.success) return;
+    await SecureStore.setItemAsync(BIO_KEY, '1').catch(() => {});
+    setBioEnabled(true);
+    flash(`Nexora will ask for your ${bioLabel} when it opens`);
+  };
+  // Locks again when the app comes back after more than a minute in the background (not after Paystack or Facebook login).
+  useEffect(() => {
+    if (IS_WEB) return;
+    const sub = AppState.addEventListener('change', st => {
+      if (st !== 'active') { bgAtRef.current = Date.now(); return; }
+      if (bioEnabled && userId && !awaitingReturnRef.current && bgAtRef.current && Date.now() - bgAtRef.current > 60_000) { setBioLocked(true); unlockWithBio(); }
+    });
+    return () => sub.remove();
+  }, [bioEnabled, userId]);
+  const [marketAsk, setMarketAsk] = useState('');
+  const [truthAsk, setTruthAsk] = useState('');
+  useEffect(() => { if (userId && screen === 'main' && mainTab === 'market') loadMarket('all').catch(() => {}); }, [userId, screen, mainTab]);
+  const OPP_ICON: Record<string, string> = { wholesale: 'bus-outline', supplier: 'cube-outline', used: 'repeat-outline', rental: 'sync-circle-outline', auction: 'hammer-outline', grant: 'gift-outline' };
+  const renderOppImage = (o: Opportunity, w: number | '100%', h: number, r = 12) => (
+    o.image
+      ? <ExpoImage source={{ uri: o.image }} style={{ width: w as any, height: h, borderRadius: r, backgroundColor: '#E8EEF6' }} contentFit="cover" cachePolicy="memory-disk" transition={200} />
+      : <View style={{ width: w as any, height: h, borderRadius: r, backgroundColor: '#E8EEF6', alignItems: 'center', justifyContent: 'center' }}><Ionicons name={(OPP_ICON[o.category] || 'pricetag-outline') as any} size={Math.min(34, h / 2.5)} color="#1E56A0" /></View>
+  );
+  const oppGain = (o: Opportunity) => o.savings || (o.valid_until ? `Open until ${o.valid_until}` : o.location);
+  const renderOppCard = (o: Opportunity, withWhy: boolean) => (
+    <Pressable key={o.id} onPress={() => openOpportunity(o)} accessibilityRole="button" accessibilityLabel={o.title}
+      style={{ borderRadius: 16, borderWidth: 1, borderColor: '#E6EAF0', backgroundColor: '#FFFFFF', padding: 16, marginBottom: 10 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+        {renderOppImage(o, 80, 80)}
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={{ alignSelf: 'flex-start', color: '#FFFFFF', backgroundColor: '#1E56A0', fontSize: 11, fontWeight: '600', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 10, overflow: 'hidden' }}>
+            {withWhy ? (o.match === 'High' ? 'High Match' : 'Good Match') : o.category_label}
+          </Text>
+          <Text style={{ fontSize: 16, fontWeight: '600', color: '#0B1220', marginTop: 6 }} numberOfLines={2}>{o.title}</Text>
+          {!!o.supplier && <Text style={{ fontSize: 13, color: '#6B7A8C', marginTop: 2 }} numberOfLines={1}>{o.supplier}</Text>}
+          {!!oppGain(o) && (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6 }}>
+              <Ionicons name="arrow-up-circle-outline" size={15} color="#1E9E6D" style={{ transform: [{ rotate: '45deg' }] }} />
+              <Text style={{ fontSize: 13, color: '#1E56A0', flex: 1 }} numberOfLines={1}>{oppGain(o)}</Text>
+            </View>
+          )}
+        </View>
+        <Ionicons name="chevron-forward" size={18} color="#6B7A8C" />
+      </View>
+      {withWhy && !!o.why && (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 12, borderRadius: 12, backgroundColor: '#E9F1F5', padding: 12 }}>
+          <Ionicons name="sparkles" size={20} color="#4FA3E0" />
+          <Text style={{ flex: 1, fontSize: 13, lineHeight: 18, color: '#1A9CC4' }}>{o.why}</Text>
+        </View>
+      )}
+    </Pressable>
+  );
   const TREND_LOOK: Record<string, { icon: string; color: string; bg: string; label: string }> = {
     demand: { icon: 'trending-up', color: '#1E9E6D', bg: '#E6F4ED', label: 'Demand' },
     social: { icon: 'logo-instagram', color: '#C2367C', bg: '#FBE8F1', label: 'Social' },
@@ -4781,7 +6371,7 @@ function HomeScreenInner(){
     if (!isOwnerUser || learnBusy) return;
     if (force) setLearnBusy('run');
     try {
-      const r = await callFn('nexora-learn', { action: 'run', force }, 90000);
+      const r = force ? await nexoraBusy({ heading: 'Learning', title: 'NEXORA is learning from your chats\u2026', steps: ['Reading recent chats', 'Finding new facts', 'Checking them against your knowledge', 'Saving what it learned'] }, () => callFn('nexora-learn', { action: 'run', force }, 90000)) : await callFn('nexora-learn', { action: 'run', force }, 90000);
       if (r?.learned > 0) { refreshKnowledge().catch(() => {}); syncRag(true).catch(() => {}); }
       if (force) flash(r?.learned > 0 ? `Nexora learned ${r.learned} new thing${r.learned === 1 ? '' : 's'} from your chats` : (r?.skipped || 'Nothing new to learn yet.'));
       loadLearnStatus().catch(() => {});
@@ -4792,7 +6382,7 @@ function HomeScreenInner(){
     if (!isOwnerUser || learnBusy) return;
     setLearnBusy('research');
     try {
-      const r = await callFn('nexora-web', { action: 'research' }, 120000);
+      const r = await nexoraBusy({ heading: 'Research my business', title: 'NEXORA is researching your business online\u2026', steps: ['Looking at your business', 'Searching the web', 'Checking the sources', 'Saving facts to your knowledge'] }, () => callFn('nexora-web', { action: 'research' }, 120000));
       setResearchFacts(r.facts ?? []);
       flash(`Saved ${r.saved ?? 0} facts from the web to your knowledge`);
       loadLearnStatus().catch(() => {});
@@ -4851,19 +6441,63 @@ function HomeScreenInner(){
   const [netWebFocus, setNetWebFocus] = useState('');
   const searchPartnersWeb = async () => {
     setNetWebLoading(true); setNetWebError('');
-    try { const r = await callFn('nexora-web', { action: 'partners', focus: netWebFocus.trim() || undefined }, 90000); setNetWeb(r.results ?? []); }
+    try { const r = await nexoraBusy({ heading: 'Find partners', title: 'NEXORA is looking for partners\u2026', steps: ['Looking at what you offer and need', 'Searching the web', 'Checking the businesses', 'Picking the best matches'] }, () => callFn('nexora-web', { action: 'partners', focus: netWebFocus.trim() || undefined }, 90000)); setNetWeb(r.results ?? []); }
     catch (e: any) { setNetWebError(e?.message || "Couldn't search the web right now."); }
     finally { setNetWebLoading(false); }
   };
   const loadNetMatches = async () => {
-    try { const r = await callFn('nexora-network', { action: 'matches' }, 60000); setNetMatches(r.matches ?? []); }
+    try { const r = await nexoraBusy({ heading: 'Find partners', title: 'NEXORA is matching you with partners\u2026', steps: ['Reading your partner profile', 'Comparing businesses', 'Ranking the best matches'] }, () => callFn('nexora-network', { action: 'matches' }, 60000)); setNetMatches(r.matches ?? []); }
     catch (e: any) { setNetMatches([]); setNetError(e?.message || "Couldn't load matches."); }
+  };
+  const [netAuto, setNetAuto] = useState<{ busy: boolean; result: string; error: string }>({ busy: false, result: '', error: '' });
+  const [homeAsk, setHomeAsk] = useState('');   // the Ask Nexora box on the web Home
+  // Saves the partner autopilot settings on top of the latest server copy (the weekly run keeps its own notes there).
+  const savePartnerAuto = async (patch: Partial<PartnerAuto>) => {
+    if (!userId) return false;
+    const { data, error: re } = await supabase.from('owner_settings').select('ai,notifications').eq('user_id', userId).maybeSingle();
+    if (re) { flash('These settings need the latest Nexora database update.'); return false; }
+    const ai = { ...AI_DEFAULTS, ...((data?.ai as any) ?? {}) };
+    const notifications = { ...NOTIFY_DEFAULTS, ...((data?.notifications as any) ?? {}) };
+    const nextAi = { ...ai, partner_autopilot: { ...(ai.partner_autopilot ?? {}), ...patch } };
+    const { error } = await supabase.from('owner_settings').upsert({ user_id: userId, ai: nextAi, notifications, updated_at: new Date().toISOString() });
+    if (error) { flash("Couldn't save that setting."); return false; }
+    setOwnerPrefs(p => ({ ai: nextAi, notifications, missing: p?.missing }));
+    return true;
+  };
+  // "Find partners for me now": Nexora writes and publishes the profile if needed, matches, and (if allowed) sends introductions.
+  const runPartnerAutopilot = (opts: { thenWeekly?: boolean } = {}) => {
+    const go = async () => {
+      const auto = ownerPrefs?.ai.partner_autopilot ?? {};
+      setNetAuto({ busy: true, result: '', error: '' });
+      try {
+        const r = await nexoraBusy({ heading: 'Find partners', title: 'NEXORA is finding partners for you\u2026', steps: ['Reading your business', 'Publishing your partner profile', 'Matching you with businesses that fit', auto.auto_connect ? 'Writing introductions' : 'Ranking the best matches'] },
+          () => callFn('nexora-network', { action: 'autopilot', publish: true, auto_connect: !!auto.auto_connect, max: 3 }, 90000));
+        const parts: string[] = [];
+        if (r.created_profile) parts.push('Nexora wrote and published your partner profile.');
+        parts.push(r.strong ? `${r.strong} strong match${r.strong === 1 ? '' : 'es'} found${r.matches > r.strong ? ` (${r.matches} in total)` : ''}.` : r.matches ? `${r.matches} possible match${r.matches === 1 ? '' : 'es'}, none strong yet.` : 'No businesses in the network fit yet. Nexora keeps looking.');
+        if (r.sent?.length) parts.push(`Introductions sent to ${r.sent.join(', ')}. You'll see their contacts when they accept.`);
+        parts.push('Web suggestions are below.');
+        setNetAuto({ busy: false, result: parts.join(' '), error: '' });
+        if (opts.thenWeekly) await savePartnerAuto({ weekly: true });
+        if (r.created_profile) await openNetwork(); else { setNetVisible(true); setNetMatches(null); loadNetMatches().catch(() => {}); }
+        loadNetConnections().catch(() => {});
+        // Also look beyond Nexora: businesses on the web that fit (shown in "Also on the web").
+        setNetWebLoading(true); setNetWebError('');
+        callFn('nexora-web', { action: 'partners' }, 90000).then(w => setNetWeb(w.results ?? [])).catch((e: any) => setNetWebError(e?.message || "Couldn't search the web right now.")).finally(() => setNetWebLoading(false));
+      } catch (e: any) { setNetAuto({ busy: false, result: '', error: e?.message || "Couldn't find partners right now." }); }
+    };
+    if (netVisible) { go(); return; }
+    Alert.alert('Let Nexora set this up?', 'Nexora will write a partner profile from your business details and make it visible to other businesses on Nexora. Your phone, email and website stay private until you accept a request. You can edit or hide the profile any time.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Publish and find partners', onPress: () => { go(); } },
+    ]);
   };
   const loadNetConnections = async () => {
     try { const r = await callFn('nexora-network', { action: 'connections' }); setNetConnections(r.connections ?? []); } catch { /* shown as empty */ }
   };
   const openNetwork = async () => {
     setScreen('network'); setNetError(''); setNetLoading(true);
+    loadOwnerPrefs().catch(() => {});
     try {
       const r = await callFn('nexora-network', { action: 'get' });
       if (r.profile) {
@@ -4882,7 +6516,7 @@ function HomeScreenInner(){
   const draftNetProfile = async () => {
     setNetBusy('draft');
     try {
-      const r = await callFn('nexora-network', { action: 'draft' }, 60000);
+      const r = await nexoraBusy({ heading: 'Partner profile', title: 'NEXORA is writing your partner profile\u2026', steps: ['Reading your business', 'Writing what you offer and need', 'Checking the details'] }, () => callFn('nexora-network', { action: 'draft' }, 60000));
       const p = r.profile ?? {};
       setNetForm(f => ({ ...f, display_name: p.display_name || f.display_name, industry: p.industry || f.industry, city: p.city || f.city, country: p.country || f.country, bio: p.bio || f.bio, offers: p.offers || f.offers, needs: p.needs || f.needs, tags: (p.tags ?? []).join(', ') || f.tags }));
       flash('Nexora drafted your profile. Check it, then save.');
@@ -4928,7 +6562,9 @@ function HomeScreenInner(){
   const AUTH_SCREENS: Screen[] = ['launch', 'onboarding', 'signup', 'login', 'forgotPassword', 'verifyEmail'];
   // ---- Terms of Use inside the app ----
   const termsReturnRef = useRef<{ screen: Screen; tab: MainTab }>({ screen: 'main', tab: 'profile' });
-  const openTerms = () => { termsReturnRef.current = { screen, tab: mainTab }; setScreen('terms'); };
+  const [legalDoc, setLegalDoc] = useState<'terms' | 'privacy'>('terms');
+  const openTerms = () => { termsReturnRef.current = { screen, tab: mainTab }; setLegalDoc('terms'); setScreen('terms'); };
+  const openPrivacy = () => { termsReturnRef.current = { screen, tab: mainTab }; setLegalDoc('privacy'); setScreen('terms'); };
   const closeTerms = () => { setMainTab(termsReturnRef.current.tab); setScreen(termsReturnRef.current.screen); };
 
   // ---- 4-digit email code after sign-up (only once Nexora's email sender is set up) ----
@@ -4988,10 +6624,46 @@ function HomeScreenInner(){
   const loadInsights = async (refresh = false) => {
     setInsightsError(''); setInsightsLoading(true);
     try {
-      const r = await callFn('nexora-insights', { action: 'insights', refresh, tz_offset_min: -new Date().getTimezoneOffset() }, 90000);
+      const r = await nexoraBusy({ heading: 'Business Insights', title: 'NEXORA is analyzing your business\u2026', steps: ['Reading your orders', 'Analyzing your customers', 'Checking your goals', 'Finding problems and opportunities', 'Writing recommendations'] },
+        () => callFn('nexora-insights', { action: 'insights', refresh, tz_offset_min: -new Date().getTimezoneOffset() }, 90000));
       setInsights({ ...r, loaded_at: Date.now() });
     } catch (e: any) { setInsightsError(e?.message || "Couldn't load your insights."); }
     finally { setInsightsLoading(false); }
+  };
+  // Business goals: the owner sets up to 3 targets in Business Insights; Nexora tracks them and coaches towards them.
+  type GoalForm = { id?: string; kind: 'revenue' | 'orders' | 'customers' | 'custom'; title: string; target: string; period: 'week' | 'month' | 'quarter' | 'year' | 'date'; deadline: string; why: string; unit: string; progress: string };
+  const [goalForm, setGoalForm] = useState<GoalForm | null>(null);
+  const [goalBusy, setGoalBusy] = useState(false);
+  const GOAL_PERIOD_WORD: Record<GoalForm['period'], string> = { week: 'this week', month: 'this month', quarter: 'this quarter', year: 'this year', date: 'by the date' };
+  const newGoal = (): GoalForm => ({ kind: 'revenue', title: '', target: '', period: 'month', deadline: '', why: '', unit: '', progress: '' });
+  const editGoal = (g: any) => setGoalForm({ id: g.id, kind: g.kind, title: g.title, target: String(g.target ?? ''), period: g.period, deadline: g.deadline || '', why: g.why || '', unit: g.unit || '', progress: g.kind === 'custom' ? String(g.current ?? '') : '' });
+  const saveGoal = async () => {
+    if (!goalForm || goalBusy) return;
+    const target = Number(String(goalForm.target).replace(/[^0-9.]/g, ''));
+    if (!target || target <= 0) { flash('Enter a target above zero'); return; }
+    if (goalForm.period === 'date' && !/^\d{4}-\d{2}-\d{2}$/.test(goalForm.deadline.trim())) { flash('Enter the date like 2026-12-31'); return; }
+    const amount = target.toLocaleString();
+    const auto = goalForm.kind === 'revenue' ? `Reach ${amount} in sales ${GOAL_PERIOD_WORD[goalForm.period]}`
+      : goalForm.kind === 'orders' ? `Get ${amount} orders ${GOAL_PERIOD_WORD[goalForm.period]}`
+      : goalForm.kind === 'customers' ? `Win ${amount} new customers ${GOAL_PERIOD_WORD[goalForm.period]}`
+      : `Reach ${amount} ${goalForm.unit.trim() || ''}`.trim();
+    setGoalBusy(true);
+    try {
+      await callFn('nexora-insights', {
+        action: 'goal_save', id: goalForm.id, kind: goalForm.kind, title: goalForm.title.trim() || auto, target, period: goalForm.period,
+        deadline: goalForm.period === 'date' ? goalForm.deadline.trim() : null, why: goalForm.why.trim(), unit: goalForm.unit.trim(),
+        progress: goalForm.kind === 'custom' && goalForm.progress.trim() ? Number(goalForm.progress.replace(/[^0-9.]/g, '')) : null,
+        tz_offset_min: -new Date().getTimezoneOffset(),
+      });
+      setGoalForm(null);
+      flash(goalForm.id ? 'Goal updated' : 'Goal saved. Nexora will track it and coach you towards it.');
+      loadInsights(true).catch(() => {});
+    } catch (e: any) { flash(e?.message || "Couldn't save the goal."); }
+    finally { setGoalBusy(false); }
+  };
+  const goalAction = async (id: string, action: 'goal_done' | 'goal_delete') => {
+    try { await callFn('nexora-insights', { action, id }); flash(action === 'goal_done' ? 'Well done! Goal marked as achieved.' : 'Goal removed'); loadInsights().catch(() => {}); }
+    catch (e: any) { flash(e?.message || "Couldn't update the goal."); }
   };
   // "When Nexora needs you": how Nexora phones / texts / emails the owner about escalations (nexora-alert function).
   const [alertCfg, setAlertCfg] = useState<any | null>(null);
@@ -5073,7 +6745,7 @@ function HomeScreenInner(){
     const d = decide; if (!d || !d.decision.trim()) return;
     patchDecide({ busy: 'draft', error: '' });
     try {
-      const r = await callFn('nexora-decide', { action: 'draft', escalation_id: d.esc.id, decision: d.decision.trim() }, 45000);
+      const r = await nexoraBusy({ heading: 'Your decision', title: 'NEXORA is writing the reply\u2026', steps: ['Reading the conversation', 'Applying your decision', 'Writing the message'] }, () => callFn('nexora-decide', { action: 'draft', escalation_id: d.esc.id, decision: d.decision.trim() }, 45000));
       patchDecide({ step: 'draft', message: r.message, to: r.to, sendable: !!r.sendable, reason: r.reason || '', busy: '' });
     } catch (e: any) { patchDecide({ busy: '', error: e?.message || "Couldn't prepare the message." }); }
   };
@@ -5376,8 +7048,16 @@ function HomeScreenInner(){
       }
     } catch { /* ignore */ }
   }, [userId, screen]);
+  const [insightsGroup, setInsightsGroup] = useState<'sales' | 'marketing' | 'customers' | 'ai'>('sales');
+  const [aiUsageRows, setAiUsageRows] = useState<{ kind: string; tasks: number; created_at: string }[] | null>(null);
+  const loadAiUsage = async () => {
+    const { data } = await supabase.from('ai_usage').select('kind,tasks,created_at').gte('created_at', new Date(Date.now() - 30 * 86400000).toISOString()).limit(5000);
+    setAiUsageRows((data ?? []) as any);
+  };
   const openInsights = (refresh = false) => {
     setScreen('insights');
+    loadShopStats().catch(() => {}); loadAiUsage().catch(() => {}); loadWorkspaceInfo().catch(() => {});
+    if (!orders.length) refreshOrders().catch(() => {});
     if (refresh || !insights || Date.now() - (insights.loaded_at || 0) > 30 * 60000) loadInsights(refresh).catch(() => {});
   };
   type FollowUp = { customer_id: string; name: string; channel: string; handle: string; segment: string; type: 'lead' | 'winback'; days: number; reason: string; message: string };
@@ -5386,7 +7066,7 @@ function HomeScreenInner(){
   const [followupsError, setFollowupsError] = useState('');
   const openFollowups = async () => {
     setScreen('followups'); setFollowupsError(''); setFollowupsLoading(true);
-    try { const r = await callFn('nexora-briefing', { action: 'followups' }, 60000); setFollowups(r.followups ?? []); }
+    try { const r = await nexoraBusy({ heading: 'Follow-ups', title: 'NEXORA is preparing your follow-ups\u2026', steps: ['Finding customers to follow up', 'Reading your past chats', 'Writing personal messages'] }, () => callFn('nexora-briefing', { action: 'followups' }, 60000)); setFollowups(r.followups ?? []); }
     catch (e: any) { setFollowups(f => f ?? []); setFollowupsError(e?.message || "Couldn't prepare follow-ups."); }
     finally { setFollowupsLoading(false); }
   };
@@ -5410,15 +7090,167 @@ function HomeScreenInner(){
   };
 
   // ---- AI shop link (owner settings) ----
-  type MyShop = { slug: string; enabled: boolean; headline: string; about: string; whatsapp: string; show_prices: boolean; views: number; chats: number; leads: number };
+  type MyShop = { slug: string; enabled: boolean; headline: string; about: string; whatsapp: string; show_prices: boolean; views: number; chats: number; leads: number;
+    logo_url?: string | null; brand_color?: string; contact_email?: string; contact_phone?: string; address?: string; delivery_info?: string; payment_info?: string; accept_orders?: boolean; orders_count?: number; enquiries?: number };
+  type ShopStats = { coupons?: Record<string, { orders: number; sales: number }>; days: number; totals: { visits: number; chats: number; enquiries: number; orders: number; paid_orders: number; sales: number; currency: string }; conversion: number | null; sources: { src: string; visits: number; chats: number; enquiries: number; orders: number; sales: number }[] };
+  const [shopStats, setShopStats] = useState<ShopStats | null>(null);
+  const [shopUpgraded, setShopUpgraded] = useState(true);
+  const [shopCaptions, setShopCaptions] = useState<{ platform: string; busy: boolean; captions: string[]; error: string } | null>(null);
+  const [shopCampaign, setShopCampaign] = useState('instagram');
+  // ---- Automation Centre: "When <something happens>, do <something>" (runs on the server every 10 minutes) ----
+  type AutoTrigger = 'order_new' | 'order_unpaid' | 'lead_new' | 'low_stock' | 'followup_due' | 'customer_inactive';
+  type AutoAction = 'notify' | 'followup' | 'task' | 'draft_message' | 'tag';
+  type Automation = { id: string; name: string; trigger: AutoTrigger; trigger_days: number; action: AutoAction; action_days: number; action_text: string; enabled: boolean; runs: number; last_run_at: string | null; created_at: string };
+  type AutoRun = { id: string; automation_id: string; title: string; detail: string; status: 'done' | 'awaiting_approval' | 'approved' | 'dismissed' | 'failed'; payload: any; created_at: string };
+  const AUTO_TRIGGERS: Record<AutoTrigger, { label: string; days?: string }> = {
+    order_new: { label: 'A new order comes in' }, order_unpaid: { label: 'An order is still unpaid after', days: 'days' }, lead_new: { label: 'A new interested buyer or enquiry arrives' },
+    low_stock: { label: 'A product is running low' }, followup_due: { label: 'A follow-up is due' }, customer_inactive: { label: "A customer hasn't ordered for", days: 'days' },
+  };
+  const AUTO_ACTIONS: Record<AutoAction, { label: string; days?: string; text?: string }> = {
+    notify: { label: 'Notify me on my phone' }, followup: { label: 'Set a follow-up on the customer in', days: 'days', text: 'Follow-up note (optional)' },
+    task: { label: 'Add a task to my schedule in', days: 'days', text: 'Task title (optional; use {name}, {order}, {items})' },
+    draft_message: { label: 'Draft a message to the customer for my approval', text: 'Message (use {name}, {order}, {total}, {business})' }, tag: { label: 'Tag the customer', text: 'Tag' },
+  };
+  const AUTO_RECIPES: Omit<Automation, 'id' | 'runs' | 'last_run_at' | 'created_at' | 'enabled'>[] = [
+    { name: 'Tell me about new orders', trigger: 'order_new', trigger_days: 1, action: 'notify', action_days: 0, action_text: '' },
+    { name: 'Payment reminder after 2 days', trigger: 'order_unpaid', trigger_days: 2, action: 'draft_message', action_days: 0, action_text: 'Hi {name}, a friendly reminder that order {order} ({total}) is waiting for payment. Reply here if you need our payment details again. Thank you!' },
+    { name: 'Follow up new buyers tomorrow', trigger: 'lead_new', trigger_days: 1, action: 'followup', action_days: 1, action_text: 'Check if they are ready to buy' },
+    { name: 'Restock task when low', trigger: 'low_stock', trigger_days: 1, action: 'task', action_days: 0, action_text: 'Restock {items}' },
+    { name: 'Remind me of follow-ups', trigger: 'followup_due', trigger_days: 1, action: 'notify', action_days: 0, action_text: '' },
+    { name: 'Win back quiet customers', trigger: 'customer_inactive', trigger_days: 60, action: 'draft_message', action_days: 0, action_text: "Hi {name}, we haven't seen you in a while at {business}. We have new things you might like. Can we send you some options?" },
+  ];
+  const [automations, setAutomations] = useState<Automation[] | null>(null);
+  const [autoRuns, setAutoRuns] = useState<AutoRun[]>([]);
+  const [autoError, setAutoError] = useState('');
+  const [autoForm, setAutoForm] = useState<(Omit<Automation, 'id' | 'runs' | 'last_run_at' | 'created_at' | 'enabled'> & { busy: boolean; error: string }) | null>(null);
+  const loadAutomations = async () => {
+    const [a, r] = await Promise.all([
+      supabase.from('automations').select('*').order('created_at', { ascending: true }),
+      supabase.from('automation_runs').select('id,automation_id,title,detail,status,payload,created_at').order('created_at', { ascending: false }).limit(80),
+    ]);
+    if (a.error) { setAutoError(/does not exist|schema cache/i.test(a.error.message) ? 'setup' : "Couldn't load automations."); setAutomations([]); return; }
+    setAutoError(''); setAutomations((a.data ?? []) as Automation[]); setAutoRuns((r.data ?? []) as AutoRun[]);
+  };
+  const openAutomations = () => { setScreen('automations'); loadAutomations().catch(() => {}); };
+  const saveAutomation = async () => {
+    const f = autoForm;
+    if (!f || !userId) return;
+    if (f.name.trim().length < 2) { setAutoForm({ ...f, error: 'Give it a name.' }); return; }
+    setAutoForm({ ...f, busy: true, error: '' });
+    const { busy: _b, error: _e, ...row } = f;
+    const { error } = await supabase.from('automations').insert({ ...row, name: f.name.trim(), user_id: userId });
+    if (error) { setAutoForm(x => x && { ...x, busy: false, error: /does not exist|schema cache/i.test(error.message) ? 'Run the automation SQL script in Supabase first.' : /50 automations/.test(error.message) ? error.message : "Couldn't save it." }); return; }
+    setAutoForm(null); flash('Automation on. It checks every 10 minutes.'); loadAutomations().catch(() => {});
+  };
+  const approveRun = async (r: AutoRun, via: 'whatsapp' | 'email' | 'share') => {
+    const p = r.payload || {};
+    const phone = String(p.phone || '').replace(/[^\d]/g, '');
+    try {
+      if (via === 'whatsapp' && phone.length >= 7) await Linking.openURL(`https://wa.me/${phone}?text=${encodeURIComponent(p.message || '')}`);
+      else if (via === 'email' && p.email) await Linking.openURL(`mailto:${p.email}?body=${encodeURIComponent(p.message || '')}`);
+      else await Share.share({ message: p.message || '' });
+    } catch { /* still mark */ }
+    await supabase.from('automation_runs').update({ status: 'approved' }).eq('id', r.id);
+    if (p.customer_id) supabase.from('customer_interactions').insert({ user_id: userId, customer_id: p.customer_id, type: 'Messages', title: 'Message sent (approved automation)', detail: String(p.message || '').slice(0, 1000) }).then(() => {});
+    loadAutomations().catch(() => {});
+  };
+  // ---- Marketing & Campaigns: promotions with a tracked link, optional coupon, dates and results ----
+  type Campaign = { id: string; name: string; channel: string; status: 'draft' | 'scheduled' | 'active' | 'ended'; message: string; src: string; coupon_code: string | null; discount_type: 'percent' | 'amount' | null; discount_value: number | null; min_order: number | null; max_uses: number | null; uses: number; starts_at: string | null; ends_at: string | null; published_at: string | null; created_at: string };
+  type CampaignForm = { id?: string; name: string; channel: string; message: string; useCoupon: boolean; code: string; dtype: 'percent' | 'amount'; dvalue: string; minOrder: string; maxUses: string; start: string; end: string; busy: boolean; error: string; aiBusy: boolean };
+  const [campaigns, setCampaigns] = useState<Campaign[] | null>(null);
+  const [campaignsError, setCampaignsError] = useState('');
+  const [campaignForm, setCampaignForm] = useState<CampaignForm | null>(null);
+  const loadCampaigns = async () => {
+    const { data, error } = await supabase.from('campaigns').select('*').order('created_at', { ascending: false }).limit(300);
+    if (error) { setCampaignsError(/does not exist|schema cache/i.test(error.message) ? 'setup' : "Couldn't load your campaigns."); setCampaigns([]); return; }
+    setCampaignsError(''); setCampaigns((data ?? []) as Campaign[]);
+  };
+  const openCampaigns = () => { setScreen('campaigns'); loadCampaigns().catch(() => {}); loadShopStats().catch(() => {}); if (!myShop) callFn('nexora-shop', { action: 'mine' }).then(r => { setMyShop(r.shop); setShopForm(f => f ?? r.shop); }).catch(() => {}); };
+  const campaignLive = (x: Campaign) => x.status === 'active' || (x.status === 'scheduled' && !!x.starts_at && new Date(x.starts_at).getTime() <= Date.now());
+  const campaignOver = (x: Campaign) => x.status === 'ended' || (!!x.ends_at && new Date(x.ends_at).getTime() < Date.now());
+  const campaignsAwaiting = () => (campaigns ?? []).filter(x => !campaignOver(x) && !x.published_at && (x.status === 'draft' ? false : campaignLive(x)));
+  const campaignLink = (x: Campaign) => (myShop?.slug ? `${SHOP_BASE_URL}/?shop=${myShop.slug}&src=${x.src}` : '');
+  const newCampaignForm = (): CampaignForm => ({ name: '', channel: 'instagram', message: '', useCoupon: false, code: '', dtype: 'percent', dvalue: '10', minOrder: '', maxUses: '', start: localIsoDate(), end: '', busy: false, error: '', aiBusy: false });
+  const editCampaignForm = (x: Campaign): CampaignForm => ({ id: x.id, name: x.name, channel: x.channel, message: x.message, useCoupon: !!x.coupon_code, code: x.coupon_code || '', dtype: x.discount_type || 'percent', dvalue: String(x.discount_value ?? ''), minOrder: x.min_order ? String(x.min_order) : '', maxUses: x.max_uses ? String(x.max_uses) : '', start: x.starts_at ? x.starts_at.slice(0, 10) : '', end: x.ends_at ? x.ends_at.slice(0, 10) : '', busy: false, error: '', aiBusy: false });
+  const saveCampaign = async (launch: boolean) => {
+    const f = campaignForm;
+    if (!f || !userId) return;
+    const err = (m: string) => setCampaignForm(x => x && { ...x, busy: false, error: m });
+    if (f.name.trim().length < 2) return err('Give the campaign a name.');
+    const dateOk = (d: string) => !d || /^\d{4}-\d{2}-\d{2}$/.test(d);
+    if (!dateOk(f.start) || !dateOk(f.end)) return err('Dates must look like 2026-11-30.');
+    if (f.end && f.start && f.end < f.start) return err('The end date is before the start date.');
+    const code = f.code.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+    const dv = Number(f.dvalue.replace(/[^\d.]/g, ''));
+    if (f.useCoupon && (code.length < 3 || !(dv > 0) || (f.dtype === 'percent' && dv > 90))) return err('Coupon: use a code of 3–20 letters/numbers and a discount (up to 90%).');
+    const startsAt = f.start ? new Date(`${f.start}T00:00:00`).toISOString() : null;
+    const endsAt = f.end ? new Date(`${f.end}T23:59:59`).toISOString() : null;
+    const future = !!startsAt && new Date(startsAt).getTime() > Date.now();
+    const slugBase = f.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 20) || 'campaign';
+    const row: Record<string, unknown> = {
+      name: f.name.trim().slice(0, 120), channel: f.channel, message: f.message.trim().slice(0, 4000),
+      coupon_code: f.useCoupon ? code : null, discount_type: f.useCoupon ? f.dtype : null, discount_value: f.useCoupon ? dv : null,
+      min_order: f.useCoupon && Number(f.minOrder) > 0 ? Number(f.minOrder) : null, max_uses: f.useCoupon && Number(f.maxUses) > 0 ? Math.floor(Number(f.maxUses)) : null,
+      starts_at: startsAt, ends_at: endsAt, updated_at: new Date().toISOString(),
+      ...(launch ? { status: future ? 'scheduled' : 'active' } : f.id ? {} : { status: 'draft' }),
+    };
+    setCampaignForm({ ...f, busy: true, error: '' });
+    let error: any = null;
+    if (f.id) ({ error } = await supabase.from('campaigns').update(row).eq('id', f.id));
+    else {
+      for (let i = 0; i < 3; i++) {
+        ({ error } = await supabase.from('campaigns').insert({ ...row, user_id: userId, src: `${slugBase}${i ? `-${Math.floor(100 + Math.random() * 900)}` : ''}`.slice(0, 30) }));
+        if (!error || !/campaigns_owner_src/.test(error.message)) break;
+      }
+    }
+    if (error) return err(/does not exist|schema cache/i.test(error.message) ? 'Run the CRM and campaigns SQL script in Supabase first.' : /coupon/i.test(error.message) ? 'That coupon code is already used by another campaign.' : /500 campaigns/.test(error.message) ? error.message : "Couldn't save the campaign.");
+    setCampaignForm(null);
+    await loadCampaigns().catch(() => {});
+    flash(launch ? (future ? `Scheduled for ${f.start}` : 'Campaign is live') : 'Campaign saved as draft');
+  };
+  const publishCampaign = async (x: Campaign) => {
+    const link = campaignLink(x);
+    const text = `${x.message || x.name}${x.coupon_code ? `\n\nUse code ${x.coupon_code} for ${x.discount_type === 'percent' ? `${x.discount_value}% off` : `${x.discount_value} off`}.` : ''}${link ? `\n\n${link}` : ''}`;
+    try {
+      if (IS_WEB) { await (globalThis as any).navigator?.clipboard?.writeText(text); flash('Post copied: paste it on ' + (x.channel.charAt(0).toUpperCase() + x.channel.slice(1))); }
+      else await Share.share({ message: text });
+    } catch { Share.share({ message: text }).catch(() => {}); }
+    await supabase.from('campaigns').update({ published_at: new Date().toISOString(), status: x.status === 'draft' ? 'active' : x.status, updated_at: new Date().toISOString() }).eq('id', x.id);
+    loadCampaigns().catch(() => {});
+  };
+  const loadShopStats = async () => { try { const r = await callFn('nexora-shop', { action: 'stats', days: 30 }); setShopStats(r); } catch { /* optional */ } };
   const [myShop, setMyShop] = useState<MyShop | null>(null);
   const [shopForm, setShopForm] = useState<MyShop | null>(null);
   const [shopLoading, setShopLoading] = useState(false);
   const [shopBusy, setShopBusy] = useState(false);
   const [shopError, setShopError] = useState('');
+  // ---- Your website (Connect apps): a copy-paste chat button, or "set it up for me" (our team, within 2 hours) ----
+  type SiteBox = { mode: 'code' | 'help'; slug: string; enabled: boolean; loading: boolean; website: string; platform: string; phone: string; note: string; sending: boolean; sent: boolean; error: string };
+  const [siteBox, setSiteBox] = useState<SiteBox | null>(null);
+  const SITE_PLATFORMS = ['WordPress', 'Shopify', 'Wix', 'Squarespace', 'Custom / other', 'Not sure'];
+  const siteSnippet = (slug: string) => `<!-- Nexora AI chat button: paste this just before </body> on your website -->\n<a href="${SHOP_BASE_URL}/?shop=${slug}" target="_blank" rel="noopener" style="position:fixed;right:20px;bottom:20px;z-index:99999;display:flex;align-items:center;gap:8px;background:#1E56A0;color:#fff;padding:12px 18px;border-radius:26px;font:600 15px Arial,sans-serif;text-decoration:none;box-shadow:0 6px 18px rgba(0,0,0,.2)">&#128172; Chat with us</a>`;
+  const openSiteBox = async (mode: 'code' | 'help') => {
+    const base: SiteBox = { mode, slug: myShop?.slug || '', enabled: !!myShop?.enabled, loading: mode === 'code' && !myShop, website: '', platform: '', phone: '', note: '', sending: false, sent: false, error: '' };
+    setSiteBox(base);
+    if (mode === 'code' && !myShop) {
+      try { const r = await callFn('nexora-shop', { action: 'mine' }); setMyShop(r.shop); setShopForm(r.shop); setSiteBox(b => b && { ...b, slug: r.shop?.slug || '', enabled: !!r.shop?.enabled, loading: false }); }
+      catch (e: any) { setSiteBox(b => b && { ...b, loading: false, error: e?.message || "Couldn't load your chat link." }); }
+    }
+  };
+  const sendSiteRequest = async () => {
+    const b = siteBox;
+    if (!b) return;
+    if (!/\.[a-z]{2,}/i.test(b.website.trim())) { setSiteBox({ ...b, error: 'Enter your website address, e.g. www.yourshop.com' }); return; }
+    setSiteBox({ ...b, sending: true, error: '' });
+    try {
+      const r = await callFn('nexora-mail', { action: 'setup_request', website: b.website.trim(), platform: b.platform, phone: b.phone.trim(), note: b.note.trim() }, 30000);
+      if (r?.success === false) throw new Error(r.message || "The request couldn't be sent.");
+      setSiteBox(x => x && { ...x, sending: false, sent: true });
+    } catch (e: any) { setSiteBox(x => x && { ...x, sending: false, error: e?.message || "The request couldn't be sent." }); }
+  };
   const openStorefront = async () => {
     setScreen('storefront'); setShopError(''); setShopLoading(true);
-    try { const r = await callFn('nexora-shop', { action: 'mine' }); setMyShop(r.shop); setShopForm(r.shop); }
+    try { const r = await callFn('nexora-shop', { action: 'mine' }); setMyShop(r.shop); setShopForm(r.shop); setShopUpgraded(r.upgraded !== false); loadShopStats().catch(() => {}); }
     catch (e: any) { setShopError(e?.code === 'setup' ? "The shop link isn't switched on yet. Run the shop SQL script in Supabase, then try again." : (e?.message || "Couldn't open your shop settings.")); }
     finally { setShopLoading(false); }
   };
@@ -5473,6 +7305,14 @@ function HomeScreenInner(){
     if (Date.now() - homeOverviewAtRef.current < 60000) return;
     homeOverviewAtRef.current = Date.now();
     callFn('nexora-briefing', { action: 'overview' }).then(r => setHomeOverview({ overview: r.overview, activity: r.activity ?? [] })).catch(() => {});
+    // The command centre also uses the shop link's numbers and payment details.
+    if (!myShop) callFn('nexora-shop', { action: 'mine' }).then(r => { setMyShop(r.shop); setShopForm(f => f ?? r.shop); }).catch(() => {});
+    loadShopStats().catch(() => {});
+    if (!orders.length) refreshOrders().catch(() => {});
+    if (!contacts.length) loadContacts().catch(() => {});
+    loadCampaigns().catch(() => {});
+    loadAutomations().catch(() => {});
+    loadTeamTasks().catch(() => {});
   }, [userId, screen, mainTab, hookWidth]);
   const runBriefingAction = (a: string) => {
     switch (a) {
@@ -5620,11 +7460,11 @@ function HomeScreenInner(){
     const q = query.trim();
     if (!q) return;
     setCommWebLoading(q); setCommWebError('');
-    try { const r = await callFn('nexora-web', { action: 'community', query: q }, 90000); setCommWeb({ query: q, summary: r.summary || '', results: r.results ?? [] }); }
+    try { const r = await nexoraBusy({ heading: 'Community', title: 'NEXORA is searching for answers\u2026', detail: `\u201c${q}\u201d`, steps: ['Understanding your question', 'Searching the web', 'Checking the sources', 'Summarizing what it found'] }, () => callFn('nexora-web', { action: 'community', query: q }, 90000)); setCommWeb({ query: q, summary: r.summary || '', results: r.results ?? [] }); }
     catch (e: any) { setCommWebError(e?.message || "Couldn't search the web right now."); }
     finally { setCommWebLoading(''); }
   };
-  const openCommunity = () => { setScreen('community'); setCommThread(null); loadCommunity().catch(() => {}); };
+  const openCommunity = () => { exploreBackRef.current = null; setScreen('community'); setCommThread(null); loadCommunity().catch(() => {}); };
   const loadCommThread = async (id: string, quiet = false) => {
     if (!quiet) setCommThreadLoading(true);
     try {
@@ -5774,6 +7614,8 @@ function HomeScreenInner(){
       case 'partners': openNetwork().catch(() => {}); break;
       case 'community': openCommunity(); break;
       case 'shop': openStorefront().catch(() => {}); break;
+      case 'campaigns': openCampaigns(); break;
+      case 'automations': openAutomations(); break;
       case 'learned': openLearned(); break;
       case 'account': goTab('profile'); break;
       case 'sales': setMainTab('brain'); setScreen('main'); sendChatMessage('How are my sales this week compared with last week? Which products sold best?'); break;
@@ -5790,6 +7632,7 @@ function HomeScreenInner(){
       case 'attention': refreshEscalations().catch(() => {}); setScreen('agendaPriority'); break;
       case 'rules': openRules(); break;
       case 'alerts': openOwnerAlerts(); break;
+      case 'market': goTab('market'); break;
     }
   };
   useEffect(() => {
@@ -5825,6 +7668,7 @@ function HomeScreenInner(){
       case 'followups': openFollowups().catch(() => {}); break;
       case 'trends': openTrends(); break;
       case 'explore': openExplore(); break;
+      case 'opportunities': case 'opportunityDetail': openOpportunities('all'); break;
       case 'network': openNetwork().catch(() => {}); break;
       case 'billing': openBilling(() => goTab('home')); break;
       case 'learned': openLearned(); break;
@@ -5916,6 +7760,42 @@ function HomeScreenInner(){
   };
 
   // ---- Knowledge: edit / delete / images / upload ----
+  // ---- AI listing writer (product/service edit): title, description, key features, FAQs and a promo line ----
+  type ListingAI = { busy: boolean; error: string; title: string; description: string; features: string[]; faqs: { q: string; a: string }[]; promo: string; added: boolean };
+  const [listingAI, setListingAI] = useState<ListingAI | null>(null);
+  const runListingAI = async () => {
+    setListingAI({ busy: true, error: '', title: '', description: '', features: [], faqs: [], promo: '', added: false });
+    try {
+      const r = await callFn('nexora-shop', { action: 'write_listing', item_id: activeItemId }, 45000);
+      setListingAI({ busy: false, error: '', added: false, ...r.listing });
+    } catch (e: any) { setListingAI(x => x && { ...x, busy: false, error: e?.message || "Couldn't write the listing." }); }
+  };
+  const useListingAI = () => {
+    const l = listingAI;
+    if (!l) return;
+    const nameLabel = KNOWLEDGE_NAME_LABEL[activeCategory];
+    setEditDraft(prev => {
+      let next = prev.map(f => f.label === 'Description' ? { ...f, value: l.description } : f.label === 'Key Features' && l.features.length ? { ...f, value: l.features.map(x => `\u2022 ${x}`).join('\n') } : f.label === nameLabel && l.title && !f.value.trim() ? { ...f, value: l.title } : f);
+      if (!next.some(f => f.label === 'Description')) next = [...next, { label: 'Description', value: l.description }];
+      if (l.features.length && !next.some(f => f.label === 'Key Features')) next = [...next, { label: 'Key Features', value: l.features.map(x => `\u2022 ${x}`).join('\n') }];
+      return next;
+    });
+    flash('Description and key features filled in. Review, then save.');
+  };
+  const addListingFaqs = async () => {
+    const l = listingAI;
+    if (!l || !userId || !l.faqs.length) return;
+    const look = CATEGORY_LOOK.faqs;
+    const base = Date.now();
+    const { error } = await supabase.from('knowledge_items').insert(l.faqs.map((f, i) => ({
+      user_id: userId, category: 'faqs', name: f.q, subtitle: '', status: 'Need review', overview: f.a, fields: [], features: [],
+      icon: look.icon, icon_bg: look.iconBg, icon_color: look.iconColor, created_at: new Date(base + i).toISOString(),
+    })));
+    if (error) { flash("Couldn't add the FAQs."); return; }
+    setListingAI(x => x && { ...x, added: true });
+    refreshKnowledge().catch(() => {});
+    flash(`${l.faqs.length} FAQs added to Train AI for review`);
+  };
   const saveItemEdit = async (asDraft: boolean) => {
     const item = knowledgeData[activeCategory].items.find(i => i.id === activeItemId);
     if (!item || !userId) { setScreen('itemDetail'); return; }
@@ -5931,6 +7811,7 @@ function HomeScreenInner(){
     const status = asDraft ? 'Draft' : 'Verified';
     const fields = editDraft
       .filter(f => f.label !== nameLabel && f.label !== featuresLabel && f.label !== 'Description' && !(f.label === 'Category' && !hadCategory))
+      .filter(f => !((f.label === STOCK_LABEL || f.label === STOCK_ALERT_LABEL) && !String(f.value).trim()))
       .map(f => (f.label === 'Status' ? { ...f, value: status } : f));
     const isCommerce = activeCategory === 'products' || activeCategory === 'services';
     const subtitle = isCommerce && get('Category') ? [get('Category'), get('Price')].filter(Boolean).join(' \u00b7 ') : item.subtitle;
@@ -6014,19 +7895,45 @@ function HomeScreenInner(){
   // through the same AI extraction and review as an uploaded file.
   const submitTellNexora = async () => {
     const text = tellText.trim();
-    if (text.length < 15) { flash('Tell Nexora a little more (a sentence or two).'); return; }
+    if (tellStage) return;
+    if (text.length < 8) { flash('Tell Nexora a little more (a sentence or two).'); return; }
+    // The animated "NEXORA is working" screen stays up from now until the review is ready.
+    const steps0 = ['Reading your message', 'Extracting information', 'Understanding content', 'Organizing knowledge', 'Looking for images'];
+    setTellStage({ step: 'boot', label: '', searched: false });
+    setProcFlow({ title: 'NEXORA is working on your request\u2026', steps: steps0, done: 0, auto: false, detail: text.length > 90 ? `${text.slice(0, 88)}\u2026` : text });
+    setTellOpen(false);
+    setScreen('addKnowledge');
+    setAddKnowledgeStep('processing');
     try {
-      const name = `Note from ${(fullName || 'owner').split(' ')[0]} ${localIsoDate()}.txt`;
-      let uri = `data:text/plain;charset=utf-8,${encodeURIComponent(text)}`;
+      // Is this the owner's own information, or a request to look something up online first?
+      let plan: { mode: string; query: string; topic: string } = { mode: 'facts', query: '', topic: '' };
+      try { plan = await callFn('extract-knowledge', { action: 'plan', text }, 30000); }
+      catch (e: any) { if (e?.code === 'quota') throw e; }
+      let note = text;
+      if (plan.mode === 'search' && plan.query) {
+        setProcFlow(f => ({ ...f, title: 'NEXORA is searching the web\u2026', steps: ['Reading your message', 'Searching the web', ...f.steps.slice(1)], done: 1, detail: `\u201c${plan.query}\u201d` }));
+        const r = await callFn('extract-knowledge', { action: 'research', text, query: plan.query }, 120000);
+        const sources: { title: string; url: string }[] = r.sources ?? [];
+        setProcFlow(f => ({ ...f, title: 'NEXORA is analyzing what it found\u2026', done: 2, detail: `${sources.length || 'Some'} source${sources.length === 1 ? '' : 's'} found online` }));
+        note = `${text}\n\nFound online by Nexora on ${localIsoDate()}:\n${r.summary}${sources.length ? `\n\nSources:\n${sources.map(x => `- ${x.title}: ${x.url}`).join('\n')}` : ''}`;
+      } else {
+        setProcFlow(f => ({ ...f, title: 'NEXORA is analyzing your message\u2026', done: 1, detail: undefined }));
+      }
+      const base = (plan.topic || `Note from ${(fullName || 'owner').split(' ')[0]}`).replace(/[^\w .-]+/g, '').trim().slice(0, 50) || 'Note';
+      const name = `${base} ${localIsoDate()}.txt`;
+      let uri = `data:text/plain;charset=utf-8,${encodeURIComponent(note)}`;
       if (!IS_WEB) {
         uri = `${FileSystem.cacheDirectory}nexora-note-${Date.now()}.txt`;
-        await FileSystem.writeAsStringAsync(uri, text, { encoding: FileSystem.EncodingType.UTF8 });
+        await FileSystem.writeAsStringAsync(uri, note, { encoding: FileSystem.EncodingType.UTF8 });
       }
-      setTellOpen(false);
       setTellText('');
-      startKnowledgeUpload({ uri, name, size: text.length });
-    } catch {
-      flash("Couldn't save that. Please try again.");
+      setTellStage(null);
+      await startKnowledgeUpload({ uri, name, size: note.length }, { keepFlow: true });
+    } catch (e: any) {
+      setTellStage(null);
+      setScreen('knowledgeHealth');
+      setTellOpen(true);   // back to the box with the text still in it
+      flash(e?.message || "Couldn't finish that. Please try again.");
     }
   };
   const saveAddItemForm = async () => {
@@ -6068,13 +7975,16 @@ function HomeScreenInner(){
       setAddItemSaving(false);
     }
   };
-  const startKnowledgeUpload = async (file: { uri: string; name: string; size?: number | null }) => {
+  const startKnowledgeUpload = async (file: { uri: string; name: string; size?: number | null }, opts: { keepFlow?: boolean } = {}) => {
     if (!userId) { flash('Please sign in again.'); return; }
     const ext = (file.name.split('.').pop() || '').toLowerCase();
-    if (!['pdf', 'csv', 'txt'].includes(ext)) { flash('Please choose a PDF, CSV or TXT file.'); return; }
+    const isPhoto = ['jpg', 'jpeg', 'png', 'webp'].includes(ext);
+    if (!['pdf', 'csv', 'txt'].includes(ext) && !isPhoto) { flash('Please choose a PDF, CSV or TXT file.'); return; }
     if ((file.size ?? 0) > 20 * 1024 * 1024) { flash('That file is over the 20 MB limit.'); return; }
     setUploadedFileName(file.name);
     setExtractError('');
+    if (opts.keepFlow) setProcFlow(f => ({ ...f, auto: true, detail: undefined }));
+    else setProcFlow({ title: isPhoto ? 'NEXORA is reading your photo\u2026' : 'NEXORA is analyzing your file\u2026', steps: FILE_STEPS, done: 0, auto: true });
     setScreen('addKnowledge');
     setAddKnowledgeStep('processing');
     let docId: string | undefined;
@@ -6086,10 +7996,10 @@ function HomeScreenInner(){
       const docs = (usage as any)?.knowledge_sources;
       if (docs?.limit != null && docs.used >= docs.limit) throw new Error(`Your plan allows ${docs.limit} knowledge documents. Remove one or upgrade to add more.`);
       const path = `${session.user.id}/${Date.now()}-${file.name.replace(/[^\w.\-]+/g, '_')}`;
-      const contentType = ext === 'pdf' ? 'application/pdf' : ext === 'csv' ? 'text/csv' : 'text/plain';
+      const contentType = ext === 'pdf' ? 'application/pdf' : ext === 'csv' ? 'text/csv' : ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : isPhoto ? 'image/jpeg' : 'text/plain';
       const up = await uploadBinary(`${SUPABASE_URL}/storage/v1/object/knowledge-files/${path}`, file.uri,
         { 'Content-Type': contentType, Authorization: `Bearer ${session.access_token}`, apikey: SUPABASE_ANON_KEY });
-      if (up.status < 200 || up.status >= 300) throw new Error(`Upload failed (HTTP ${up.status}).`);
+      if (up.status < 200 || up.status >= 300) throw new Error(isPhoto && (up.status === 400 || up.status === 415) ? "Reading photos isn't switched on yet. Upload a PDF, CSV or TXT file for now." : `Upload failed (HTTP ${up.status}).`);
       const ins = await supabase.from('knowledge_documents')
         .insert({ user_id: session.user.id, name: file.name, status: 'Processing', size_bytes: file.size ?? 0, mime_type: contentType, storage_path: path })
         .select('id').single();
@@ -6106,14 +8016,17 @@ function HomeScreenInner(){
       const result = await res.json();
       if (!res.ok || !result.success) throw new Error(result.message || 'Could not analyse that file.');
       const raws: ExtractedRaw[] = result.items ?? [];
-      if (raws.length === 0) throw new Error("We couldn't find any business information in that file.");
+      if (raws.length === 0) throw new Error(isPhoto ? "Nexora couldn't read any prices or details in that photo. Try again with the text filling the photo, in good light." : "We couldn't find any business information in that file.");
       const reviews: ExtractedReview[] = raws.map((raw, i) => ({ id: `x${i}`, name: raw.name, subtitle: raw.subtitle || raw.category, type: reviewTypeFor(raw), raw }));
       setExtractedItems(reviews);
       setReviewChecks(Object.fromEntries(reviews.map(r => [r.id, true])));
       if (docId) await supabase.from('knowledge_documents').update({ status: 'Processed' }).eq('id', docId);
       // RAG: split the whole document into searchable passages so Nexora can quote it later.
-      if (docId) callFn('rag-index', { action: 'document', document_id: docId }, 90000).then(() => loadRagStatus()).catch(() => {});
+      // (Photos have no text of their own to index: the items found in them become searchable once you add them.)
+      if (docId && !isPhoto) callFn('rag-index', { action: 'document', document_id: docId }, 90000).then(() => loadRagStatus()).catch(() => {});
       refreshDocs().catch(() => {});
+      setProcFlow(f => ({ ...f, auto: false, done: f.steps.length }));
+      await new Promise(r => setTimeout(r, 700));
       setAddKnowledgeStep('summary');
     } catch (e: any) {
       if (docId) await supabase.from('knowledge_documents').update({ status: 'Failed' }).eq('id', docId);
@@ -6170,7 +8083,7 @@ function HomeScreenInner(){
     if (!userId) { showTruthToast('Please sign in again'); return; }
     const tags = (truthFields.newTags ?? '').split(',').map(t => t.trim()).filter(Boolean).slice(0, 10);
     const { error } = await supabase.from('customers')
-      .insert({ user_id: userId, name, channel: email ? 'Email' : 'Whatsapp', handle: email || (phone.startsWith('+') ? phone : `+234 ${phone.replace(/^0/, '')}`), segment: truthFields.newSegment || 'New', tags });
+      .insert({ user_id: userId, name, channel: email ? 'Email' : 'Whatsapp', handle: email || (phone.startsWith('+') || !LOCAL_NGN ? phone : `+234 ${phone.replace(/^0/, '')}`), segment: truthFields.newSegment || 'New', tags });
     if (error) { showTruthToast("Couldn't save customer"); return; }
     setTruthFields(p => ({ ...p, newName: '', newPhone: '', newEmail: '', newSegment: '', newTags: '' }));
     showTruthToast('Customer saved');
@@ -6237,6 +8150,7 @@ function HomeScreenInner(){
           case 'home': setHomeCommandExpanded(false); goTab('home'); break;
           case 'inbox': goTab('inbox'); break;
           case 'brain': goTab('brain'); break;
+          case 'market': goTab('market'); break;
           case 'profile': goTab('profile'); break;
           case 'schedule': openSchedule(); break;
           case 'orders': openOrders('Unshipped'); break;
@@ -6252,6 +8166,8 @@ function HomeScreenInner(){
           case 'network': openNetwork(); break;
           case 'community': openCommunity(); break;
           case 'shop': openStorefront().catch(() => {}); break;
+          case 'campaigns': openCampaigns(); break;
+          case 'automations': openAutomations(); break;
           case 'insights': openInsights(); break;
         }
       },
@@ -6293,9 +8209,11 @@ function HomeScreenInner(){
 
   // ---- Orders / schedule / escalations ----
   const refreshOrders = async () => {
-    const { data, error } = await supabase.from('orders').select('id,customer_name,items,total,status,tracking,created_at').order('created_at', { ascending: false }).limit(300);
+    const { data, error } = await supabase.from('orders').select('*').order('created_at', { ascending: false }).limit(500);
     if (error) throw error;
-    setOrders((data ?? []) as OrderRow[]);
+    const rows = (data ?? []) as OrderRow[];
+    setOrdersUpgraded(!rows.length || 'payment_status' in rows[0]);
+    setOrders(rows);
   };
   const refreshAgenda = async () => {
     const { data, error } = await supabase.from('schedule_events')
@@ -6313,13 +8231,148 @@ function HomeScreenInner(){
       if (!al.error) setEscAlerts(Object.fromEntries((al.data ?? []).map((a: any) => [a.escalation_id, a])));
     }
   };
-  const openOrders = (filter: 'Unshipped' | 'Shipped' | 'All' = 'Unshipped') => { setOrdersFilter(filter); refreshOrders().catch(() => {}); setScreen('orders'); };
+  const openOrders = (filter: 'Unshipped' | 'Unpaid' | 'Shipped' | 'Cancelled' | 'All' = 'Unshipped') => {
+    setOrdersFilter(filter); setOrdersQuery(''); setOrderOpenId(null); refreshOrders().catch(() => {}); setScreen('orders');
+    if (!myShop) callFn('nexora-shop', { action: 'mine' }).then(r => { setMyShop(r.shop); setShopForm(f => f ?? r.shop); }).catch(() => {});
+  };
   const openMissingImages = () => setScreen('missingImages');
-  const setOrderStatus = async (o: OrderRow, status: OrderRow['status']) => {
-    const { error } = await supabase.from('orders').update({ status, ...(status === 'shipped' ? { shipped_at: new Date().toISOString() } : {}) }).eq('id', o.id);
-    if (error) { flash("Couldn't update that order."); return; }
+  // Products whose Stock is at or below their "Remind me at" level (Home "Need your attention" + a daily reminder).
+  const lowStockItems = knowledgeData.products.items.filter(i => i.status !== 'Draft' && stockOf(i.fields).low);
+  // Reminder: once a day, when you open Nexora and something is running low, it tells you.
+  const lowStockToldRef = useRef('');
+  useEffect(() => {
+    if (screen !== 'main' || !lowStockItems.length) return;
+    const key = `${new Date().toDateString()}:${lowStockItems.map(i => i.id).join(',')}`;
+    if (lowStockToldRef.current === key) return;
+    lowStockToldRef.current = key;
+    const t = setTimeout(() => flash(`Restock reminder: ${lowStockItems.slice(0, 3).map(i => `${i.name} (${stockOf(i.fields).stock} left)`).join(', ')}${lowStockItems.length > 3 ? ` and ${lowStockItems.length - 3} more` : ''}.`), 1500);
+    return () => clearTimeout(t);
+  }, [screen, lowStockItems.map(i => i.id).join(',')]);
+  // ---- Orders: order status and payment status are separate; every change is recorded in the order's history ----
+  const ORDER_STATUS_TEXT: Record<OrderRow['status'], string> = { pending: 'New', processing: 'Confirmed', shipped: 'Shipped', delivered: 'Delivered', completed: 'Completed', cancelled: 'Cancelled' };
+  const PAY_TEXT: Record<PaymentStatus, string> = { unknown: 'Not recorded', unpaid: 'Unpaid', pending: 'Checking payment', paid: 'Paid', partially_refunded: 'Partly refunded', refunded: 'Refunded' };
+  const orderMoney = (o: OrderRow, n?: number | null) => `${({ NGN: '₦', USD: '$', EUR: '€', GBP: '£', GHS: 'GH₵', KES: 'KSh ', ZAR: 'R' } as Record<string, string>)[o.currency || ''] ?? (o.currency ? `${o.currency} ` : (LOCAL_NGN ? '₦' : '$'))}${Number(n ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+  const orderLabel = (o: OrderRow) => o.order_number || `#${o.id.slice(0, 6).toUpperCase()}`;
+  const isOwnerRole = () => !workspace || workspace.role === 'owner';
+  const updateOrder = async (o: OrderRow, patch: Partial<OrderRow>, event?: string, customerVisible = true, done = 'Order updated') => {
+    const at = new Date().toISOString();
+    const history = [...(Array.isArray(o.history) ? o.history : []), ...(event ? [{ at, text: event, by: fullName || 'Owner', customer: customerVisible }] : [])];
+    let { error } = await supabase.from('orders').update(ordersUpgraded ? { ...patch, history } : patch).eq('id', o.id);
+    if (error && /column|schema cache/i.test(error.message)) {
+      // Before the orders SQL script: only the original columns can be saved.
+      const basic: Record<string, unknown> = {};
+      for (const k of ['status', 'tracking', 'shipped_at', 'total'] as const) if (k in patch) basic[k] = (patch as any)[k];
+      if (!Object.keys(basic).length) { flash('Run the shop and orders SQL script in Supabase to use payments and history.'); return false; }
+      ({ error } = await supabase.from('orders').update(basic).eq('id', o.id));
+    }
+    if (error) { flash("Couldn't update that order."); return false; }
     await refreshOrders().catch(() => {});
-    flash(status === 'shipped' ? `${o.customer_name}'s order marked as shipped` : status === 'delivered' ? 'Marked as delivered' : 'Order updated');
+    flash(done);
+    return true;
+  };
+  // Stock goes back up when an order with tracked products is cancelled.
+  const restockOrder = async (o: OrderRow) => {
+    for (const l of o.line_items ?? []) {
+      const it = knowledgeData.products.items.find(i => i.id === l.id);
+      const st = it ? stockOf(it.fields) : null;
+      if (!it || !st || st.stock === null) continue;
+      const fields = it.fields.map(f => (f.label === STOCK_LABEL ? { ...f, value: String(st.stock! + l.qty) } : f));
+      await supabase.from('knowledge_items').update({ fields }).eq('id', it.id);
+    }
+    refreshKnowledge().catch(() => {});
+  };
+  const setOrderStatus = async (o: OrderRow, status: OrderRow['status'], extra: Partial<OrderRow> = {}) => {
+    const now = new Date().toISOString();
+    const stamp: Partial<OrderRow> = status === 'shipped' ? { shipped_at: now } : status === 'delivered' ? { delivered_at: now } : status === 'completed' ? { completed_at: now } : status === 'cancelled' ? { cancelled_at: now } : {};
+    const text = status === 'processing' ? 'Order confirmed' : status === 'shipped' ? `Order shipped${extra.tracking ? ` (tracking: ${extra.tracking})` : ''}` : status === 'delivered' ? 'Order delivered' : status === 'completed' ? 'Order completed' : status === 'cancelled' ? `Order cancelled${extra.cancel_reason ? `: ${extra.cancel_reason}` : ''}` : 'Order reopened';
+    const ok = await updateOrder(o, { status, ...stamp, ...extra }, text, true, status === 'shipped' ? `${orderLabel(o)} marked as shipped` : status === 'delivered' ? 'Marked as delivered' : status === 'cancelled' ? 'Order cancelled' : 'Order updated');
+    if (ok && status === 'cancelled' && o.status !== 'cancelled') restockOrder(o).catch(() => {});
+    return ok;
+  };
+  const setPayment = async (o: OrderRow, payment_status: PaymentStatus, amount?: number) => {
+    const now = new Date().toISOString();
+    if (payment_status === 'paid') return updateOrder(o, { payment_status, paid_at: now, amount_paid: amount ?? Number(o.total) }, `Payment received: ${orderMoney(o, amount ?? o.total)}`, true, 'Marked as paid');
+    if (payment_status === 'unpaid') return updateOrder(o, { payment_status, paid_at: null, amount_paid: 0 }, 'Payment marked as not received', false, 'Marked as unpaid');
+    return updateOrder(o, { payment_status }, `Payment status: ${PAY_TEXT[payment_status]}`, false);
+  };
+  const refundOrder = async (o: OrderRow, amount: number) => {
+    if (!isOwnerRole()) { flash('Only the business owner can record refunds.'); return false; }
+    const paid = Number(o.amount_paid || o.total || 0);
+    const already = Number(o.refunded_amount || 0);
+    const total = Math.min(paid, already + amount);
+    if (!(amount > 0) || already >= paid) { flash('Enter a refund amount up to what was paid.'); return false; }
+    return updateOrder(o, { refunded_amount: total, payment_status: total >= paid ? 'refunded' : 'partially_refunded' }, `Refund recorded: ${orderMoney(o, amount)}${total >= paid ? ' (full refund)' : ''}`, true, 'Refund recorded');
+  };
+  const orderTrackLink = (o: OrderRow) => (o.track_token && o.order_number && myShop?.slug ? `${SHOP_BASE_URL}/?shop=${myShop.slug}&order=${encodeURIComponent(o.order_number)}&t=${o.track_token}` : '');
+  const orderUpdateMessage = (o: OrderRow) => {
+    const biz = workspace?.name || businessName || 'us';
+    const status = o.status === 'pending' ? 'has been received' : o.status === 'processing' ? 'is confirmed and being prepared' : o.status === 'shipped' ? `is on the way${o.tracking ? ` (tracking: ${o.tracking})` : ''}` : o.status === 'delivered' || o.status === 'completed' ? 'has been delivered. Thank you for buying from us!' : 'has been cancelled';
+    const pay = o.status !== 'cancelled' && o.payment_status === 'unpaid' ? ` Amount due: ${orderMoney(o, o.total)}.${myShop?.payment_info ? `\n\nHow to pay:\n${myShop.payment_info}` : ''}` : '';
+    const link = orderTrackLink(o);
+    return `Hi ${o.customer_name.split(' ')[0]}, your order ${orderLabel(o)} from ${biz} ${status}.${pay}${link ? `\n\nTrack your order: ${link}` : ''}`;
+  };
+  const notifyCustomer = async (o: OrderRow, via: 'whatsapp' | 'email' | 'share') => {
+    const msg = orderUpdateMessage(o);
+    const phone = (o.customer_phone || '').replace(/[^\d]/g, '');
+    try {
+      if (via === 'whatsapp' && phone.length >= 7) await Linking.openURL(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`);
+      else if (via === 'email' && o.customer_email) await Linking.openURL(`mailto:${o.customer_email}?subject=${encodeURIComponent(`Your order ${orderLabel(o)}`)}&body=${encodeURIComponent(msg)}`);
+      else await Share.share({ message: msg });
+      updateOrder(o, {}, `Customer updated by ${via === 'whatsapp' ? 'WhatsApp' : via === 'email' ? 'email' : 'message'}`, false, 'Message ready to send').catch(() => {});
+    } catch { flash("Couldn't open that app. Use Share instead."); }
+  };
+  const orderReceipt = (o: OrderRow) => {
+    const biz = workspace?.name || businessName || 'Our business';
+    const lines = o.line_items?.length ? o.line_items : [{ name: o.items, qty: 1, unit_price: Number(o.total), total: Number(o.total) }];
+    const esc = (t: string) => t.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
+    const subtotal = o.subtotal ?? lines.reduce((n, l) => n + Number(l.total || 0), 0);
+    const kind = o.payment_status === 'paid' ? 'Receipt' : 'Invoice';
+    const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${kind} ${esc(orderLabel(o))}</title><style>body{font-family:Arial,sans-serif;color:#0B1220;max-width:640px;margin:32px auto;padding:0 16px}h1{font-size:22px;margin:0}table{width:100%;border-collapse:collapse;margin-top:18px}td,th{padding:8px 4px;border-bottom:1px solid #E6ECF3;text-align:left;font-size:14px}th{color:#5C6B7A;font-weight:600}.r{text-align:right}.muted{color:#5C6B7A;font-size:13px}.tot td{font-weight:700;border-bottom:none}@media print{button{display:none}}</style></head><body>
+<h1>${esc(biz)}</h1><p class="muted">${kind} ${esc(orderLabel(o))} · ${new Date(o.created_at).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}</p>
+<p><b>Customer:</b> ${esc(o.customer_name)}${o.customer_phone ? `<br>${esc(o.customer_phone)}` : ''}${o.customer_email ? `<br>${esc(o.customer_email)}` : ''}${o.delivery_address ? `<br>${esc(o.delivery_address)}` : ''}</p>
+<table><tr><th>Item</th><th class="r">Qty</th><th class="r">Price</th><th class="r">Total</th></tr>${lines.map(l => `<tr><td>${esc(l.name)}</td><td class="r">${l.qty}</td><td class="r">${orderMoney(o, l.unit_price)}</td><td class="r">${orderMoney(o, l.total)}</td></tr>`).join('')}
+<tr><td colspan="3" class="r">Subtotal</td><td class="r">${orderMoney(o, subtotal)}</td></tr>${Number(o.delivery_fee) ? `<tr><td colspan="3" class="r">Delivery</td><td class="r">${orderMoney(o, o.delivery_fee)}</td></tr>` : ''}${Number(o.discount) ? `<tr><td colspan="3" class="r">Discount</td><td class="r">-${orderMoney(o, o.discount)}</td></tr>` : ''}
+<tr class="tot"><td colspan="3" class="r">Total</td><td class="r">${orderMoney(o, o.total)}</td></tr></table>
+<p><b>Payment:</b> ${PAY_TEXT[o.payment_status || 'unknown']}${o.paid_at ? ` on ${new Date(o.paid_at).toLocaleDateString()}` : ''}${Number(o.refunded_amount) ? ` · Refunded ${orderMoney(o, o.refunded_amount)}` : ''}</p>
+${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><br>${esc(myShop.payment_info).replace(/\n/g, '<br>')}</p>` : ''}
+<p class="muted">Thank you for your business.</p><button onclick="window.print()">Print or save as PDF</button></body></html>`;
+    const text = `${biz}\n${kind} ${orderLabel(o)} · ${new Date(o.created_at).toLocaleDateString()}\nCustomer: ${o.customer_name}\n\n${lines.map(l => `${l.qty} × ${l.name}  ${orderMoney(o, l.total)}`).join('\n')}\n\nTotal: ${orderMoney(o, o.total)}\nPayment: ${PAY_TEXT[o.payment_status || 'unknown']}`;
+    if (IS_WEB && typeof window !== 'undefined') {
+      const w = window.open('', '_blank');
+      if (w) { w.document.write(html); w.document.close(); return; }
+    }
+    Share.share({ message: text }).catch(() => {});
+  };
+  const exportOrdersCsv = (list: OrderRow[]) => {
+    const q = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const head = ['Order', 'Date', 'Customer', 'Phone', 'Email', 'Items', 'Subtotal', 'Delivery', 'Discount', 'Total', 'Currency', 'Order status', 'Payment status', 'Paid on', 'Refunded', 'Source', 'Campaign', 'Tracking', 'Address'];
+    const rows = list.map(o => [orderLabel(o), new Date(o.created_at).toISOString().slice(0, 16).replace('T', ' '), o.customer_name, o.customer_phone, o.customer_email, o.items, o.subtotal ?? '', o.delivery_fee ?? 0, o.discount ?? 0, o.total, o.currency, ORDER_STATUS_TEXT[o.status], PAY_TEXT[o.payment_status || 'unknown'], o.paid_at ? o.paid_at.slice(0, 10) : '', o.refunded_amount ?? 0, o.source ?? '', o.src ?? '', o.tracking, o.delivery_address].map(q).join(','));
+    const csv = [head.map(q).join(','), ...rows].join('\n');
+    if (IS_WEB && typeof document !== 'undefined') {
+      try {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+        a.download = `nexora-orders-${new Date().toISOString().slice(0, 10)}.csv`;
+        a.click(); flash('Orders exported'); return;
+      } catch { /* share instead */ }
+    }
+    Share.share({ message: csv }).catch(() => {});
+  };
+  const createManualOrder = async () => {
+    const f = newOrder;
+    if (!f || !userId) return;
+    const total = Number(f.total.replace(/[^\d.]/g, ''));
+    if (f.name.trim().length < 2 || !f.items.trim() || !(total > 0)) { setNewOrder({ ...f, error: 'Add the customer, what they bought and the total.' }); return; }
+    setNewOrder({ ...f, busy: true, error: '' });
+    const now = new Date().toISOString();
+    const base = { user_id: userId, customer_name: f.name.trim(), items: f.items.trim().slice(0, 500), total, status: 'pending' as const, tracking: '' };
+    const number = `NX-${1001 + orders.length}`;
+    let { error } = await supabase.from('orders').insert(ordersUpgraded ? { ...base, order_number: number, source: 'manual', customer_phone: f.phone.trim(), payment_status: f.paid ? 'paid' : 'unpaid', paid_at: f.paid ? now : null, amount_paid: f.paid ? total : 0, subtotal: total, currency: LOCAL_NGN ? 'NGN' : 'USD', history: [{ at: now, text: 'Order added in Nexora', by: fullName || 'Owner', customer: false }] } : base);
+    if (error && /order_number|duplicate/i.test(error.message)) ({ error } = await supabase.from('orders').insert({ ...base, order_number: `NX-${Date.now().toString().slice(-6)}`, source: 'manual', customer_phone: f.phone.trim(), payment_status: f.paid ? 'paid' : 'unpaid', subtotal: total }));
+    if (error) { setNewOrder(x => x && { ...x, busy: false, error: "Couldn't save the order." }); return; }
+    setNewOrder(null);
+    await refreshOrders().catch(() => {});
+    flash('Order added');
   };
   const addImageToItem = async (item: KnowledgeItem) => {
     setBusyItemId(item.id);
@@ -6632,7 +8685,7 @@ function HomeScreenInner(){
       case 'leadDemoInvite': return () => (demoInviteBackRef.current ? demoInviteBackRef.current() : openLeads());
       case 'customers': return () => (customersBackRef.current ? customersBackRef.current() : goTab('inbox'));
       case 'customerProfile': return () => openCustomers();
-      case 'interactionHistory': return () => openCustomers();
+      case 'interactionHistory': case 'customerOrders': return () => openCustomers();
       case 'addCustomer': return () => openCustomers();
       case 'scheduleHome': return () => goTab('home');
       case 'scheduleList': return () => openTruth('scheduleHome');
@@ -6641,7 +8694,8 @@ function HomeScreenInner(){
       case 'editPost': return () => openTruth(postKindRef.current === 'announcement' ? 'announcement' : aiBackRef.current);
       case 'platformAdapt': return () => openTruth(postKindRef.current === 'service' ? 'servicePostEdit' : postKindRef.current === 'promotion' ? 'promoPost' : 'editPost');
       case 'platformAdapt2': return () => openTruth('platformAdapt');
-      case 'createPostHome': return () => goTab('home');
+      // Back to where Create Post was opened from: the Market tab or Home.
+      case 'createPostHome': return () => goTab(mainTab === 'market' ? 'market' : 'home');
       case 'productPostSuggested': case 'productPostAll': case 'servicePostSuggested': case 'servicePostAll': return () => openTruth('createPostHome');
       case 'productAdd': case 'serviceAdd': return () => (addOriginRef.current === 'train' ? setScreen('knowledgeHealth') : openTruth(addBackRef.current));
       case 'aiContent': case 'aiGen1': case 'aiGen2': case 'aiGen3': return () => openTruth(aiBackRef.current);
@@ -6657,12 +8711,39 @@ function HomeScreenInner(){
     }
   };
   truthBackRef.current = truthBack;
+  // The Figma frames have the old five-button bar (Home, Inbox, Brain, Market, Profile) baked into the picture.
+  // Inbox opens from Home, so a four-button bar is drawn over the baked one; the tab the frame shows as
+  // active (its widest button) stays highlighted, and each button keeps the frame's own tap action.
+  const withPillNav = (spots: Hotspot[], k: number, offsetX = 0, offsetY = 0, forceActive?: string): { spots: Hotspot[]; bar: React.ReactNode } => {
+    const navs = spots.filter(sp => sp.label.startsWith('nav-'));
+    if (!navs.some(sp => sp.label === 'nav-home')) return { spots, bar: null };
+    const widest = navs.reduce((a, b) => (b.w > a.w ? b : a), navs[0]);
+    // Frames where the design's wide pill sits on Inbox are Schedule/Customer screens, so no tab is highlighted there.
+    const active = forceActive ?? (widest.w >= 90 && widest.label !== 'nav-inbox' ? widest.label : '');
+    const items: [string, string, string][] = [['nav-home', 'home-outline', 'Home'], ['nav-inbox', 'chatbubble-ellipses-outline', 'Inbox'], ['nav-brain', 'sparkles-outline', 'Brain'], ['nav-market', 'storefront-outline', 'Market'], ['nav-profile', 'person-circle-outline', 'Profile']];
+    const bar = (
+      <View key="pill-nav" style={{ position: 'absolute', left: offsetX + 27 * k, top: offsetY + 781 * k, width: 340 * k, height: 60 * k, borderRadius: 30 * k, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E7EAEE', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', paddingHorizontal: 8 * k, zIndex: 25 }}>
+        {items.map(([label, icon, name]) => {
+          const on = label === active;
+          const sp = navs.find(n => n.label === label);
+          return (
+            <Pressable key={label} onPress={sp?.onPress ?? (() => goTab(label.replace('nav-', '') as MainTab))} accessibilityRole="button" accessibilityLabel={name} hitSlop={6}
+              style={{ height: 46 * k, minWidth: 44 * k, paddingHorizontal: on ? 14 * k : 6 * k, borderRadius: 23 * k, backgroundColor: on ? '#0F2942' : 'transparent', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 * k }}>
+              <Ionicons name={(on && icon.endsWith('-outline') ? icon.replace('-outline', '') : icon) as any} size={22 * k} color={on ? '#FFFFFF' : '#6B7280'} />
+              {on && <Text style={{ color: '#FFFFFF', fontSize: 15 * k, fontWeight: '700' }}>{name}</Text>}
+            </Pressable>
+          );
+        })}
+      </View>
+    );
+    return { spots: spots.filter(sp => !sp.label.startsWith('nav-')), bar };
+  };
   // Bottom pill nav drawn into every Lead / Customer / Schedule frame.
   const truthNavSpots = (): Hotspot[] => [
     { x: 36, y: 782, w: 58, h: 54, label: 'nav-home', onPress: () => goTab('home') },
     { x: 96, y: 782, w: 102, h: 54, label: 'nav-inbox', onPress: () => goTab('inbox') },
     { x: 204, y: 782, w: 54, h: 54, label: 'nav-brain', onPress: () => goTab('brain') },
-    { x: 258, y: 782, w: 50, h: 54, label: 'nav-lead', onPress: () => openLeads() },
+    { x: 258, y: 782, w: 50, h: 54, label: 'nav-market', onPress: () => goTab('market') },
     { x: 308, y: 782, w: 54, h: 54, label: 'nav-profile', onPress: () => goTab('profile') },
   ];
   const getTruthHotspots = (key: TruthKey): Hotspot[] => {
@@ -6670,12 +8751,20 @@ function HomeScreenInner(){
     const askPill: Hotspot = { x: 237, y: 722, w: 140, h: 38, label: 'ask-nexora', onPress: () => goTab('brain') };
     const askRound: Hotspot = { x: 339, y: 722, w: 40, h: 38, label: 'ask-nexora', onPress: () => goTab('brain') };
     const nav = truthNavSpots();
+    // Lead / Customer frames from the new design: the Market tab is the active pill.
+    const marketNav: Hotspot[] = [
+      { x: 30, y: 782, w: 54, h: 54, label: 'nav-home', onPress: () => goTab('home') },
+      { x: 84, y: 782, w: 52, h: 54, label: 'nav-inbox', onPress: () => goTab('inbox') },
+      { x: 136, y: 782, w: 54, h: 54, label: 'nav-brain', onPress: () => goTab('brain') },
+      { x: 194, y: 782, w: 114, h: 54, label: 'nav-market', onPress: () => goTab('market') },
+      { x: 318, y: 782, w: 54, h: 54, label: 'nav-profile', onPress: () => goTab('profile') },
+    ];
     // Bottom bar with Brain active (AI Content Generation, Published, Scheduled, Failed frames).
     const brainNav: Hotspot[] = [
       { x: 36, y: 782, w: 58, h: 54, label: 'nav-home', onPress: () => goTab('home') },
       { x: 94, y: 782, w: 46, h: 54, label: 'nav-inbox', onPress: () => goTab('inbox') },
       { x: 141, y: 782, w: 101, h: 54, label: 'nav-brain', onPress: () => goTab('brain') },
-      { x: 244, y: 782, w: 60, h: 54, label: 'nav-lead', onPress: () => openLeads() },
+      { x: 244, y: 782, w: 60, h: 54, label: 'nav-market', onPress: () => goTab('market') },
       { x: 304, y: 782, w: 58, h: 54, label: 'nav-profile', onPress: () => goTab('profile') },
     ];
     // "Choose how to use image": AI image / Uploaded / Both.
@@ -6739,19 +8828,21 @@ function HomeScreenInner(){
 
       // ---- Lead flow (measured from the attached SVGs)
       case 'leadsList': {
-        const tops = [281, 373, 465, 557, 649, 741];
+        // Leads is its own page now (back arrow, title, menu); everything sits 69 pt higher than the old frame.
+        const tops = [212, 304, 396, 488, 580, 672];
         return [
-          ...tops.map((top, i): Hotspot => ({ x: 0, y: top, w: 393, h: i === tops.length - 1 ? 41 : 91, label: `lead-row-${i + 1}`, onPress: () => openLeads() })),
-          // Small addition (not in the Figma frame): the only way into the Customers list from Leads.
-          { x: 291, y: 104, w: 86, h: 26, label: 'customers', chip: 'Customers \u203A', onPress: () => { openCustomers(() => openLeads()); } },
-          ...header,
-          { x: 16, y: 178, w: 361, h: 42, label: 'search-leads', onPress: ask('Show me my leads and who I should follow up with first.') },
-          { x: 16, y: 237, w: 80, h: 34, label: 'filter-all', onPress: ask('List all my leads with their status.') },
-          { x: 113, y: 237, w: 90, h: 34, label: 'filter-new', onPress: ask('Which of my leads are new and have not been contacted yet?') },
-          { x: 221, y: 237, w: 116, h: 34, label: 'filter-contacted', onPress: ask('Which leads have I already contacted, and who needs a follow-up?') },
-          { x: 352, y: 237, w: 41, h: 34, label: 'filter-qualified', onPress: ask('Which of my leads are qualified and ready to buy?') },
+          back,
+          kebab('Leads', 'Show me my leads and who I should follow up with first.'),
+          ...tops.map((top, i): Hotspot => ({ x: 0, y: top, w: 393, h: 91, label: `lead-row-${i + 1}`, onPress: () => openLeads() })),
+          // Small addition (not in the Figma frame): a way into the Customers list from Leads.
+          { x: 252, y: 61, w: 86, h: 30, label: 'customers', chip: 'Customers \u203A', onPress: () => { openCustomers(() => openLeads()); } },
+          { x: 16, y: 109, w: 361, h: 42, label: 'search-leads', onPress: ask('Show me my leads and who I should follow up with first.') },
+          { x: 16, y: 168, w: 80, h: 34, label: 'filter-all', onPress: ask('List all my leads with their status.') },
+          { x: 113, y: 168, w: 90, h: 34, label: 'filter-new', onPress: ask('Which of my leads are new and have not been contacted yet?') },
+          { x: 221, y: 168, w: 116, h: 34, label: 'filter-contacted', onPress: ask('Which leads have I already contacted, and who needs a follow-up?') },
+          { x: 352, y: 168, w: 41, h: 34, label: 'filter-qualified', onPress: ask('Which of my leads are qualified and ready to buy?') },
           askRound,
-          ...nav,
+          ...marketNav,
         ];
       }
       case 'leadProfile':
@@ -6762,7 +8853,7 @@ function HomeScreenInner(){
           { x: 92, y: 742, w: 213, h: 33, label: 'view-recommendations', onPress: () => openDemoInvite('leadProfile') },
           kebab('Lead', 'Summarise this lead and suggest my next step to convert them.'),
           askRound,
-          ...nav,
+          ...marketNav,
         ];
       case 'leadDemoInvite':
         return [
@@ -6771,7 +8862,7 @@ function HomeScreenInner(){
           { x: 16, y: 719, w: 316, h: 46, label: 'view-other-suggestions', onPress: ask('Give me other ways to convert this lead besides a product demo invitation.') },
           kebab('Recommendation', 'Explain why you recommend sending a personalized demo invitation.'),
           askRound,
-          ...nav,
+          ...marketNav,
         ];
 
       // ---- Customers branch
@@ -6783,7 +8874,7 @@ function HomeScreenInner(){
           { x: 16, y: 99, w: 361, h: 38, label: 'search-customers', onPress: ask('Show me my customers, newest first, with how much each has spent.') },
           ...tops.map((top, i): Hotspot => ({ x: 0, y: top, w: 393, h: 91, label: `customer-row-${i + 1}`, onPress: () => openCustomers() })),
           askPill,
-          ...nav,
+          ...marketNav,
         ];
       }
       case 'customerProfile':
@@ -6791,26 +8882,34 @@ function HomeScreenInner(){
           back,
           { x: 16, y: 187, w: 160, h: 40, label: 'message', onPress: () => goTab('inbox') },
           { x: 216, y: 187, w: 160, h: 40, label: 'call', onPress: () => startCall('customerProfile') },
-          { x: 140, y: 246, w: 76, h: 34, label: 'order-tab', onPress: () => openOrders('All') },
+          { x: 140, y: 246, w: 76, h: 34, label: 'order-tab', onPress: () => openTruth('customerOrders') },
           { x: 240, y: 246, w: 145, h: 34, label: 'interaction-history-tab', onPress: () => openTruth('interactionHistory') },
           kebab('Customer', 'Summarise this customer: what they bought, what they asked about, and what I should offer them next.'),
-          { x: 92, y: 593, w: 223, h: 33, label: 'send-personalized-offer', onPress: () => openDemoInvite('customerProfile') },
+          { x: 92, y: 603, w: 223, h: 33, label: 'send-personalized-offer', onPress: () => openDemoInvite('customerProfile') },
           askPill,
-          ...nav,
+          ...marketNav,
         ];
-      case 'interactionHistory': {
-        const rowTops = [148, 237, 326, 415, 504, 593, 682];
+      case 'interactionHistory':
+      case 'customerOrders': {
+        // Both are tabs of the customer profile now: the profile header and tabs on top, the history list below.
+        const ordersView = key === 'customerOrders';
+        const rowTops = [319, 408, 497, 586, 675];
         const rowGo = [() => goTab('inbox'), () => openOrders('All'), () => showTruthToast('Calls are logged here after they end'), () => openOrders('All'), () => goTab('inbox'), () => showTruthToast('Notes are added from the customer profile'), () => openOrders('All')];
         return [
           back,
           kebab('Interaction history', 'Summarise my recent interactions with this customer.'),
-          { x: 16, y: 94, w: 80, h: 32, label: 'filter-all', onPress: () => showTruthToast('Showing all interactions') },
-          { x: 110, y: 94, w: 96, h: 32, label: 'filter-messages', onPress: () => goTab('inbox') },
-          { x: 218, y: 94, w: 76, h: 32, label: 'filter-calls', onPress: () => showTruthToast('Calls are logged here after they end') },
-          { x: 306, y: 94, w: 87, h: 32, label: 'filter-orders', onPress: () => openOrders('All') },
-          ...rowTops.map((top, i): Hotspot => ({ x: 0, y: top, w: 393, h: 86, label: `interaction-${i + 1}`, onPress: rowGo[i] })),
+          { x: 16, y: 172, w: 172, h: 42, label: 'message', onPress: () => goTab('inbox') },
+          { x: 204, y: 172, w: 172, h: 42, label: 'call', onPress: () => startCall('customerProfile') },
+          { x: 16, y: 226, w: 104, h: 32, label: 'overview-tab', onPress: () => openTruth('customerProfile') },
+          { x: 140, y: 226, w: 76, h: 32, label: 'order-tab', onPress: () => (ordersView ? showTruthToast('Showing orders') : openTruth('customerOrders')) },
+          { x: 240, y: 226, w: 145, h: 32, label: 'interaction-history-tab', onPress: () => (ordersView ? openTruth('interactionHistory') : showTruthToast('Showing all interactions')) },
+          { x: 16, y: 265, w: 80, h: 32, label: 'filter-all', onPress: () => (ordersView ? openTruth('interactionHistory') : showTruthToast('Showing all interactions')) },
+          { x: 110, y: 265, w: 96, h: 32, label: 'filter-messages', onPress: () => goTab('inbox') },
+          { x: 218, y: 265, w: 76, h: 32, label: 'filter-calls', onPress: () => showTruthToast('Calls are logged here after they end') },
+          { x: 306, y: 265, w: 87, h: 32, label: 'filter-orders', onPress: () => (ordersView ? openOrders('All') : openTruth('customerOrders')) },
+          ...rowTops.map((top, i): Hotspot => ({ x: 0, y: top, w: 393, h: 86, label: `interaction-${i + 1}`, onPress: ordersView ? () => openOrders('All') : rowGo[i] })),
           askPill,
-          ...nav,
+          ...marketNav,
         ];
       }
       case 'addCustomer':
@@ -6822,7 +8921,7 @@ function HomeScreenInner(){
             { text: 'Cancel', style: 'cancel' as const },
           ]) },
           kebab('New customer', 'How should I group and tag my customers?'),
-          ...nav,
+          ...marketNav,
         ];
 
       // ---- Schedule flow (measured from the attached SVGs)
@@ -6874,13 +8973,13 @@ function HomeScreenInner(){
         return [
           back,
           { x: 80, y: 205, w: 270, h: 34, label: 'use-suggestion', onPress: () => applyAiSuggestion('follow_up') },
-          { x: 145, y: 274, w: 100, h: 70, label: 'tab-meeting', onPress: () => switchSchedKind('meeting') },
-          { x: 274, y: 274, w: 102, h: 70, label: 'tab-task', onPress: () => switchSchedKind('task') },
-          { x: 16, y: 388, w: 361, h: 62, label: 'who-card', onPress: () => openPicker('who') },
-          { x: 15, y: 500, w: 208, h: 40, label: 'date', onPress: () => openPicker('date') },
-          { x: 245, y: 500, w: 130, h: 40, label: 'time', onPress: () => openPicker('time') },
-          { x: 16, y: 586, w: 361, h: 40, label: 'reminder', onPress: () => openPicker('reminder') },
-          { x: 16, y: 673, w: 361, h: 40, label: 'assigned-to', onPress: () => showTruthToast('Assigned to NEXORA AI (Customer Support)') },
+          { x: 145, y: 274, w: 100, h: 82, label: 'tab-meeting', onPress: () => switchSchedKind('meeting') },
+          { x: 274, y: 274, w: 102, h: 82, label: 'tab-task', onPress: () => switchSchedKind('task') },
+          { x: 16, y: 400, w: 361, h: 62, label: 'who-card', onPress: () => openPicker('who') },
+          { x: 15, y: 512, w: 208, h: 40, label: 'date', onPress: () => openPicker('date') },
+          { x: 245, y: 512, w: 130, h: 40, label: 'time', onPress: () => openPicker('time') },
+          { x: 16, y: 598, w: 361, h: 40, label: 'reminder', onPress: () => openPicker('reminder') },
+          { x: 16, y: 685, w: 361, h: 40, label: 'assigned-to', onPress: () => showTruthToast('Assigned to NEXORA AI (Customer Support)') },
           // The frame's own Schedule / Cancel buttons are below the fold, so the chip sits in the empty header.
           { x: 296, y: 50, w: 86, h: 34, label: 'schedule', chip: 'Schedule \u203A', onPress: () => stageSchedule() },
           ...nav,
@@ -6890,14 +8989,14 @@ function HomeScreenInner(){
         return [
           back,
           { x: 82, y: 211, w: 272, h: 34, label: 'use-suggestion', onPress: () => applyAiSuggestion('task') },
-          { x: 16, y: 279, w: 100, h: 70, label: 'tab-follow-up', onPress: () => switchSchedKind('follow_up') },
-          { x: 146, y: 279, w: 100, h: 70, label: 'tab-meeting', onPress: () => switchSchedKind('meeting') },
-          { x: 16, y: 484, w: 361, h: 40, label: 'related-customer', onPress: () => openPicker('related') },
-          { x: 16, y: 570, w: 110, h: 40, label: 'priority-low', onPress: () => setS({ priority: 'Low' }) },
-          { x: 141, y: 570, w: 110, h: 40, label: 'priority-medium', onPress: () => setS({ priority: 'Medium' }) },
-          { x: 266, y: 570, w: 110, h: 40, label: 'priority-high', onPress: () => setS({ priority: 'High' }) },
-          { x: 16, y: 759, w: 210, h: 22, label: 'date', onPress: () => openPicker('date') },
-          { x: 247, y: 759, w: 130, h: 22, label: 'time', onPress: () => openPicker('time') },
+          { x: 16, y: 279, w: 100, h: 82, label: 'tab-follow-up', onPress: () => switchSchedKind('follow_up') },
+          { x: 146, y: 279, w: 100, h: 82, label: 'tab-meeting', onPress: () => switchSchedKind('meeting') },
+          { x: 16, y: 496, w: 361, h: 40, label: 'related-customer', onPress: () => openPicker('related') },
+          { x: 16, y: 582, w: 110, h: 40, label: 'priority-low', onPress: () => setS({ priority: 'Low' }) },
+          { x: 141, y: 582, w: 110, h: 40, label: 'priority-medium', onPress: () => setS({ priority: 'Medium' }) },
+          { x: 266, y: 582, w: 110, h: 40, label: 'priority-high', onPress: () => setS({ priority: 'High' }) },
+          { x: 16, y: 771, w: 210, h: 22, label: 'date', onPress: () => openPicker('date') },
+          { x: 247, y: 771, w: 130, h: 22, label: 'time', onPress: () => openPicker('time') },
           // The frame's own Schedule button is below the fold, so the chip sits in the empty header.
           { x: 296, y: 50, w: 86, h: 34, label: 'schedule', chip: 'Schedule \u203A', onPress: () => stageSchedule() },
           ...nav,
@@ -6907,17 +9006,17 @@ function HomeScreenInner(){
         return [
           back,
           { x: 82, y: 181, w: 272, h: 34, label: 'use-suggestion', onPress: () => applyAiSuggestion('meeting') },
-          { x: 16, y: 249, w: 100, h: 70, label: 'tab-follow-up', onPress: () => switchSchedKind('follow_up') },
-          { x: 276, y: 249, w: 100, h: 70, label: 'tab-task', onPress: () => switchSchedKind('task') },
-          { x: 160, y: 466, w: 28, h: 28, label: 'remove-participant-1', onPress: () => setS({ touchedParticipants: true, participants: sched.participants.filter((_, i) => i !== 0) }) },
-          { x: 345, y: 466, w: 28, h: 28, label: 'remove-participant-2', onPress: () => setS({ touchedParticipants: true, participants: sched.participants.filter((_, i) => i !== 1) }) },
-          { x: 16, y: 517, w: 140, h: 26, label: 'add-participant', onPress: () => (sched.participants.length >= 2 ? showTruthToast('You can add up to 2 participants here') : openPicker('participant')) },
-          { x: 16, y: 585, w: 361, h: 40, label: 'related-lead', onPress: () => openPicker('related') },
-          { x: 16, y: 672, w: 110, h: 40, label: 'priority-low', onPress: () => setS({ priority: 'Low' }) },
-          { x: 141, y: 672, w: 110, h: 40, label: 'priority-medium', onPress: () => setS({ priority: 'Medium' }) },
-          { x: 266, y: 672, w: 110, h: 40, label: 'priority-high', onPress: () => setS({ priority: 'High' }) },
-          { x: 16, y: 759, w: 210, h: 22, label: 'date', onPress: () => openPicker('date') },
-          { x: 247, y: 759, w: 130, h: 22, label: 'time', onPress: () => openPicker('time') },
+          { x: 16, y: 249, w: 100, h: 82, label: 'tab-follow-up', onPress: () => switchSchedKind('follow_up') },
+          { x: 276, y: 249, w: 100, h: 82, label: 'tab-task', onPress: () => switchSchedKind('task') },
+          { x: 160, y: 478, w: 28, h: 28, label: 'remove-participant-1', onPress: () => setS({ touchedParticipants: true, participants: sched.participants.filter((_, i) => i !== 0) }) },
+          { x: 345, y: 478, w: 28, h: 28, label: 'remove-participant-2', onPress: () => setS({ touchedParticipants: true, participants: sched.participants.filter((_, i) => i !== 1) }) },
+          { x: 16, y: 529, w: 140, h: 26, label: 'add-participant', onPress: () => (sched.participants.length >= 2 ? showTruthToast('You can add up to 2 participants here') : openPicker('participant')) },
+          { x: 16, y: 597, w: 361, h: 40, label: 'related-lead', onPress: () => openPicker('related') },
+          { x: 16, y: 684, w: 110, h: 40, label: 'priority-low', onPress: () => setS({ priority: 'Low' }) },
+          { x: 141, y: 684, w: 110, h: 40, label: 'priority-medium', onPress: () => setS({ priority: 'Medium' }) },
+          { x: 266, y: 684, w: 110, h: 40, label: 'priority-high', onPress: () => setS({ priority: 'High' }) },
+          { x: 16, y: 771, w: 210, h: 22, label: 'date', onPress: () => openPicker('date') },
+          { x: 247, y: 771, w: 130, h: 22, label: 'time', onPress: () => openPicker('time') },
           // The frame's own Schedule button is below the fold, so the chip sits in the empty header.
           { x: 296, y: 50, w: 86, h: 34, label: 'schedule', chip: 'Schedule \u203A', onPress: () => stageSchedule() },
           ...nav,
@@ -7134,10 +9233,9 @@ function HomeScreenInner(){
           back,
           { x: 16, y: 97, w: 160, h: 117, label: 'add-image', onPress: async () => { const uri = await pickLibraryImage(); if (uri) { setField(key === 'productAdd' ? 'productImage' : 'serviceImage', uri); showTruthToast('Image added'); } } },
           { x: 297, y: 97, w: 80, h: 80, label: 'add-image-2', onPress: async () => { const uri = await pickLibraryImage(); if (uri) { setField(key === 'productAdd' ? 'productImage' : 'serviceImage', uri); showTruthToast('Image added'); } } },
-          ...(key === 'serviceAdd' ? [{ x: 16.5, y: 349.5, w: 360, h: 39, label: 'service-type', onPress: () => Alert.alert('Service type', undefined, [
-            ...['Installation', 'Repair', 'Delivery', 'Consultation', 'Other'].map(t => ({ text: t, onPress: () => setField('serviceType', t) })),
-            { text: 'Cancel', style: 'cancel' as const },
-          ]) }] as Hotspot[] : []),
+          // Service type opens the dropdown from the design (drawn natively in getTruthOverlays).
+          ...(key === 'serviceAdd' ? [{ x: 16.5, y: 349.5, w: 360, h: 39, label: 'service-type', onPress: () => setField('serviceTypeOpen', truthFields.serviceTypeOpen ? '' : '1') }] as Hotspot[] : []),
+          ...(key === 'serviceAdd' && truthFields.serviceTypeOpen ? SERVICE_TYPES.map((t, i): Hotspot => ({ x: 16, y: 404 + i * 32.5, w: 361, h: 32, label: `service-type-${i}`, onPress: () => { setTruthFields(f => ({ ...f, serviceType: t, serviceTypeOpen: '' })); } })) : []),
           { x: 16, y: 716, w: 361, h: 50, label: 'continue', onPress: async () => {
             const ok = await saveQuickItem(key === 'productAdd' ? 'product' : 'service');
             if (!ok) return;
@@ -7158,7 +9256,7 @@ function HomeScreenInner(){
           { x: 36, y: 782, w: 58, h: 54, label: 'nav-home', onPress: () => goTab('home') },
           { x: 94, y: 782, w: 46, h: 54, label: 'nav-inbox', onPress: () => goTab('inbox') },
           { x: 141, y: 782, w: 101, h: 54, label: 'nav-brain', onPress: () => goTab('brain') },
-          { x: 244, y: 782, w: 60, h: 54, label: 'nav-lead', onPress: () => openLeads() },
+          { x: 244, y: 782, w: 60, h: 54, label: 'nav-market', onPress: () => goTab('market') },
           { x: 304, y: 782, w: 58, h: 54, label: 'nav-profile', onPress: () => goTab('profile') },
         ];
       default:
@@ -7182,6 +9280,13 @@ function HomeScreenInner(){
     const priorityRing = (y: number) => (['Low', 'Medium', 'High'] as const).forEach((pr, i) => {
       if (sched.priority === pr) out.push(box(`pr-${pr}`, [16, 141, 266][i], y, 110, 40, { borderRadius: 8 * sc, borderWidth: 2.5 * sc, borderColor: PRIORITY_COLOR[pr] }));
     });
+    // Add product / service: the design's floating "Ask NEXORA" pill sits on top of Continue. Draw Continue cleanly over it.
+    if (key === 'productAdd' || key === 'serviceAdd') {
+      out.push(box('continue-btn', 14, 712, 365, 58, { backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' },
+        <View style={{ width: 361 * sc, height: 50 * sc, borderRadius: 25 * sc, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}>
+          <Text style={{ color: '#FFFFFF', fontSize: 15 * sc, fontWeight: '600' }}>Continue</Text>
+        </View>));
+    }
     if (key === 'conflictTime' && conflictInfo) {
       out.push(box('c-msg', 92, 213, 252, 34, { backgroundColor: '#FFECEC', justifyContent: 'center' },
         <Text style={{ fontSize: 13 * sc, lineHeight: 17 * sc, color: '#6B7280' }}>You already have a meeting at {conflictInfo.existing}</Text>));
@@ -7194,10 +9299,10 @@ function HomeScreenInner(){
       });
     }
     if (key === 'createSchedule') {
-      out.push(box('d-date', 60, 507, 150, 26, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 14 * sc, color: '#000' }}>{dateLabel}</Text>));
-      out.push(box('d-time', 290, 507, 78, 26, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 14 * sc, color: '#000' }}>{sched.time}</Text>));
+      out.push(box('d-date', 60, 519, 150, 26, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 14 * sc, color: '#000' }}>{dateLabel}</Text>));
+      out.push(box('d-time', 290, 519, 78, 26, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 14 * sc, color: '#000' }}>{sched.time}</Text>));
       // Always drawn: covers the design's sample contact until a real one is chosen.
-      out.push(box('d-who', 84, 397, 250, 46, { backgroundColor: '#FFF', justifyContent: 'center' }, sched.who ? <>
+      out.push(box('d-who', 84, 409, 250, 46, { backgroundColor: '#FFF', justifyContent: 'center' }, sched.who ? <>
         <Text numberOfLines={1} style={{ fontSize: 16 * sc, fontWeight: '700', color: '#0B1220' }}>{sched.who}</Text>
         <Text numberOfLines={1} style={{ fontSize: 13 * sc, color: '#6B7280', marginTop: 3 * sc }}>{sched.whoMeta}</Text>
       </> : <Text numberOfLines={1} style={{ fontSize: 15 * sc, color: '#8A97A6' }}>Choose a customer or lead</Text>));
@@ -7208,21 +9313,35 @@ function HomeScreenInner(){
     if (key === 'serviceAdd' && truthFields.serviceType) {
       out.push(box('sa-type', 30, 355, 280, 28, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 13 * sc, color: '#0B1220' }}>{truthFields.serviceType}</Text>));
     }
+    if (key === 'serviceAdd' && truthFields.serviceTypeOpen) {
+      // The open "Select service type" dropdown from the Figma design.
+      out.push(box('sa-type-ring', 16, 350, 361, 40, { zIndex: 30, borderRadius: 8 * sc, borderWidth: 1.5 * sc, borderColor: '#1E56A0' }));
+      out.push(box('sa-type-list', 16, 395, 361, 148, { zIndex: 30, borderRadius: 12 * sc, borderWidth: 1, borderColor: '#E6EAF0', backgroundColor: '#FFFFFF', paddingVertical: 6 * sc, paddingHorizontal: 4 * sc, shadowColor: '#0B1220', shadowOpacity: 0.08, shadowRadius: 10, elevation: 4 },
+        <>{SERVICE_TYPES.map(t => {
+          const on = truthFields.serviceType === t;
+          return (
+            <View key={t} style={{ height: 32.5 * sc, borderRadius: 8 * sc, paddingHorizontal: 12 * sc, backgroundColor: on ? '#BCCDE5' : 'transparent', flexDirection: 'row', alignItems: 'center' }}>
+              <Text style={{ flex: 1, fontSize: 14 * sc, color: '#0B1220' }}>{t}</Text>
+              {on && <Ionicons name="checkmark" size={14 * sc} color="#1E56A0" />}
+            </View>
+          );
+        })}</>));
+    }
     const pickedImg = key === 'productAdd' ? truthFields.productImage : key === 'serviceAdd' ? truthFields.serviceImage : undefined;
     if (pickedImg) out.push(box('pa-img', 196, 97, 80, 80, { borderRadius: 12 * sc, overflow: 'hidden', backgroundColor: '#FFF' }, <Image source={{ uri: pickedImg }} style={{ width: '100%', height: '100%' }} />));
     if (key === 'scheduleTask') {
-      priorityRing(570);
-      if (sched.touchedRelated) out.push(box('t-rel', 56, 493, 262, 22, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 14 * sc, color: '#0B1220' }}>{sched.related}</Text>));
+      priorityRing(582);
+      if (sched.touchedRelated) out.push(box('t-rel', 56, 505, 262, 22, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 14 * sc, color: '#0B1220' }}>{sched.related}</Text>));
     }
     if (key === 'scheduleMeeting') {
-      priorityRing(672);
-      if (sched.touchedRelated) out.push(box('m-rel', 56, 594, 262, 22, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 14 * sc, color: '#0B1220' }}>{sched.related}</Text>));
+      priorityRing(684);
+      if (sched.touchedRelated) out.push(box('m-rel', 56, 606, 262, 22, { backgroundColor: '#FFF', justifyContent: 'center' }, <Text style={{ fontSize: 14 * sc, color: '#0B1220' }}>{sched.related}</Text>));
       {   // always drawn: empty slots cover the design's sample participants
         [0, 1].forEach(i => {
           const pp = sched.participants[i];
           const x = i === 0 ? 16 : 202, w = i === 0 ? 174 : 175;
-          if (!pp) { out.push(box(`pp-${i}`, x - 1, 453, w + 2, 56, { backgroundColor: '#FFF' })); return; }
-          out.push(box(`pp-${i}`, x, 454, w, 54, { backgroundColor: '#FFF', borderRadius: 12 * sc, borderWidth: 1, borderColor: '#D5D9E0', flexDirection: 'row', alignItems: 'center', paddingLeft: 10 * sc }, <>
+          if (!pp) { out.push(box(`pp-${i}`, x - 1, 465, w + 2, 56, { backgroundColor: '#FFF' })); return; }
+          out.push(box(`pp-${i}`, x, 466, w, 54, { backgroundColor: '#FFF', borderRadius: 12 * sc, borderWidth: 1, borderColor: '#D5D9E0', flexDirection: 'row', alignItems: 'center', paddingLeft: 10 * sc }, <>
             <View style={{ width: 36 * sc, height: 36 * sc, borderRadius: 18 * sc, backgroundColor: '#E9EFF6', alignItems: 'center', justifyContent: 'center' }}>
               <Text style={{ fontSize: 13 * sc, fontWeight: '700', color: '#1E56A0' }}>{pp.name.split(' ').map(w2 => w2[0]).slice(0, 2).join('').toUpperCase()}</Text>
             </View>
@@ -7349,12 +9468,12 @@ function HomeScreenInner(){
     }
     if (key === 'scheduleTask') {
       return [
-        { label: 'task-title', x: 16, y: 397, w: 361, h: 40, value: sched.title, onChangeText: t => setS({ title: t }), padLeft: 42, fontSize: 13, maxLength: 120 },
-        { label: 'task-description', x: 16, y: 658, w: 361, h: 58, value: sched.desc, onChangeText: t => setS({ desc: t }), padLeft: 10, fontSize: 13, multiline: true, maxLength: 500 },
+        { label: 'task-title', x: 16, y: 409, w: 361, h: 40, value: sched.title, onChangeText: t => setS({ title: t }), padLeft: 42, fontSize: 13, maxLength: 120 },
+        { label: 'task-description', x: 16, y: 670, w: 361, h: 58, value: sched.desc, onChangeText: t => setS({ desc: t }), padLeft: 10, fontSize: 13, multiline: true, maxLength: 500 },
       ];
     }
     if (key === 'scheduleMeeting') {
-      return [{ label: 'meeting-title', x: 16, y: 367, w: 361, h: 40, value: sched.title, onChangeText: t => setS({ title: t }), padLeft: 42, fontSize: 13, maxLength: 120 }];
+      return [{ label: 'meeting-title', x: 16, y: 379, w: 361, h: 40, value: sched.title, onChangeText: t => setS({ title: t }), padLeft: 42, fontSize: 13, maxLength: 120 }];
     }
     if (key === 'editPost') {
       return [{ label: 'post-description', x: 15, y: 477, w: 361, h: 96, value: post.text, onChangeText: t => setPost(p => ({ ...p, text: t })), padLeft: 12, fontSize: 13.5, multiline: true, maxLength: 500 }];
@@ -7626,7 +9745,7 @@ function HomeScreenInner(){
       ['sparkles', 'Answers from your own business knowledge', 'Products, prices and policies, with sources.'],
       ['chatbubbles', 'Replies to customers while you are away', 'WhatsApp, Instagram and Facebook in one inbox.'],
       ['people', 'A community of business owners', 'Ask questions, share wins, find partners online.'],
-      ['trending-up', 'Watches the market for you', 'Trends and trending businesses, refreshed every 6 hours.'],
+      ['trending-up', 'Watches the market for you', 'Trends and trending businesses, refreshed every hour.'],
     ];
     const togglePick = (k: FeatureKey) => setInterestPicks(p => {
       const next = p.includes(k) ? p.filter(x => x !== k) : [...p, k];
@@ -7640,17 +9759,13 @@ function HomeScreenInner(){
         {/* Brand side */}
         {compact && (
           <Pressable onPress={() => setScreen('onboarding')} accessibilityRole="link" accessibilityLabel="Back to the Nexora AI home page" style={{ height: 60, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: '#E6ECF3', cursor: 'pointer' } as any}>
-            <View style={{ width: 32, height: 32, borderRadius: 9, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="sparkles" size={16} color="#FFFFFF" /></View>
-            <Text style={{ marginLeft: 10, fontSize: 17, fontWeight: '800', color: '#0B1220' }}>Nexora AI</Text>
+            <Ionicons name="chevron-back" size={22} color="#0B1220" style={{ marginRight: 8 }} />
+            <NexoraLockup letter={14} />
           </Pressable>
         )}
         <View style={{ display: compact ? 'none' : 'flex', flex: twoCol ? 1.15 : undefined, backgroundColor: '#0B1220', paddingHorizontal: twoCol ? 56 : 32, paddingVertical: twoCol ? 48 : 28, justifyContent: 'space-between' }}>
           <Pressable onPress={() => setScreen('onboarding')} accessibilityRole="link" accessibilityLabel="Back to the Nexora AI home page" style={{ flexDirection: 'row', alignItems: 'center', gap: 12, alignSelf: 'flex-start', cursor: 'pointer' } as any}>
-            <NexoraLogo size={44} />
-            <View>
-              <Text style={{ color: '#FFFFFF', fontSize: 20, fontWeight: '800' }}>Nexora AI</Text>
-              <Text style={{ color: '#9FB0C6', fontSize: 12 }}>AI Business Manager</Text>
-            </View>
+            <NexoraLockup letter={20} light />
           </Pressable>
           <View style={{ marginTop: twoCol ? 0 : 24, maxWidth: 560 }}>
             <Text style={{ color: '#FFFFFF', fontSize: twoCol ? 40 : 28, lineHeight: twoCol ? 48 : 34, fontWeight: '800' }}>Run your business with an AI manager that never sleeps.</Text>
@@ -7704,7 +9819,7 @@ function HomeScreenInner(){
                 <Text style={{ fontSize: 24, fontWeight: '800', color: '#0B1220' }}>Create your free account</Text>
                 <Text style={{ fontSize: 14, color: '#5C6B7A', marginTop: 4 }}>Start on the Free plan. No card needed.</Text>
                 {label('Full name')}
-                {input({ value: fullName, onChangeText: setFullName, placeholder: 'e.g. Ada Okafor', autoComplete: 'name', maxLength: 80 }, 'person-outline')}
+                {input({ value: fullName, onChangeText: setFullName, placeholder: 'e.g. John Doe', autoComplete: 'name', maxLength: 80 }, 'person-outline')}
                 {label('Email')}
                 {input({ value: email, onChangeText: setEmail, placeholder: 'you@business.com', autoComplete: 'email', keyboardType: 'email-address', autoCapitalize: 'none' }, 'mail-outline')}
                 {label('Password')}
@@ -7799,6 +9914,11 @@ function HomeScreenInner(){
               </>
             )}
           </View>
+          <Pressable onPress={() => { setAuthError(''); setInfoMessage(''); setScreen('onboarding'); }} accessibilityRole="link" accessibilityLabel="Back to the Nexora AI home page"
+            style={{ marginTop: 18, flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 6, cursor: 'pointer' } as any}>
+            <Ionicons name="arrow-back" size={16} color="#1E56A0" />
+            <Text style={{ color: '#1E56A0', fontSize: 14, fontWeight: '700' }}>Back to home page</Text>
+          </Pressable>
           <View style={{ flexDirection: 'row', gap: 18, marginTop: 18 }}>
             <Text style={{ color: '#64748B', fontSize: 12 }} onPress={() => Linking.openURL(PRIVACY_POLICY_URL)}>Privacy</Text>
             <Text style={{ color: '#64748B', fontSize: 12 }} onPress={() => Linking.openURL(TERMS_URL)}>Terms</Text>
@@ -7819,10 +9939,26 @@ function HomeScreenInner(){
   }
   if (IS_WEB && hookWidth >= WEB_AUTH_PAGE_MIN && ['signup', 'login', 'forgotPassword'].includes(screen)) return renderWebAuthPage();
 
+  // The Figma screens draw a pretend status bar (11:30, full signal and battery) in their top 44 points.
+  // Cover that strip with the screen's own colour and show the phone's real status bar there instead.
+  const STATUS_STRIP = 44;
+  const realStatusBar = (bg: string) => {
+    const light = !['#FFFFFF', '#F5F6F8'].includes(bg);
+    return (
+      <>
+        <StatusBar style={light ? 'light' : 'dark'} translucent backgroundColor="transparent" />
+        <View pointerEvents="none" style={{ position: 'absolute', left: 0, top: 0, width, height: Math.ceil(STATUS_STRIP * scale), backgroundColor: bg, zIndex: 60 }} />
+      </>
+    );
+  };
+  const LOGIN_STRIP = ['#0F2942', '#0F2942', '#0F2942', '#0F2942', '#586C84'];
+  const SIGNUP_STRIP = ['#0F2942', '#0F2942', '#0F2942', '#0F2942', '#0F2942', '#586C84', '#FFFFFF', '#FFFFFF'];
+  const ONBOARDING_STRIP = ['#FFFFFF', '#FFFFFF', '#FFFFFF', '#F5F6F8'];
+
   if(screen==='launch'){
     return(
       <View style={styles.fullScreen} onLayout={onRootLayout}>
-        <StatusBar hidden/>
+        {realStatusBar('#0F2942')}
         <Animated.View style={[styles.svgFrame,{width,height:Math.max(height,scaledHeight),opacity:launchOpacity}]}>
           <LaunchSVG width={width} height={scaledHeight} viewBox={SVG_VIEWBOX} preserveAspectRatio="xMidYMid meet"/>
         </Animated.View>
@@ -7867,10 +10003,7 @@ function HomeScreenInner(){
       const topLast = Object.entries(uLw).sort((x, y) => y[1] - x[1]).slice(0, 3);
       const fewer = topLast.filter(([n, q]) => (uTw[n] || 0) < q).length;
       current = { state: 'home1b', dropPct: pct, title: `Your sales dropped ${pct}% this week`,
-        desc: fewer > 0 ? `${fewer} of your top products had fewer sales compared to last week` : `Revenue is $${Math.round(tw).toLocaleString()} vs $${Math.round(lw).toLocaleString()} last week` };
-    } else if (hot) {
-      current = { state: 'home1c', trending: hot[0], title: `${short(hot[0])} is trending`,
-        desc: `Demand is up to ${hot[1]} this week. You may want to increase your stock` };
+        desc: fewer > 0 ? `${fewer} of your top products had fewer sales compared to last week` : `Revenue is ${Math.round(tw).toLocaleString()} vs ${Math.round(lw).toLocaleString()} last week` };
     } else {
       const top = Object.entries(uTw).sort((x, y) => y[1] - x[1]);
       const upPct = lw > 0 && tw > lw ? Math.round((tw / lw - 1) * 100) : 0;
@@ -7880,15 +10013,61 @@ function HomeScreenInner(){
           : top.length ? `Consider promoting your top ${Math.min(3, top.length)} product${top.length === 1 ? '' : 's'} to boost sales this week`
           : `${thisWeek.length} order${thisWeek.length === 1 ? '' : 's'} this week. Keep the momentum going` };
     }
+    // What's trending: one of the business's own products selling faster, otherwise the top trend
+    // Nexora found online for this business (Trending for you).
+    const webTrend = trendsData?.trends?.[0];
+    const trending: Ins | null = hot
+      ? { state: 'home1c', trending: hot[0], title: `${short(hot[0])} is trending`, desc: `Demand is up to ${hot[1]} this week. You may want to increase your stock` }
+      : webTrend ? { state: 'home1c', title: short(webTrend.title, 44), desc: webTrend.why_it_matters || webTrend.summary } : null;
+    // What Nexora has done: replies, bookings and escalations it handled (while away, or in the last 24 hours).
     const a = awayStats?.actions ?? 0, o = awayStats?.opportunities ?? 0;
-    const away: Ins = { state: 'home1d', title: awayMode ? "While you're away" : 'While you were away',
-      desc: awayStats ? `NEXORA handled ${a} action${a === 1 ? '' : 's'} and found ${o} opportunit${o === 1 ? 'y' : 'ies'} for your business`
+    const done: Ins = { state: 'home1d', title: awayMode ? "While you're away" : awayEndedAt !== null && Date.now() - awayEndedAt < 12 * 3600_000 ? 'While you were away' : 'What NEXORA did today',
+      desc: awayStats ? `NEXORA handled ${a} action${a === 1 ? '' : 's'} and found ${o} new conversation${o === 1 ? '' : 's'} for your business`
         : 'Turn on Away mode and NEXORA will answer customers for you while you are busy' };
     const awayActive = awayMode || (awayEndedAt !== null && Date.now() - awayEndedAt < 12 * 3600_000);
-    const showAway = homeView === 'away' || (homeView === 'auto' && awayActive);
-    return { ...(showAway ? away : current), showingAway: showAway };
+    // The three cards take turns every 30 seconds (Home); while Away mode is on, Nexora's activity comes first.
+    const cards: Ins[] = awayActive ? [done, current, ...(trending ? [trending] : [])] : [current, ...(trending ? [trending] : []), done];
+    const pick = cards[homeCardIdx % cards.length];
+    return { ...pick, showingAway: pick.state === 'home1d', index: homeCardIdx % cards.length, count: cards.length };
   })();
 
+  // Desktop web (sidebar visible): one slim page bar with the page title, its main actions, then bell and profile.
+  const isDesktopWeb = IS_WEB && !!userId && hookWidth >= 1000;
+  const renderDesktopBar = (title: string, subtitle?: string, actions?: React.ReactNode) => {
+    const dark = false;
+    return (
+      <View style={{ minHeight: 76, flexDirection: 'row', alignItems: 'center', gap: 16, paddingHorizontal: 32, paddingVertical: 14, backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: '#E6ECF3' }}>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={{ fontSize: 21, fontWeight: '700', color: '#0B1220' }} numberOfLines={1}>{title}</Text>
+          {!!subtitle && <Text style={{ fontSize: 13, color: '#5C6B7A', marginTop: 2 }} numberOfLines={1}>{subtitle}</Text>}
+        </View>
+        {actions}
+      <View style={styles.topBarRight}>
+          <Pressable onPress={() => setMainTab('inbox')} hitSlop={8} accessibilityRole="button" accessibilityLabel="Notifications" style={[styles.bellWrap, dark && styles.bellWrapDark]}>
+            <Ionicons name="notifications-outline" size={22} color={dark ? '#FFF' : '#0B1220'} />
+            <View style={styles.bellDot} />
+          </Pressable>
+          {/* FIX: this showed a stock photo of a stranger as the signed-in user's avatar. */}
+          <Pressable onPress={() => goTab('profile')} accessibilityRole="button" accessibilityLabel="Profile" style={[styles.topBarAvatar, { backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }]}>
+            {avatarUrl ? <ExpoImage source={{ uri: avatarUrl }} style={{ width: '100%', height: '100%' }} contentFit="cover" /> : <Text style={{ color: '#FFF', fontWeight: '700', fontSize: 13 }}>{(fullName || userEmail || '?').trim().split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase()}</Text>}
+          </Pressable>
+        </View>
+      </View>
+    );
+  };
+  // Page header: slim desktop bar on the web dashboard, the usual back / title / + header on phones.
+  const renderPageHeader = (title: string, subtitle: string, onBack: () => void, action?: { label: string; icon: string; onPress: () => void }) => isDesktopWeb
+    ? renderDesktopBar(title, subtitle, action ? (
+      <Pressable onPress={action.onPress} accessibilityRole="button" style={{ height: 40, paddingHorizontal: 16, borderRadius: 10, backgroundColor: '#1E56A0', flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+        <Ionicons name={action.icon as any} size={17} color="#FFFFFF" /><Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 14 }}>{action.label}</Text>
+      </Pressable>) : null)
+    : (
+      <View style={[styles.knowledgeHeader, headerSafe]}>
+        <Pressable onPress={onBack} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+        <Text style={styles.knowledgeHeaderTitle}>{title}</Text>
+        {action ? <Pressable onPress={action.onPress} hitSlop={8} accessibilityLabel={action.label}><Ionicons name="add-circle-outline" size={24} color="#0B1220" /></Pressable> : <View style={{ width: 24 }} />}
+      </View>
+    );
   const renderTopBar = (dark: boolean = false) => (
     <View style={[styles.topBar, headerSafe, dark && styles.topBarDark]}>
       {/* Web with the sidebar: the sidebar already carries the menu and the Nexora name, so the bar only keeps the bell and profile. */}
@@ -7897,10 +10076,8 @@ function HomeScreenInner(){
           <Pressable onPress={() => drawerOpenFn()} hitSlop={10} accessibilityRole="button" accessibilityLabel="Open menu">
             <Ionicons name="menu-outline" size={26} color={dark ? '#FFF' : '#0B1220'} />
           </Pressable>
-          <NexoraLogo size={32} />
-          <View style={styles.topBarTitleWrap}>
-            <Text style={[styles.topBarTitle, dark && styles.topBarTitleDark]}>Nexora AI</Text>
-            <Text style={[styles.topBarSubtitle, dark && styles.topBarSubtitleDark]}>AI Business Manager</Text>
+          <View style={[styles.topBarTitleWrap, { justifyContent: 'center' }]}>
+            <NexoraLockup letter={13} light={dark} style={{ marginLeft: 10 }} />
           </View>
         </>
       )}
@@ -7910,8 +10087,8 @@ function HomeScreenInner(){
           <View style={styles.bellDot} />
         </Pressable>
         {/* FIX: this showed a stock photo of a stranger as the signed-in user's avatar. */}
-        <Pressable onPress={() => goTab('profile')} accessibilityRole="button" accessibilityLabel="Profile" style={[styles.topBarAvatar, { backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }]}>
-          <Text style={{ color: '#FFF', fontWeight: '700', fontSize: 13 }}>{(fullName || userEmail || '?').trim().split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase()}</Text>
+        <Pressable onPress={() => goTab('profile')} accessibilityRole="button" accessibilityLabel="Profile" style={[styles.topBarAvatar, { backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }]}>
+          {avatarUrl ? <ExpoImage source={{ uri: avatarUrl }} style={{ width: '100%', height: '100%' }} contentFit="cover" /> : <Text style={{ color: '#FFF', fontWeight: '700', fontSize: 13 }}>{(fullName || userEmail || '?').trim().split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase()}</Text>}
         </Pressable>
       </View>
     </View>
@@ -7919,41 +10096,146 @@ function HomeScreenInner(){
 
   const renderBottomNav = () => {
     if (IS_WEB && userId && hookWidth >= 1000) return null;   // the desktop sidebar replaces the phone tab bar
-    const renderTab = (tab: MainTab, icon: string, label: string, activeColor: string = '#0B1220') => {
-      const active = mainTab === tab;
-      return (
-        <Pressable
-          key={tab}
-          onPress={() => { setMainTab(tab); setScreen('main'); }}
-          style={[styles.navItem, active && styles.navBrainItem, active && { backgroundColor: activeColor }]}
-        >
-          <Ionicons name={icon as any} size={active ? 18 : 20} color={active ? '#FFF' : '#8A97A6'} />
-          {active && <Text style={[styles.navBrainText, styles.navBrainTextActive]}>{label}</Text>}
-        </Pressable>
-      );
-    };
+    // Five tabs, as in the design: Home, Inbox, Brain, Market, Profile. The active one becomes a dark pill with its name.
+    const tabs: [MainTab, string, string][] = [['home', 'home-outline', 'Home'], ['inbox', 'chatbubble-ellipses-outline', 'Inbox'], ['brain', 'sparkles-outline', 'Brain'], ['market', 'storefront-outline', 'Market'], ['profile', 'person-circle-outline', 'Profile']];
+    const unreadN = conversations.filter(c => c.unread > 0).length;
     return (
-      <View style={[styles.bottomNav, { paddingBottom: 10 + insets.bottom }]}>
-        {renderTab('home', 'home-outline', 'Home')}
-        {renderTab('inbox', 'chatbubble-ellipses-outline', 'Inbox', '#1E9E6D')}
-        {renderTab('brain', 'sparkles', 'Brain')}
-        {/* Web: Leads and Profile stay out of the tab bar (the menu and the account row open them). */}
-        {!IS_WEB && (
-          <Pressable
-            style={styles.navItem}
-            onPress={openLeads}
-            accessibilityRole="button"
-            accessibilityLabel="Lead"
-          >
-            <Ionicons name="storefront-outline" size={20} color="#8A97A6" />
-          </Pressable>
-        )}
-        {!IS_WEB && renderTab('profile', 'person-outline', 'Profile')}
+      <View style={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 10 + insets.bottom, backgroundColor: 'transparent' }}>
+        <View style={{ height: 60, borderRadius: 30, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E7EAEE', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 7, width: '100%', maxWidth: 520, alignSelf: 'center', shadowColor: '#0B1220', shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 4 }}>
+          {tabs.map(([tab, icon, label]) => {
+            const on = mainTab === tab && screen === 'main';
+            return (
+              <Pressable key={tab} onPress={() => goTab(tab)} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected: on }} hitSlop={4}
+                style={{ height: 46, minWidth: 46, paddingHorizontal: on ? 16 : 10, borderRadius: 23, backgroundColor: on ? '#0F2942' : 'transparent', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 }}>
+                <View>
+                  <Ionicons name={(on ? icon.replace('-outline', '') : icon) as any} size={21} color={on ? '#FFFFFF' : '#6B7280'} />
+                  {tab === 'inbox' && unreadN > 0 && !on && <View style={{ position: 'absolute', top: -2, right: -4, width: 9, height: 9, borderRadius: 5, backgroundColor: '#E5484D', borderWidth: 1.5, borderColor: '#FFFFFF' }} />}
+                </View>
+                {on && <Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '700' }} numberOfLines={1}>{label}</Text>}
+              </Pressable>
+            );
+          })}
+        </View>
       </View>
     );
   };
 
+  // Biometric lock: Face ID / fingerprint before the app shows anything.
+  if (bioLocked && !WEB_AUTH_SCREENS.includes(screen)) {
+    return (
+      <View style={[styles.mainScreen, { backgroundColor: '#0F2942', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32 }]}>
+        <StatusBar style="light" />
+        <NexoraMark size={64} />
+        <Text style={{ color: '#FFFFFF', fontSize: 22, fontWeight: '700', marginTop: 18 }}>Nexora is locked</Text>
+        <Text style={{ color: '#9FB0C6', fontSize: 14, marginTop: 8, textAlign: 'center' }}>Use your {bioLabel} to open your business.</Text>
+        <Pressable onPress={unlockWithBio} accessibilityRole="button" style={{ marginTop: 28, flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#1E56A0', borderRadius: 26, height: 52, paddingHorizontal: 28 }}>
+          <Ionicons name={/face/i.test(bioLabel) ? 'scan-outline' : 'finger-print'} size={22} color="#FFFFFF" />
+          <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600' }}>Unlock</Text>
+        </Pressable>
+        <Pressable onPress={handleLogout} style={{ marginTop: 18, padding: 8 }}><Text style={{ color: '#9FB0C6' }}>Sign in with password instead</Text></Pressable>
+      </View>
+    );
+  }
+
+  // Two-factor sign-in: the app stays locked until the code from the authenticator app is entered.
+  if (mfaGate && !WEB_AUTH_SCREENS.includes(screen)) {
+    return (
+      <View style={[styles.mainScreen, { backgroundColor: '#F4F6F8', justifyContent: 'center', paddingHorizontal: 24 }]}>
+        <StatusBar style="dark" />
+        <View style={{ width: '100%', maxWidth: 420, alignSelf: 'center', alignItems: 'center' }}>
+          <View style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: '#0F2942', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="shield-checkmark-outline" size={38} color="#FFFFFF" /></View>
+          <Text style={{ fontSize: 20, fontWeight: '700', color: '#0B1220', marginTop: 16 }}>Enter your security code</Text>
+          <Text style={{ fontSize: 14, color: '#6B7A8C', marginTop: 8, textAlign: 'center' }}>Open your authenticator app and type the 6-digit code for Nexora.</Text>
+          <TextInput value={mfaGate.code} onChangeText={t => setMfaGate(g => g && { ...g, code: t.replace(/\D/g, '').slice(0, 6), error: '' })} keyboardType="number-pad" maxLength={6} autoFocus placeholder="123456" placeholderTextColor="#A5AFBB" onSubmitEditing={submitMfaGate}
+            style={[styles.editInput, { width: '100%', marginTop: 20, fontSize: 24, letterSpacing: 8, textAlign: 'center', backgroundColor: '#FFFFFF', borderColor: '#D5DEE8', height: 56 }]} />
+          {!!mfaGate.error && <Text style={{ color: '#E5484D', fontSize: 13, marginTop: 8 }}>{mfaGate.error}</Text>}
+          <Pressable onPress={submitMfaGate} disabled={mfaGate.busy || mfaGate.code.length !== 6} style={{ marginTop: 18, width: '100%', height: 50, borderRadius: 25, backgroundColor: mfaGate.code.length === 6 ? '#1E56A0' : '#8FB0D6', alignItems: 'center', justifyContent: 'center' }}>
+            {mfaGate.busy ? <ActivityIndicator color="#FFFFFF" /> : <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600' }}>Verify</Text>}
+          </Pressable>
+          <Pressable onPress={() => { setMfaGate(null); handleLogout(); }} style={{ marginTop: 14, padding: 8 }}><Text style={{ color: '#6B7A8C' }}>Use a different account</Text></Pressable>
+        </View>
+      </View>
+    );
+  }
+
   if (screen === 'main') {
+    if (mainTab === 'market') {
+      const all = market.all;
+      const opps = all?.items ?? [];
+      const tiles: { label: string; icon: string; lib?: 'mci'; onPress: () => void }[] = [
+        { label: 'Create Post', icon: 'auto-fix', lib: 'mci', onPress: () => openTruth('createPostHome') },
+        { label: 'Leads', icon: 'person-add', onPress: () => openLeads() },
+        { label: 'Customers', icon: 'people', onPress: () => openCustomers(() => goTab('market')) },
+        { label: 'Trending', icon: 'trending-up', onPress: () => { openTrends(); exploreBackRef.current = () => goTab('market'); } },
+        { label: 'Find Online', icon: 'earth', onPress: () => openFindOnline(() => goTab('market')) },
+        { label: 'Community', icon: 'account-group', lib: 'mci', onPress: () => { openCommunity(); exploreBackRef.current = () => goTab('market'); } },
+      ];
+      const askMarket = () => {
+        const q = marketAsk.trim() || 'What opportunities in my market should I act on this month?';
+        setMarketAsk(''); setMainTab('brain'); setScreen('main'); sendChatMessage(q);
+      };
+      return (
+        <View style={styles.mainScreen}>
+          <StatusBar style="dark" />
+          {renderTopBar()}
+          <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 4, paddingBottom: 120, width: '100%', maxWidth: 720, alignSelf: 'center' }} keyboardShouldPersistTaps="handled">
+            <Text style={{ fontSize: 24, fontWeight: '700', color: '#0B1220' }}>Marketplace</Text>
+            <Text style={{ fontSize: 15, color: '#6B7A8C', marginTop: 6 }}>Find, track your business with AI</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 18, borderRadius: 22, backgroundColor: '#F2F4F7', paddingHorizontal: 14, minHeight: 44 }}>
+              <NexoraMark size={26} />
+              <TextInput value={marketAsk} onChangeText={setMarketAsk} onSubmitEditing={askMarket} returnKeyType="send" placeholder="Ask AI about Market insights" placeholderTextColor="#6B7A8C" style={{ flex: 1, fontSize: 15, color: '#0B1220', paddingVertical: 10 }} />
+              {!!marketAsk.trim() && <Pressable onPress={askMarket} hitSlop={8} accessibilityLabel="Ask Nexora"><Ionicons name="arrow-up-circle" size={26} color="#1E56A0" /></Pressable>}
+            </View>
+
+            <View style={{ marginTop: 20, borderRadius: 18, backgroundColor: '#E6F6FA', padding: 18, flexDirection: 'row', gap: 12 }}>
+              <Ionicons name="sparkles" size={30} color="#3DB5E0" style={{ marginTop: 2 }} />
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 17, fontWeight: '600', color: '#1A9CC4' }}>AI Opportunity Finder</Text>
+                <Text style={{ fontSize: 14, lineHeight: 20, color: '#4B5B6E', marginTop: 8 }}>
+                  {all?.loading && !opps.length ? 'Nexora is searching suppliers, deals and grants that fit your business…'
+                    : opps.length ? `${opps.length} relevant opportunit${opps.length === 1 ? 'y' : 'ies'} for your business, based on your products, profile and market trends.`
+                    : all?.error ? all.error
+                    : 'Suppliers, wholesale deals, used equipment and grants that fit your business, found online by Nexora.'}
+                </Text>
+                <Pressable onPress={() => openOpportunities('all')} accessibilityRole="button" style={{ marginTop: 14, alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#C9EDF6', borderRadius: 14, paddingHorizontal: 18, height: 40 }}>
+                  {all?.loading && !opps.length ? <ActivityIndicator size="small" color="#1A9CC4" /> : null}
+                  <Text style={{ color: '#1A9CC4', fontSize: 15, fontWeight: '600' }}>View Opportunities</Text>
+                  <Ionicons name="arrow-forward" size={17} color="#1A9CC4" />
+                </Pressable>
+              </View>
+            </View>
+
+            <Text style={{ fontSize: 17, fontWeight: '600', color: '#0B1220', marginTop: 22 }}>Quick Action</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 12, marginTop: 12 }}>
+              {tiles.map(t => (
+                <Pressable key={t.label} onPress={t.onPress} accessibilityRole="button" accessibilityLabel={t.label}
+                  style={{ width: '31.5%', height: 92, borderRadius: 14, borderWidth: 1, borderColor: '#E6EAF0', backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', gap: 8, paddingHorizontal: 6, overflow: 'hidden' }}>
+                  {t.lib === 'mci' ? <MaterialCommunityIcons name={t.icon as any} size={24} color="#0F2942" /> : <Ionicons name={t.icon as any} size={22} color="#0F2942" />}
+                  <Text style={{ fontSize: 13.5, color: '#4B5B6E', textAlign: 'center', maxWidth: '100%' }} numberOfLines={2}>{t.label}</Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 24, marginBottom: 10 }}>
+              <Text style={{ flex: 1, fontSize: 17, fontWeight: '600', color: '#0B1220' }}>Trending Opportunities</Text>
+              <Pressable onPress={() => openOpportunities('all')} hitSlop={8} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                <Text style={{ color: '#8A97A6', fontSize: 13 }}>See All</Text>
+                <Ionicons name="chevron-forward" size={15} color="#8A97A6" />
+              </Pressable>
+            </View>
+            {all?.loading && !opps.length && [0, 1].map(i => <View key={i} style={{ height: 104, borderRadius: 16, backgroundColor: '#F2F4F7', marginBottom: 10 }} />)}
+            {!all?.loading && !opps.length && (
+              <Pressable onPress={() => loadMarket('all', true)} style={[styles.detailCard, { alignItems: 'center' }]}>
+                <Text style={styles.attentionSubtitle}>{all?.error ? 'Tap to try again.' : 'No opportunities yet. Tap to search again.'}</Text>
+              </Pressable>
+            )}
+            {opps.slice(0, 3).map(o => renderOppCard(o, false))}
+          </ScrollView>
+          {renderBottomNav()}
+        </View>
+      );
+    }
+
     if (mainTab === 'profile') {
       const twoCol = IS_WEB && hookWidth >= 1100;
       const planName = workspace ? (plans.find(p => p.key === workspace.plan)?.name ?? workspace.plan) : '';
@@ -7971,15 +10253,14 @@ function HomeScreenInner(){
         </Pressable>
       );
       const section = (title: string, children: React.ReactNode) => (
-        <View style={{ flexBasis: twoCol ? '48%' : '100%', flexGrow: 1, minWidth: 0 }}>
+        <View style={twoCol ? { flexBasis: '48%', flexGrow: 1, minWidth: 0 } : { width: '100%' }}>
           <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>{title}</Text>
           <View style={[styles.detailCard, { paddingVertical: 6 }]}>{children}</View>
         </View>
       );
       const nexoraLinks = [
-        { icon: 'card-outline', label: 'Plans & billing', sub: planSub, onPress: () => openBilling() },
         { icon: 'link-outline', label: 'Connected channels', sub: `${LIVE_CHANNELS.filter(k => connectedChannels[k]).length} of ${LIVE_CHANNELS.length} connected`, onPress: openConnectChannels },
-        { icon: 'storefront-outline', label: 'AI shop link', sub: 'Your public page where customers chat with Nexora', onPress: () => { openStorefront().catch(() => {}); } },
+        { icon: 'qr-code-outline', label: 'AI shop link', sub: 'Your public page where customers chat with Nexora', onPress: () => { openStorefront().catch(() => {}); } },
         { icon: 'bulb-outline', label: 'What Nexora learned', sub: 'Confirm facts picked up from your chats', onPress: openLearned },
         { icon: 'git-branch-outline', label: 'What Nexora decides for you', sub: autonomy && !autonomy.notSetUp ? `${autonomy.rules_on || 0} rule${autonomy.rules_on === 1 ? '' : 's'} on${autonomy.rate !== null ? ` \u00b7 ${autonomy.rate}% handled without you` : ''}` : 'Decisions you taught Nexora', onPress: () => openRules() },
         { icon: 'call-outline', label: 'When Nexora needs you', sub: alertCfg?.phone_verified && alertCfg?.call_enabled && alertCfg?.call_when !== 'never' ? `Calls ${alertCfg.phone}${alertCfg.call_when === 'all' ? ' about anything' : ' when it\'s urgent'}` : 'Let Nexora call you about things it can\'t handle', onPress: () => openOwnerAlerts() },
@@ -7989,71 +10270,126 @@ function HomeScreenInner(){
         { icon: 'people-outline', label: 'Partner profile', sub: 'What you offer and what you need', onPress: () => { openNetwork().catch(() => {}); } },
       ];
       const helpLinks = [
-        { icon: 'shield-checkmark-outline', label: 'Privacy policy', onPress: () => openInApp(PRIVACY_POLICY_URL, 'Privacy policy') },
+        { icon: 'shield-checkmark-outline', label: 'Privacy policy', onPress: openPrivacy },
         { icon: 'document-text-outline', label: 'Terms of use', onPress: openTerms },
         { icon: 'help-buoy-outline', label: 'Contact support', sub: SUPPORT_EMAIL, onPress: () => { Linking.openURL(`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('Nexora AI support')}`).catch(() => flash(`Email us at ${SUPPORT_EMAIL}`)); } },
       ];
+      const isFree = !workspace || workspace.plan === 'free';
+      const roleLabel = workspace?.role === 'staff' ? 'Team member' : 'Business Owner';
+      const prefRow = (o: { icon: string; title: string; sub: string; onPress: () => void }) => (
+        <Pressable key={o.title} onPress={o.onPress} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 14, backgroundColor: '#FFFFFF', borderRadius: 14, borderWidth: 1, borderColor: '#EEF1F4', paddingHorizontal: 16, paddingVertical: 13, marginBottom: 10 }}>
+          <Ionicons name={o.icon as any} size={21} color="#0B1220" />
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={{ fontSize: 15.5, color: '#0B1220', fontWeight: '500' }}>{o.title}</Text>
+            <Text style={{ fontSize: 13, color: '#6B7A8C', marginTop: 3 }} numberOfLines={1}>{o.sub}</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color="#6B7A8C" />
+        </Pressable>
+      );
+      const tiles = [
+        { label: 'Business\nInfo', icon: 'sparkles', onPress: () => openSettings('business') },
+        { label: 'AI\nPermissions', icon: 'head-cog-outline', lib: 'mci', onPress: () => openSettings('aiPerms') },
+        { label: 'Connected\napps', icon: 'extension-puzzle', onPress: () => openSettings('apps') },
+      ];
       return (
-        <View style={styles.mainScreen}>
-          <StatusBar style="dark" />
-          {renderTopBar()}
-          <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 12, paddingBottom: 32, width: '100%', maxWidth: 1000, alignSelf: 'center' }} keyboardShouldPersistTaps="handled">
-            <View style={{ borderRadius: 20, padding: 18, backgroundColor: '#0B1220', flexDirection: 'row', alignItems: 'center', gap: 14 }}>
-              <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}>
-                <Text style={{ color: '#FFFFFF', fontSize: 22, fontWeight: '800' }}>{(fullName || userEmail || '?').charAt(0).toUpperCase()}</Text>
-              </View>
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '800' }} numberOfLines={1}>{fullName || 'Your profile'}</Text>
-                {!!userEmail && <Text style={{ color: '#9FB0C6', fontSize: 13, marginTop: 2 }} numberOfLines={1}>{userEmail}</Text>}
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
-                  {!!workspace && <Text style={{ color: '#0B1220', backgroundColor: '#7FB2FF', fontSize: 11, fontWeight: '800', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8, overflow: 'hidden' }}>{planName.toUpperCase()}</Text>}
-                  {!!workspace && <Text style={{ color: '#D7E2F0', backgroundColor: 'rgba(255,255,255,0.1)', fontSize: 11, fontWeight: '700', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8, overflow: 'hidden' }}>{workspace.role === 'owner' ? 'Owner' : 'Staff'}</Text>}
-                  {awayMode && <Text style={{ color: '#0B1220', backgroundColor: '#FFD27A', fontSize: 11, fontWeight: '800', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8, overflow: 'hidden' }}>AWAY MODE ON</Text>}
+        <View style={[styles.mainScreen, { backgroundColor: '#F4F6F8' }]}>
+          <StatusBar style="light" />
+          <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 120 }} keyboardShouldPersistTaps="handled">
+            <View style={{ height: 150 + (insets.top || 24), backgroundColor: '#1E3249', overflow: 'hidden' }}>
+              <View style={{ position: 'absolute', left: -120, right: -120, top: 120 + (insets.top || 24), height: 400, borderRadius: 400, backgroundColor: '#F4F6F8', borderTopWidth: 3, borderColor: '#2AA7D6' }} />
+              <View style={{ position: 'absolute', top: (insets.top || 24) + 8, left: 16 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+                  <Pressable onPress={() => goTab('home')} hitSlop={10} accessibilityRole="button" accessibilityLabel="Back"><Ionicons name="chevron-back" size={26} color="#FFFFFF" /></Pressable>
+                  {!(IS_WEB && userId && hookWidth >= 1000) && <Pressable onPress={() => drawerOpenFn()} hitSlop={10} accessibilityLabel="Open menu"><Ionicons name="menu-outline" size={26} color="#FFFFFF" /></Pressable>}
                 </View>
               </View>
+              <View style={{ position: 'absolute', top: (insets.top || 24) + 8, right: 16 }}>
+                <Pressable onPress={() => openSettings('security')} hitSlop={10} accessibilityLabel="Security and privacy"><Ionicons name="shield-checkmark-outline" size={24} color="#FFFFFF" /></Pressable>
+              </View>
             </View>
-
-            <View style={{ flexDirection: twoCol ? 'row' : 'column', flexWrap: 'wrap', columnGap: 20 }}>
-              {section('Your business', (
-                <View style={{ paddingVertical: 8 }}>
-                  <Text style={styles.detailFieldLabel}>Business name</Text>
-                  <TextInput
-                    value={businessName}
-                    onChangeText={setBusinessName}
-                    onEndEditing={async () => {
-                      if (!userId) return;
-                      const { error } = await supabase.from('profiles').update({ business_name: businessName.trim() }).eq('id', userId);
-                      if (error) flash("Couldn't save your business name."); else flash('Business name saved');
-                    }}
-                    onBlur={IS_WEB ? async () => {
-                      if (!userId) return;
-                      const { error } = await supabase.from('profiles').update({ business_name: businessName.trim() }).eq('id', userId);
-                      if (!error) flash('Business name saved');
-                    } : undefined}
-                    placeholder="Used when Nexora replies to customers"
-                    placeholderTextColor="#A5AFBB"
-                    style={styles.editInput}
-                    maxLength={120}
-                  />
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 16 }}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.attentionTitle}>Away mode</Text>
-                      <Text style={styles.attentionSubtitle}>Let Nexora answer customers for you</Text>
-                    </View>
-                    <Switch value={awayMode} onValueChange={setAway} accessibilityLabel="Away mode" trackColor={{ true: '#5381BB', false: '#D5DEE8' }} thumbColor="#FFFFFF" />
+            <View style={{ alignItems: 'center', marginTop: -88, paddingHorizontal: 16, width: '100%', maxWidth: 720, alignSelf: 'center' }}>
+              <Pressable onPress={pickAvatar} accessibilityLabel="Change profile photo">
+                {avatarUrl
+                  ? <ExpoImage source={{ uri: avatarUrl }} style={{ width: 120, height: 120, borderRadius: 60, borderWidth: 4, borderColor: '#F4F6F8' }} contentFit="cover" />
+                  : <View style={{ width: 120, height: 120, borderRadius: 60, backgroundColor: '#1E56A0', borderWidth: 4, borderColor: '#F4F6F8', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#FFFFFF', fontSize: 42, fontWeight: '700' }}>{(fullName || userEmail || '?').charAt(0).toUpperCase()}</Text></View>}
+                <View style={{ position: 'absolute', right: 0, bottom: 4, width: 36, height: 36, borderRadius: 18, backgroundColor: '#0F2942', alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#F4F6F8' }}>
+                  {avatarBusy ? <ActivityIndicator size="small" color="#FFFFFF" /> : <Ionicons name="camera-outline" size={18} color="#FFFFFF" />}
+                </View>
+              </Pressable>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 }}>
+                <Text style={{ fontSize: 24, fontWeight: '700', color: '#0B1220' }} numberOfLines={1}>{fullName || 'Your profile'}</Text>
+                <MaterialCommunityIcons name="check-decagram" size={22} color="#1A9CC4" />
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8 }}>
+                <Text style={{ fontSize: 15, color: '#6B7A8C' }}>{roleLabel}</Text>
+                {!!workspace && <Pressable onPress={() => openBilling(() => goTab('profile'))} style={{ backgroundColor: '#1AA6CF', borderRadius: 16, paddingHorizontal: 14, height: 30, justifyContent: 'center' }}><Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '600' }}>{planName || 'Free'} Plan</Text></Pressable>}
+                {awayMode && <Text style={{ color: '#0B1220', backgroundColor: '#FFD27A', fontSize: 11, fontWeight: '800', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, overflow: 'hidden' }}>AUTOPILOT ON</Text>}
+              </View>
+            </View>
+            <View style={{ paddingHorizontal: 16, width: '100%', maxWidth: 720, alignSelf: 'center' }}>
+              {isFree && workspace?.role !== 'staff' && (
+                <View style={{ marginTop: 20, borderRadius: 22, backgroundColor: '#0F2942', padding: 18, flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                  <Ionicons name="sparkles" size={26} color="#E7B6FF" style={{ alignSelf: 'flex-start' }} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600' }}>Upgrade your plan</Text>
+                    <Text style={{ color: '#9FB0C6', fontSize: 13, lineHeight: 18, marginTop: 6 }}>More AI tasks, team members, connected channels and deeper AI insights.</Text>
                   </View>
-                  <Pressable onPress={() => openOwnerAlerts()} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10, padding: 10, borderRadius: 10, backgroundColor: alertCfg?.phone_verified ? '#E9F8EE' : '#FFF4E5' }}>
-                    <Ionicons name={alertCfg?.phone_verified ? 'call' : 'call-outline'} size={16} color={alertCfg?.phone_verified ? '#1E9E6D' : '#C2760C'} />
-                    <Text style={{ flex: 1, fontSize: 13, color: '#0B1220' }}>{alertCfg?.phone_verified && alertCfg?.call_enabled && alertCfg?.call_when !== 'never' ? `If a customer needs you, Nexora calls ${alertCfg.phone}.` : 'Add your phone so Nexora can call you about things it can\'t handle alone.'}</Text>
-                    <Ionicons name="chevron-forward" size={14} color="#8A97A6" />
-                  </Pressable>
+                  <Pressable onPress={() => openBilling(() => goTab('profile'))} style={{ backgroundColor: '#164E6E', borderRadius: 18, paddingHorizontal: 16, height: 38, justifyContent: 'center' }}><Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '600' }}>Upgrade</Text></Pressable>
                 </View>
-              ))}
-              {section('Your Nexora', nexoraLinks.map((o, i) => row(o, i === nexoraLinks.length - 1)))}
-              {section('Community', communityLinks.map((o, i) => row(o, i === communityLinks.length - 1)))}
-              {section('Help & legal', helpLinks.map((o, i) => row(o, i === helpLinks.length - 1)))}
-            </View>
-
+              )}
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 20 }}>
+                {tiles.map(t => (
+                  <Pressable key={t.label} onPress={t.onPress} accessibilityRole="button" accessibilityLabel={t.label.replace('\n', ' ')} style={{ width: '31.5%', minHeight: 94, borderRadius: 14, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#EEF1F4', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 12, paddingHorizontal: 6, overflow: 'hidden' }}>
+                    {t.lib === 'mci' ? <MaterialCommunityIcons name={t.icon as any} size={26} color="#0F2942" /> : <Ionicons name={t.icon as any} size={24} color="#0F2942" />}
+                    <Text style={{ fontSize: 14, color: '#0B1220', textAlign: 'center', maxWidth: '100%' }}>{t.label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Text style={{ fontSize: 15, color: '#6B7A8C', marginTop: 20, marginBottom: 10 }}>Account & preferences</Text>
+              {prefRow({ icon: 'person-outline', title: 'Personal information', sub: 'Name, photo and contact details', onPress: () => openSettings('personal') })}
+              {prefRow({ icon: 'options-outline', title: 'App preferences', sub: 'Appearance, language and accessibility', onPress: () => openSettings('preferences') })}
+              {prefRow({ icon: 'notifications-outline', title: 'Notifications', sub: 'Alerts, reminders and AI activity', onPress: () => openSettings('notifications') })}
+              {prefRow({ icon: 'shield-checkmark-outline', title: 'Security & Privacy', sub: 'Password, two-factor, sessions and your data', onPress: () => openSettings('security') })}
+              {prefRow({ icon: 'people-outline', title: 'Team & Access', sub: 'Team members, what they can do and team tasks', onPress: () => openSettings('team') })}
+              {prefRow({ icon: 'gift-outline', title: 'Refer a business', sub: 'Share your link and see who joined', onPress: () => { openReferral().catch(() => {}); } })}
+              <Modal visible={!!referral} transparent animationType="fade" onRequestClose={() => setReferral(null)} statusBarTranslucent>
+                <View style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)', justifyContent: 'center', padding: 16 }}>
+                  {referral && (() => {
+                    const link = referral.code ? `${SITE_URL}/?ref=${referral.code}` : '';
+                    const msg = `I use Nexora AI to run my business: it answers my customers 24/7, keeps my orders and chats in one place and reminds me what to do next. Try it free: ${link}`;
+                    return (
+                      <View style={{ width: '100%', maxWidth: 520, alignSelf: 'center', backgroundColor: '#FFF', borderRadius: 20, padding: 20 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                          <Text style={{ flex: 1, fontSize: 18, fontWeight: '700', color: '#0B1220' }}>Refer a business</Text>
+                          <Pressable onPress={() => setReferral(null)} hitSlop={8} accessibilityLabel="Close"><Ionicons name="close" size={22} color="#5C6B7A" /></Pressable>
+                        </View>
+                        {referral.loading ? <ActivityIndicator color="#1E56A0" style={{ marginVertical: 24 }} /> : referral.error ? <Text style={[styles.attentionSubtitle, { marginTop: 12 }]}>{referral.error}</Text> : (
+                          <>
+                            <Text style={[styles.attentionSubtitle, { marginTop: 8 }]}>Share your personal link with other business owners. Everyone who signs up through it is counted here.</Text>
+                            <View style={{ marginTop: 12, padding: 12, borderRadius: 12, backgroundColor: '#F2F8FD' }}><Text selectable style={{ color: '#1E3A5F', fontSize: 13 }}>{link}</Text></View>
+                            <View style={{ flexDirection: 'row', marginTop: 14 }}>
+                              {([['Signed up', referral.signups], ['On a paid plan', referral.paid]] as const).map(([l, n]) => (
+                                <View key={l} style={{ flex: 1, alignItems: 'center' }}><Text style={{ fontSize: 22, fontWeight: '800', color: '#0B1220' }}>{n}</Text><Text style={{ fontSize: 12, color: '#64748B' }}>{l}</Text></View>
+                              ))}
+                            </View>
+                            <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
+                              <Pressable onPress={() => { (async () => { if (IS_WEB) { try { await (globalThis as any).navigator?.clipboard?.writeText(link); flash('Link copied'); return; } catch { /* share */ } } Share.share({ message: msg }).catch(() => {}); })(); }} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1 }]}><Text style={styles.resetButtonText}>{IS_WEB ? 'Copy link' : 'Share link'}</Text></Pressable>
+                              <Pressable onPress={() => Linking.openURL(`https://wa.me/?text=${encodeURIComponent(msg)}`).catch(() => {})} style={[styles.resetButton, { flex: 1, borderWidth: 1, borderColor: '#16A34A' }]}><Text style={[styles.resetButtonText, { color: '#16A34A' }]}>WhatsApp</Text></Pressable>
+                            </View>
+                            <Text style={{ fontSize: 11.5, color: '#8A97A6', marginTop: 10 }}>Referrals are tracked only. Rewards or commissions aren't offered yet.</Text>
+                          </>
+                        )}
+                      </View>
+                    );
+                  })()}
+                </View>
+              </Modal>
+              {prefRow({ icon: 'card-outline', title: 'Plans & billing', sub: planSub, onPress: () => openBilling(() => goTab('profile')) })}
+              <View style={{ flexDirection: twoCol ? 'row' : 'column', flexWrap: 'wrap', columnGap: 20 }}>
+                {section('Your Nexora', nexoraLinks.map((o, i) => row(o, i === nexoraLinks.length - 1)))}
+                {section('Community', communityLinks.map((o, i) => row(o, i === communityLinks.length - 1)))}
+                {section('Help & legal', helpLinks.map((o, i) => row(o, i === helpLinks.length - 1)))}
+              </View>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 22, alignItems: 'center' }}>
               <Pressable onPress={handleLogout} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 18, height: 44, borderRadius: 12, borderWidth: 1, borderColor: '#D5DEE8', backgroundColor: '#FFFFFF' }}>
                 <Ionicons name="log-out-outline" size={18} color="#0B1220" />
@@ -8064,18 +10400,7 @@ function HomeScreenInner(){
                 {(st: any) => <Text style={{ fontSize: 12, fontWeight: '500', color: st.hovered || st.pressed ? '#C98F8F' : '#D9C4C4' }}>Delete account</Text>}
               </Pressable>
             </View>
-            {__DEV__ && (
-              <>
-                <Pressable
-                  onPress={() => { setBrainGalleryIndex(0); setScreen('brainGallery'); }}
-                  style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 16, alignSelf: 'flex-start', paddingHorizontal: 16 }]}>
-                  <Text style={styles.resetButtonText}>[dev] Brain gallery</Text>
-                </Pressable>
-                <Pressable onPress={() => { setSocialMediaIndex(0); setScreen('socialMedia'); }} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 12, alignSelf: 'flex-start', paddingHorizontal: 16 }]}>
-                  <Text style={styles.resetButtonText}>[dev] Social media gallery</Text>
-                </Pressable>
-              </>
-            )}
+            </View>
           </ScrollView>
           {renderBottomNav()}
         </View>
@@ -8098,6 +10423,8 @@ function HomeScreenInner(){
         <View style={styles.mainScreen}>
           <StatusBar style="dark" />
           <View style={[styles.knowledgeHeader, headerSafe]}>
+            {/* Back to Home (Inbox is also in the bottom bar). */}
+            <Pressable onPress={() => goTab('home')} hitSlop={10} accessibilityRole="button" accessibilityLabel="Back" style={{ marginRight: 8 }}><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
             <View style={{ flex: 1 }}>
               <Text style={styles.knowledgeHeaderTitle}>Inbox</Text>
             </View>
@@ -8107,11 +10434,6 @@ function HomeScreenInner(){
                 Processing, Brain Chat Share, File UI). Previously only
                 reachable from the Profile tab, buried away from the Inbox
                 screen these screens actually belong to. */}
-            {__DEV__ && (
-              <Pressable onPress={() => { setSocialMediaIndex(0); setScreen('socialMedia'); }} hitSlop={8} style={{ marginRight: 16 }}>
-                <Ionicons name="images-outline" size={22} color="#0B1220" />
-              </Pressable>
-            )}
             {/* NEW: entry point into the Customers CRM (Customers/Customer
                 Profile/Add Customer/Interaction History truth screens). */}
             {/* NEW: send one message to every connected channel. */}
@@ -8126,7 +10448,7 @@ function HomeScreenInner(){
             </Pressable>
           </View>
           <Text style={styles.inboxSubtitle}>All your customers conversations in one place</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: 16, marginBottom: 12, padding: 12, borderRadius: 14, backgroundColor: awayMode ? '#EAF1FB' : '#F5F6F8' }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: 16, marginBottom: 12, padding: 12, borderRadius: 14, borderWidth: 1, borderColor: awayMode ? '#B9CFEA' : '#DCE2EA', backgroundColor: awayMode ? '#EAF1FB' : '#FFFFFF' }}>
             <Ionicons name={awayMode ? 'moon' : 'sunny-outline'} size={20} color={awayMode ? '#1E56A0' : '#5C6B7A'} />
             <View style={{ flex: 1 }}>
               <Text style={styles.attentionTitle}>{awayMode ? 'Away mode is on' : "I'm available"}</Text>
@@ -8225,6 +10547,189 @@ function HomeScreenInner(){
         <View style={[styles.mainScreen, styles.brainScreenDark]}>
           <StatusBar style="light" />
           {renderTopBar(true)}
+          <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8, paddingHorizontal: 16, paddingTop: 6 }}>
+            {chatMessages.length > 0 && (
+              <Pressable onPress={() => setChatMessages([])} accessibilityRole="button" accessibilityLabel="Start a new chat" style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' }}>
+                <Ionicons name="add" size={14} color="#9CC3FF" /><Text style={{ color: '#CFE0F5', fontSize: 12.5, fontWeight: '600' }}>New chat</Text>
+              </Pressable>
+            )}
+            <Pressable onPress={() => setAiTool({ tool: null, topic: '', extra: '' })} accessibilityRole="button" accessibilityLabel="AI tools" style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' }}>
+              <Ionicons name="apps-outline" size={14} color="#9CC3FF" /><Text style={{ color: '#CFE0F5', fontSize: 12.5, fontWeight: '600' }}>AI tools</Text>
+            </Pressable>
+            <Pressable onPress={() => { openSavedLib().catch(() => {}); }} accessibilityRole="button" accessibilityLabel="Saved work" style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' }}>
+              <Ionicons name="bookmark-outline" size={14} color="#9CC3FF" /><Text style={{ color: '#CFE0F5', fontSize: 12.5, fontWeight: '600' }}>Saved</Text>
+            </Pressable>
+            <Pressable onPress={() => { openChatHistory().catch(() => {}); }} accessibilityRole="button" accessibilityLabel="Chat history" style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' }}>
+              <Ionicons name="time-outline" size={14} color="#9CC3FF" /><Text style={{ color: '#CFE0F5', fontSize: 12.5, fontWeight: '600' }}>Chat history</Text>
+            </Pressable>
+          </View>
+          <Modal visible={!!chatHist} transparent animationType="slide" onRequestClose={() => setChatHist(null)} statusBarTranslucent>
+            <View style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.55)', justifyContent: IS_WEB ? 'center' : 'flex-end', padding: IS_WEB ? 16 : 0 }}>
+              <View style={{ width: '100%', maxWidth: 640, alignSelf: 'center', maxHeight: '88%' as any, backgroundColor: '#FFFFFF', borderRadius: 20, borderBottomLeftRadius: IS_WEB ? 20 : 0, borderBottomRightRadius: IS_WEB ? 20 : 0, paddingTop: 16, paddingBottom: 16 + (IS_WEB ? 0 : insets.bottom) }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 18 }}>
+                  {!!chatHist?.openKey && <Pressable onPress={() => setChatHist(h => h && { ...h, openKey: '' })} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={22} color="#0B1220" /></Pressable>}
+                  <Text style={{ flex: 1, fontSize: 18, fontWeight: '700', color: '#0B1220' }}>{chatHist?.openKey ? chatHist.days.find(d => d.key === chatHist.openKey)?.label : 'Chat history'}</Text>
+                  <Pressable onPress={() => setChatHist(null)} hitSlop={8} accessibilityLabel="Close"><Ionicons name="close" size={22} color="#5C6B7A" /></Pressable>
+                </View>
+                {!chatHist?.openKey && !!chatHist?.days.length && (
+                  <TextInput value={chatHist.query} onChangeText={t => setChatHist(h => h && { ...h, query: t })} placeholder="Search your chats" placeholderTextColor="#A5AFBB" style={[styles.editInput, { marginHorizontal: 18, marginTop: 12 }]} />
+                )}
+                <ScrollView style={{ marginTop: 10 }} contentContainerStyle={{ paddingHorizontal: 18, paddingBottom: 8 }}>
+                  {chatHist?.loading ? <ActivityIndicator style={{ marginVertical: 30 }} color="#1E56A0" /> : chatHist?.error ? (
+                    <Text style={[styles.attentionSubtitle, { marginVertical: 20 }]}>{chatHist.error}</Text>
+                  ) : chatHist && !chatHist.days.length ? (
+                    <Text style={[styles.attentionSubtitle, { marginVertical: 20, textAlign: 'center' }]}>No chats yet. Ask Nexora anything and your conversations will be saved here, with the date and time.</Text>
+                  ) : chatHist?.openKey ? (() => {
+                    const day = chatHist.days.find(d => d.key === chatHist.openKey);
+                    if (!day) return null;
+                    return (
+                      <>
+                        {day.msgs.map(m => (
+                          <View key={m.id} style={{ marginBottom: 12, alignItems: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
+                            <View style={{ maxWidth: '88%', backgroundColor: m.role === 'user' ? '#1E56A0' : '#F1F5FA', borderRadius: 14, paddingHorizontal: 12, paddingVertical: 9 }}>
+                              <Text selectable style={{ color: m.role === 'user' ? '#FFFFFF' : '#0B1220', fontSize: 14, lineHeight: 20 }}>{m.text || (m.imageUri ? '[Photo]' : '')}</Text>
+                            </View>
+                            <Text style={{ fontSize: 11, color: '#8A97A6', marginTop: 3 }}>{m.role === 'user' ? 'You' : 'Nexora'} · {clockLabel(m.at!)}</Text>
+                          </View>
+                        ))}
+                        <Pressable onPress={() => { setChatMessages(day.msgs); setChatHist(null); setTimeout(() => chatScrollRef.current?.scrollToEnd?.({ animated: true }), 120); }} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 6 }]}>
+                          <Text style={styles.resetButtonText}>Continue this chat</Text>
+                        </Pressable>
+                      </>
+                    );
+                  })() : (chatHist?.days ?? []).filter(d => !chatHist?.query.trim() || d.msgs.some(m => m.text.toLowerCase().includes(chatHist.query.trim().toLowerCase()))).map(d => {
+                    const first = d.msgs.find(m => m.role === 'user' && m.text)?.text || d.msgs[0]?.text || '';
+                    const qn = d.msgs.filter(m => m.role === 'user').length;
+                    return (
+                      <Pressable key={d.key} onPress={() => setChatHist(h => h && { ...h, openKey: d.key })} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#EEF1F4' }}>
+                        <View style={{ width: 38, height: 38, borderRadius: 12, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="chatbubbles-outline" size={18} color="#1E56A0" /></View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontSize: 14.5, fontWeight: '700', color: '#0B1220' }}>{d.label} <Text style={{ fontWeight: '500', color: '#8A97A6', fontSize: 12.5 }}>· {clockLabel(d.msgs[0].at!)}–{clockLabel(d.msgs[d.msgs.length - 1].at!)}</Text></Text>
+                          <Text numberOfLines={1} style={{ fontSize: 13, color: '#5C6B7A', marginTop: 2 }}>{first}</Text>
+                          <Text style={{ fontSize: 11.5, color: '#8A97A6', marginTop: 2 }}>{qn} question{qn === 1 ? '' : 's'} · {d.msgs.length} messages</Text>
+                        </View>
+                        <Ionicons name="chevron-forward" size={16} color="#8A97A6" />
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+            </View>
+          </Modal>
+          {/* AI tools: pick a tool, describe the task, and Nexora writes it in the chat (save it to the library from there) */}
+          <Modal visible={!!aiTool} transparent animationType="fade" onRequestClose={() => setAiTool(null)} statusBarTranslucent>
+            <View style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.55)', justifyContent: 'center', padding: 16 }}>
+              <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center' }} keyboardShouldPersistTaps="handled">
+                {aiTool && (
+                  <View style={{ width: '100%', maxWidth: 560, alignSelf: 'center', backgroundColor: '#FFF', borderRadius: 20, padding: 20 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                      {!!aiTool.tool && <Pressable onPress={() => setAiTool({ tool: null, topic: '', extra: '' })} hitSlop={8} accessibilityLabel="All tools"><Ionicons name="chevron-back" size={22} color="#0B1220" /></Pressable>}
+                      <Text style={{ flex: 1, fontSize: 18, fontWeight: '700', color: '#0B1220' }}>{aiTool.tool ? aiTool.tool.label : 'AI tools'}</Text>
+                      <Pressable onPress={() => setAiTool(null)} hitSlop={8} accessibilityLabel="Close"><Ionicons name="close" size={22} color="#5C6B7A" /></Pressable>
+                    </View>
+                    {!aiTool.tool ? AI_TOOL_GROUPS.map(g => (
+                      <View key={g.title} style={{ marginTop: 14 }}>
+                        <Text style={{ fontSize: 13, fontWeight: '800', color: '#5C6B7A' }}>{g.title.toUpperCase()}</Text>
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                          {g.tools.map(t => (
+                            <Pressable key={t.key} onPress={() => setAiTool({ tool: t, topic: '', extra: '' })} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 14, backgroundColor: '#EAF1FB' }}>
+                              <Ionicons name={t.icon as any} size={15} color="#1E56A0" /><Text style={{ color: '#1E56A0', fontWeight: '600', fontSize: 13 }}>{t.label}</Text>
+                            </Pressable>
+                          ))}
+                        </View>
+                      </View>
+                    )) : (
+                      <>
+                        <Text style={[styles.detailFieldLabel, { marginTop: 14 }]}>{aiTool.tool.hint}</Text>
+                        <TextInput value={aiTool.topic} onChangeText={v => setAiTool(x => x && { ...x, topic: v })} multiline={aiTool.tool.key === 'summary'} maxLength={aiTool.tool.key === 'summary' ? 8000 : 300} style={[styles.editInput, aiTool.tool.key === 'summary' && { minHeight: 140, textAlignVertical: 'top', paddingTop: 10 }]} placeholderTextColor="#A5AFBB" placeholder={aiTool.tool.key === 'summary' ? 'Paste here…' : 'Type here…'} />
+                        {!!aiTool.tool.extra && (
+                          <>
+                            <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>{aiTool.tool.extra}</Text>
+                            <TextInput value={aiTool.extra} onChangeText={v => setAiTool(x => x && { ...x, extra: v })} maxLength={200} style={styles.editInput} placeholderTextColor="#A5AFBB" />
+                          </>
+                        )}
+                        <Text style={[styles.attentionSubtitle, { marginTop: 10, fontSize: 12 }]}>Nexora writes from your own business knowledge and marks anything missing as [add …]. Uses one AI task. You can save the result to your library.</Text>
+                        <Pressable disabled={!aiTool.topic.trim()} onPress={runAiTool} style={[styles.resetButton, aiTool.topic.trim() ? styles.resetButtonEnabled : { backgroundColor: '#C7D2DE' }, { marginTop: 14 }]}>
+                          <Text style={styles.resetButtonText}>Write it</Text>
+                        </Pressable>
+                      </>
+                    )}
+                  </View>
+                )}
+              </ScrollView>
+            </View>
+          </Modal>
+          {/* Saved work library: search, filter, read, copy, export, pin and delete */}
+          <Modal visible={!!savedLib} transparent animationType="slide" onRequestClose={() => setSavedLib(null)} statusBarTranslucent>
+            <View style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.55)', justifyContent: IS_WEB ? 'center' : 'flex-end', padding: IS_WEB ? 16 : 0 }}>
+              {savedLib && (() => {
+                const qx = savedLib.query.trim().toLowerCase();
+                const list = savedLib.items.filter(i => (savedLib.kind === 'all' || i.kind === savedLib.kind) && (!qx || `${i.title} ${i.content} ${i.tags.join(' ')}`.toLowerCase().includes(qx)));
+                const open = savedLib.items.find(i => i.id === savedLib.openId);
+                const kinds = ['all', ...Array.from(new Set(savedLib.items.map(i => i.kind)))];
+                return (
+                  <View style={{ width: '100%', maxWidth: 680, alignSelf: 'center', maxHeight: '90%' as any, backgroundColor: '#FFF', borderRadius: 20, borderBottomLeftRadius: IS_WEB ? 20 : 0, borderBottomRightRadius: IS_WEB ? 20 : 0, paddingTop: 16, paddingBottom: 16 + (IS_WEB ? 0 : insets.bottom) }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 18 }}>
+                      {!!open && <Pressable onPress={() => setSavedLib(x => x && { ...x, openId: '' })} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={22} color="#0B1220" /></Pressable>}
+                      <Text style={{ flex: 1, fontSize: 18, fontWeight: '700', color: '#0B1220' }} numberOfLines={1}>{open ? open.title : 'Saved work'}</Text>
+                      <Pressable onPress={() => setSavedLib(null)} hitSlop={8} accessibilityLabel="Close"><Ionicons name="close" size={22} color="#5C6B7A" /></Pressable>
+                    </View>
+                    {open ? (
+                      <ScrollView style={{ marginTop: 10 }} contentContainerStyle={{ paddingHorizontal: 18, paddingBottom: 8 }}>
+                        <Text style={{ fontSize: 12, color: '#8A97A6' }}>{AI_SAVED_KIND_LABEL[open.kind] || open.kind} · saved {new Date(open.created_at).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}</Text>
+                        <Text selectable style={{ fontSize: 14, color: '#0B1220', lineHeight: 21, marginTop: 10 }}>{open.content}</Text>
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 16 }}>
+                          {[
+                            { label: IS_WEB ? 'Copy' : 'Share', onPress: () => { (async () => { if (IS_WEB) { try { await (globalThis as any).navigator?.clipboard?.writeText(open.content); flash('Copied'); return; } catch { /* share */ } } Share.share({ message: open.content }).catch(() => {}); })(); } },
+                            { label: 'Export', onPress: () => exportSaved(open) },
+                            { label: open.pinned ? 'Unpin' : 'Pin', onPress: () => { supabase.from('ai_saved_items').update({ pinned: !open.pinned, updated_at: new Date().toISOString() }).eq('id', open.id).then(() => setSavedLib(x => x && { ...x, items: x.items.map(i => i.id === open.id ? { ...i, pinned: !i.pinned } : i) })); } },
+                            { label: 'Continue in chat', onPress: () => { setSavedLib(null); goTab('brain'); setTimeout(() => setChatInput(`About my saved "${open.title}": `), 60); } },
+                            { label: 'Delete', onPress: () => { Alert.alert('Delete this?', open.title, [{ text: 'Cancel', style: 'cancel' }, { text: 'Delete', style: 'destructive', onPress: () => { supabase.from('ai_saved_items').delete().eq('id', open.id).then(({ error }) => { if (error) { flash("Couldn't delete it."); return; } setSavedLib(x => x && { ...x, openId: '', items: x.items.filter(i => i.id !== open.id) }); }); } }]); } },
+                          ].map(b => (
+                            <Pressable key={b.label} onPress={b.onPress} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: b.label === 'Delete' ? '#F5C2C2' : '#C9D8EC', backgroundColor: b.label === 'Delete' ? '#FDECEC' : '#FFF' }}>
+                              <Text style={{ fontWeight: '700', fontSize: 13, color: b.label === 'Delete' ? '#B42318' : '#1E56A0' }}>{b.label}</Text>
+                            </Pressable>
+                          ))}
+                        </View>
+                      </ScrollView>
+                    ) : (
+                      <>
+                        {!!savedLib.items.length && (
+                          <>
+                            <TextInput value={savedLib.query} onChangeText={t => setSavedLib(x => x && { ...x, query: t })} placeholder="Search your saved work" placeholderTextColor="#A5AFBB" style={[styles.editInput, { marginHorizontal: 18, marginTop: 12 }]} />
+                            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0 }} contentContainerStyle={{ gap: 8, paddingHorizontal: 18, paddingTop: 10 }}>
+                              {kinds.map(k => (
+                                <Pressable key={k} onPress={() => setSavedLib(x => x && { ...x, kind: k })} style={[styles.filterChip, savedLib.kind === k && styles.filterChipActive]}>
+                                  <Text style={[styles.filterChipText, savedLib.kind === k && styles.filterChipTextActive]}>{k === 'all' ? 'All' : AI_SAVED_KIND_LABEL[k] || k}</Text>
+                                </Pressable>
+                              ))}
+                            </ScrollView>
+                          </>
+                        )}
+                        <ScrollView style={{ marginTop: 6 }} contentContainerStyle={{ paddingHorizontal: 18, paddingBottom: 8 }}>
+                          {savedLib.loading ? <ActivityIndicator style={{ marginVertical: 30 }} color="#1E56A0" /> : savedLib.error ? (
+                            <Text style={[styles.attentionSubtitle, { marginVertical: 20 }]}>{savedLib.error}</Text>
+                          ) : !savedLib.items.length ? (
+                            <Text style={[styles.attentionSubtitle, { marginVertical: 20, textAlign: 'center' }]}>Nothing saved yet. Tap "Save" under any Nexora answer to keep it here, then reuse, copy or export it.</Text>
+                          ) : list.map(i => (
+                            <Pressable key={i.id} onPress={() => setSavedLib(x => x && { ...x, openId: i.id })} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#EEF1F4' }}>
+                              <Ionicons name={i.pinned ? 'bookmark' : 'document-text-outline'} size={18} color="#1E56A0" />
+                              <View style={{ flex: 1, minWidth: 0 }}>
+                                <Text style={{ fontSize: 14.5, fontWeight: '700', color: '#0B1220' }} numberOfLines={1}>{i.title}</Text>
+                                <Text style={{ fontSize: 12.5, color: '#5C6B7A', marginTop: 2 }} numberOfLines={1}>{i.content.replace(/[#*]/g, '').replace(/\s+/g, ' ')}</Text>
+                                <Text style={{ fontSize: 11.5, color: '#8A97A6', marginTop: 2 }}>{AI_SAVED_KIND_LABEL[i.kind] || i.kind} · {new Date(i.created_at).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}</Text>
+                              </View>
+                              <Ionicons name="chevron-forward" size={16} color="#8A97A6" />
+                            </Pressable>
+                          ))}
+                        </ScrollView>
+                      </>
+                    )}
+                  </View>
+                );
+              })()}
+            </View>
+          </Modal>
 
           <ScrollView ref={chatScrollRef} style={styles.chatScroll} contentContainerStyle={styles.chatScrollContent}>
             {chatMessages.length === 0 ? (
@@ -8271,6 +10776,39 @@ function HomeScreenInner(){
                     </Pressable>
                   ))}
                 </View>
+                <Text style={styles.popularLabel}>AI tools</Text>
+                <View style={{ gap: 10, marginBottom: 18 }}>
+                  {AI_TOOL_GROUPS.map(g => (
+                    <View key={g.title} style={{ padding: 14, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.10)' }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        <Ionicons name={g.icon as any} size={18} color="#7FB2FF" />
+                        <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 15 }}>{g.title}</Text>
+                      </View>
+                      <Text style={{ color: '#9FB0C6', fontSize: 12, marginTop: 2 }}>{g.sub}</Text>
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+                        {g.tools.map(t => (
+                          <Pressable key={t.key} onPress={() => setAiTool({ tool: t, topic: '', extra: '' })} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 11, paddingVertical: 7, borderRadius: 14, backgroundColor: 'rgba(127,178,255,0.12)' }}>
+                            <Ionicons name={t.icon as any} size={14} color="#9CC3FF" />
+                            <Text style={{ color: '#E2EAF4', fontSize: 13, fontWeight: '600' }}>{t.label}</Text>
+                          </Pressable>
+                        ))}
+                      </View>
+                    </View>
+                  ))}
+                  <View style={{ flexDirection: 'row', gap: 10 }}>
+                    {[
+                      { icon: 'color-palette-outline', title: 'Creative Studio', sub: 'Design posts and product pictures', onPress: () => openTruth('createPostHome') },
+                      { icon: 'git-branch-outline', title: 'AI Workflows', sub: 'Automations and rules; asks before big actions', onPress: () => openAutomations() },
+                      { icon: 'bookmark-outline', title: 'Saved work', sub: 'Reuse and export AI answers', onPress: () => { openSavedLib().catch(() => {}); } },
+                    ].map(c => (
+                      <Pressable key={c.title} onPress={c.onPress} style={{ flex: 1, padding: 12, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.10)' }}>
+                        <Ionicons name={c.icon as any} size={18} color="#7FB2FF" />
+                        <Text style={{ color: '#FFF', fontWeight: '700', fontSize: 13.5, marginTop: 6 }}>{c.title}</Text>
+                        <Text style={{ color: '#9FB0C6', fontSize: 11.5, marginTop: 2 }}>{c.sub}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
                 <Text style={styles.popularLabel}>Popular Questions</Text>
                 {popularQuestions.map(q => (
                   <Pressable key={q} onPress={() => sendChatMessage(q)} style={styles.popularItem}>
@@ -8282,7 +10820,13 @@ function HomeScreenInner(){
               </>
             ) : (
               chatMessages.map((m, mi) => (
-                <View key={m.id} style={[styles.bubbleRow, m.role === 'user' ? styles.bubbleRowUser : [styles.bubbleRowAi, { flexDirection: 'column', alignItems: 'flex-start' }]]}>
+                <React.Fragment key={m.id}>
+                {(mi === 0 || new Date(msgTime(chatMessages[mi - 1])).toDateString() !== new Date(msgTime(m)).toDateString()) && (
+                  <View style={{ alignSelf: 'center', backgroundColor: 'rgba(255,255,255,0.10)', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 4, marginVertical: 8 }}>
+                    <Text style={{ color: '#B8C7DA', fontSize: 12, fontWeight: '700' }}>{dayLabel(msgTime(m))}</Text>
+                  </View>
+                )}
+                <View style={[styles.bubbleRow, m.role === 'user' ? styles.bubbleRowUser : [styles.bubbleRowAi, { flexDirection: 'column', alignItems: 'flex-start' }]]}>
                   <View style={[styles.bubble, m.role === 'user' ? styles.bubbleUser : [styles.bubbleAi, { maxWidth: IS_WEB ? '94%' : '90%', paddingHorizontal: 16, paddingVertical: 14, borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' }]]}>
                     {m.role === 'ai' && !!m.text && (
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 }}>
@@ -8326,6 +10870,14 @@ function HomeScreenInner(){
                             <Text style={{ fontSize: 11, color: '#7FB2FF', fontWeight: '600' }}>Ask the community</Text>
                           </Pressable>
                         )}
+                        <Pressable disabled={!!savedIds[m.id]} onPress={() => { saveAiAnswer(m.id, m.text, asked).catch(() => {}); }} hitSlop={8} accessibilityRole="button" accessibilityLabel="Save this answer" style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                          <Ionicons name={savedIds[m.id] ? 'bookmark' : 'bookmark-outline'} size={12} color="#7FB2FF" />
+                          <Text style={{ fontSize: 11, color: '#7FB2FF', fontWeight: '600' }}>{savedIds[m.id] ? 'Saved' : 'Save'}</Text>
+                        </Pressable>
+                        <Pressable onPress={() => { (async () => { if (IS_WEB) { try { await (globalThis as any).navigator?.clipboard?.writeText(m.text); flash('Copied'); return; } catch { /* share */ } } Share.share({ message: m.text }).catch(() => {}); })(); }} hitSlop={8} accessibilityRole="button" accessibilityLabel="Copy this answer" style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                          <Ionicons name="copy-outline" size={12} color="#7FB2FF" />
+                          <Text style={{ fontSize: 11, color: '#7FB2FF', fontWeight: '600' }}>{IS_WEB ? 'Copy' : 'Share'}</Text>
+                        </Pressable>
                         <Pressable onPress={() => openReport({ kind: 'ai', text: m.text })} hitSlop={8} accessibilityRole="button" accessibilityLabel="Report this answer" style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                           <Ionicons name="flag-outline" size={12} color="#8A97A6" />
                           <Text style={{ fontSize: 11, color: '#8A97A6' }}>Report</Text>
@@ -8333,7 +10885,9 @@ function HomeScreenInner(){
                       </View>
                     );
                   })()}
+                  <Text style={{ fontSize: 10.5, color: '#7D8FA8', marginTop: 3, marginHorizontal: 4, alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start' }}>{clockLabel(msgTime(m))}</Text>
                 </View>
+                </React.Fragment>
               ))
             )}
             {aiThinking && (
@@ -8351,16 +10905,6 @@ function HomeScreenInner(){
               all 30 files in the Supabase 'brain-gallery' bucket). This was
               previously a dead button with no onPress, which is why there
               was no way to reach these screens from the Brain tab. */}
-          {__DEV__ && (
-            <Pressable
-              style={styles.brainFloatingBtn}
-              onPress={() => { setBrainGalleryIndex(0); setScreen('brainGallery'); }}
-              accessibilityLabel="View brain-gallery reference screens"
-              hitSlop={8}
-            >
-              <Ionicons name="sparkles" size={16} color="#FFF" />
-            </Pressable>
-          )}
 
           {showAttachMenu && (
             <View style={styles.attachMenu}>
@@ -8448,10 +10992,10 @@ function HomeScreenInner(){
       { x: 30 + dx, y: 782, w: 130, h: 54, label: 'nav-home', onPress: () => { if (homeCommandExpanded) setHomeCommandExpanded(false); } },
       { x: 160 + dx, y: 782, w: 43, h: 54, label: 'nav-inbox', onPress: () => setMainTab('inbox') },
       { x: 203 + dx, y: 782, w: 49, h: 54, label: 'nav-brain', onPress: () => setMainTab('brain') },
-      { x: 252 + dx, y: 782, w: 49, h: 54, label: 'nav-lead', onPress: () => openLeads() },
+      { x: 252 + dx, y: 782, w: 49, h: 54, label: 'nav-market', onPress: () => goTab('market') },
       { x: 301 + dx, y: 782, w: 62, h: 54, label: 'nav-profile', onPress: () => setMainTab('profile') },
     ];
-    const renderSpots = (spots: Hotspot[], k: number, offsetX = 0, offsetY = 0) => spots.map((sp, i) => (
+    const renderSpots = (all: Hotspot[], k: number, offsetX = 0, offsetY = 0) => { const { spots, bar } = withPillNav(all, k, offsetX, offsetY); return [bar, ...spots.map((sp, i) => (
       <Pressable
         key={`${sp.label}-${k}-${i}`}
         onPress={sp.onPress}
@@ -8462,9 +11006,63 @@ function HomeScreenInner(){
           TRUTH_DEBUG_HOTSPOTS ? { backgroundColor: sp.estimated ? 'rgba(255,140,0,0.25)' : 'rgba(255,0,0,0.2)', borderWidth: 1, borderColor: sp.estimated ? '#FF8C00' : '#FF0000' } : null,
         ]}
       />
-    ));
+    ))]; };
 
     // ---- Home-2 (expanded command center via "More"): one full frame ----
+    // "Need Your Attention" rows and the profile photo on the Home frames show the business's real numbers,
+    // drawn over the example text baked into the Figma artwork (frame units, 394 wide).
+    const attnRows = (() => {
+      const unshipped = orders.filter(o => o.status === 'pending' || o.status === 'processing').length;
+      const missingImgs = [...knowledgeData.products.items, ...knowledgeData.services.items].filter(i => !i.image).length;
+      const esc = escalations.length, latest = escalations[0];
+      const low = lowStockItems;
+      return [
+        { tx: 85, top: 581, right: 272, bx: 71, by: 590.5, color: '#FF3F42', n: esc,
+          title: esc ? `${esc} customer${esc === 1 ? ' needs' : 's need'} you` : 'No customers waiting on you',
+          sub: esc ? (latest?.reason || `${latest?.customer_name || 'A customer'} asked for a person`) : 'NEXORA will flag anyone who needs a human' },
+        // Second row: running-low stock comes first (it costs sales), otherwise missing images.
+        low.length ? { tx: 82, top: 642, right: 276, bx: 70.5, by: 650.5, color: '#D64545', n: low.length,
+          title: `${low.length} product${low.length === 1 ? ' is' : 's are'} running low`,
+          sub: low.slice(0, 2).map(i => `${i.name}: ${stockOf(i.fields).stock} left`).join(' · ') + (low.length > 2 ? ` +${low.length - 2} more` : '') + '. Restock soon.' } :
+        { tx: 82, top: 642, right: 276, bx: 70.5, by: 650.5, color: '#1E56A0', n: missingImgs,
+          title: missingImgs ? `Images required for ${missingImgs} item${missingImgs === 1 ? '' : 's'}` : 'All your items have images',
+          sub: missingImgs ? 'Add images to improve products discovery' : 'Great, customers can see what you sell' },
+        { tx: 78, top: 703, right: 250, bx: 68.5, by: 711.5, color: '#D97706', n: unshipped,
+          title: unshipped ? `${unshipped} order${unshipped === 1 ? " hasn't" : "s haven't"} shipped` : 'All orders have shipped',
+          sub: unshipped ? 'Some orders are pending shipment.' : 'Nothing is waiting to be sent out.' },
+      ];
+    })();
+    const renderAttention = (count: number, dy: number, k: number) => attnRows.slice(0, count).map((r, i) => (
+      <React.Fragment key={`attn-${i}`}>
+        <View pointerEvents="none" style={{ position: 'absolute', left: r.tx * k, top: (r.top + dy) * k, width: (r.right - r.tx) * k, height: 54 * k, backgroundColor: '#FFFFFF', zIndex: 10 }}>
+          <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8} style={{ fontSize: 15.5 * k, lineHeight: 21 * k, fontWeight: '500', color: '#0B1220' }}>{r.title}</Text>
+          <Text numberOfLines={2} style={{ fontSize: 11.5 * k, lineHeight: 14.5 * k, color: '#6B7280', marginTop: 1 * k }}>{r.sub}</Text>
+        </View>
+        <View pointerEvents="none" style={{ position: 'absolute', left: (r.bx - 8) * k, top: (r.by + dy - 8) * k, minWidth: 16 * k, height: 16 * k, paddingHorizontal: 3 * k, borderRadius: 8 * k, backgroundColor: r.n ? r.color : '#1E9E6D', alignItems: 'center', justifyContent: 'center', zIndex: 11 }}>
+          {r.n ? <Text style={{ fontSize: 9 * k, fontWeight: '700', color: '#FFFFFF' }}>{r.n > 99 ? '99+' : r.n}</Text> : <Ionicons name="checkmark" size={10 * k} color="#FFFFFF" />}
+        </View>
+      </React.Fragment>
+    ));
+    const ownerInitials = (fullName || businessName || 'N').trim().split(/\s+/).slice(0, 2).map(w => w[0]?.toUpperCase() || '').join('') || 'N';
+    // The Figma Home frames have "Nexora AI / AI Business Manager" baked in as plain text: draw the brand lockup over it.
+    const renderHeaderLockup = (dy: number, k: number) => (
+      <View pointerEvents="none" style={{ position: 'absolute', left: 52 * k, top: (55 + dy) * k, width: 238 * k, height: 40 * k, backgroundColor: '#F5F6F8', justifyContent: 'center', zIndex: 10 }}>
+        <NexoraLockup letter={14 * k} style={{ marginLeft: 4 * k }} />
+      </View>
+    );
+    // "View All" in the artwork is small and grey: draw a larger, clearer one over it (company feedback 28 Oct 2026).
+    const renderViewAll = (top: number, k: number) => (
+      <View pointerEvents="none" style={{ position: 'absolute', left: 296 * k, top: top * k, width: 92 * k, height: 24 * k, backgroundColor: '#F5F6F8', flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 2 * k, zIndex: 10 }}>
+        <Text style={{ fontSize: 14.5 * k, fontWeight: '700', color: '#1E56A0' }}>View all</Text>
+        <Ionicons name="chevron-forward" size={15 * k} color="#1E56A0" />
+      </View>
+    );
+    const renderAvatar = (k: number) => (
+      <View pointerEvents="none" style={{ position: 'absolute', left: (362 - 18) * k, top: (73.5 - 18) * k, width: 36 * k, height: 36 * k, borderRadius: 18 * k, overflow: 'hidden', backgroundColor: '#1E56A0', borderWidth: 1 * k, borderColor: '#F5F6F8', alignItems: 'center', justifyContent: 'center', zIndex: 20 }}>
+        {avatarUrl ? <ExpoImage source={{ uri: avatarUrl }} style={{ width: '100%', height: '100%' }} contentFit="cover" cachePolicy="memory-disk" />
+          : <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 13 * k }}>{ownerInitials}</Text>}
+      </View>
+    );
     if (homeCommandExpanded) {
       const home2Spots: Hotspot[] = [
         ...topSpots,
@@ -8472,7 +11070,7 @@ function HomeScreenInner(){
         cmdSpot('Train AI', 68, 417), cmdSpot('Connect Apps', 158.5, 417), cmdSpot('Leads', 241.5, 417), cmdSpot('AI Employees', 324.5, 417),
         cmdSpot('Policies', 65.5, 532), cmdSpot('Create Post', 155.5, 532), cmdSpot('Schedule', 245.5, 532), cmdSpot('FAQs', 327.5, 532),
         { x: 300, y: 652, w: 80, h: 32, label: 'attention-view-all', onPress: () => { refreshEscalations().catch(() => {}); setScreen('agendaPriority'); } },
-        { x: 16, y: 712, w: 361, h: 62, label: 'attention-call', onPress: () => setScreen('callSummary') },
+        { x: 16, y: 712, w: 361, h: 62, label: 'attention-call', onPress: () => { refreshEscalations().catch(() => {}); setScreen(escalations.length ? 'agendaPriority' : 'callSummary'); } },
         ...homeNav(-2),
       ];
       return (
@@ -8481,6 +11079,10 @@ function HomeScreenInner(){
           <ScrollView scrollEnabled={homeFrameHeight > height + 1} showsVerticalScrollIndicator={false} contentContainerStyle={{ width }}>
             <View style={{ width, height: homeFrameHeight }}>
               <ExpoImage source={{ uri: homeUri }} style={{ width, height: homeFrameHeight }} contentFit="fill" cachePolicy="memory-disk" recyclingKey={homeUri} onError={() => console.warn('[home] failed to load', homeUri)} />
+              {renderAttention(1, 135.5, hs)}
+              {renderHeaderLockup(-3, hs)}
+              {renderViewAll(659, hs)}
+              {renderAvatar(hs)}
               {renderSpots(home2Spots, hs)}
             </View>
           </ScrollView>
@@ -8493,11 +11095,21 @@ function HomeScreenInner(){
     const insightAction = () => {
       switch (ins.state) {
         case 'home1b': askChat(`My sales are down ${ins.dropPct ? `about ${ins.dropPct}% ` : ''}this week compared with last week. Look at my orders and products, explain what changed, and recommend what I should do this week to recover.`); break;
-        case 'home1c': askChat(`${ins.trending ? `${ins.trending} is selling more this week than last week.` : 'One of my products is trending this week.'} Show me the numbers and tell me whether I should restock or promote it.`); break;
+        case 'home1c': if (!ins.trending) { openTrends(); break; } askChat(`${ins.trending ? `${ins.trending} is selling more this week than last week.` : 'One of my products is trending this week.'} Show me the numbers and tell me whether I should restock or promote it.`); break;
         case 'home1d': goTab('inbox'); break;
         default: askChat('Give me an analysis of how my business did this week compared with last week: orders, revenue, best-selling products, and what to focus on next.');
       }
     };
+    const renderCardDots = (x: number, y: number, k: number) => ins.count > 1 && (
+      <Pressable onPress={() => setHomeCardIdx(n => n + 1)} hitSlop={8} accessibilityRole="button"
+        accessibilityLabel={`Card ${ins.index + 1} of ${ins.count}. Show the next card`}
+        style={{ position: 'absolute', left: x * k, top: y * k, height: 20 * k, paddingHorizontal: 8 * k, borderRadius: 10 * k, backgroundColor: '#EAF1FB', flexDirection: 'row', alignItems: 'center', gap: 4 * k, zIndex: 30 }}>
+        {Array.from({ length: ins.count }, (_, d) => (
+          <View key={d} style={{ width: (d === ins.index ? 12 : 5) * k, height: 5 * k, borderRadius: 3 * k, backgroundColor: d === ins.index ? '#1E56A0' : '#A9BEDC' }} />
+        ))}
+        <Ionicons name="chevron-forward" size={10 * k} color="#1E56A0" />
+      </Pressable>
+    );
     // Web on a computer: a full dashboard built from live data (the phone keeps the Figma design below).
     if (IS_WEB && hookWidth >= WEB_DESKTOP_HOME_MIN) {
       const WEEK = 7 * 86400_000, nowMs = Date.now();
@@ -8508,41 +11120,156 @@ function HomeScreenInner(){
       const pct = lw > 0 ? Math.round(((tw - lw) / lw) * 100) : null;
       const pendingOrders = orders.filter(o => o.status === 'pending' || o.status === 'processing');
       const unread = conversations.filter(c => c.unread > 0);
+      // ---- Business command centre (company guide, 29 Oct 2026): every number opens the records behind it ----
+      const paidKnown = orders.some(o => o.payment_status && o.payment_status !== 'unknown');
+      const paidWeek = valid.filter(o => ageMs(o) < WEEK && o.payment_status === 'paid').reduce((n, o) => n + Number(o.total || 0), 0);
+      const ordersWeek = valid.filter(o => ageMs(o) < WEEK).length;
+      const ccySample = orders.find(o => o.currency) ?? orders[0];
+      const moneyText = (n: number) => (ccySample ? orderMoney(ccySample, n) : `${LOCAL_NGN ? '₦' : '$'}${Math.round(n).toLocaleString()}`);
+      const unpaid = orders.filter(o => o.status !== 'cancelled' && (o.payment_status === 'unpaid' || o.payment_status === 'pending'));
+      const unpaidOld = unpaid.filter(o => ageMs(o) > 2 * 86400_000);
+      const leadsN = homeOverview?.overview.leads.value ?? null;
+      const visits = shopStats?.totals.visits ?? null;
       const kpis: { label: string; value: string; sub: string; icon: string; color: string; onPress: () => void }[] = [
-        { label: 'Sales this week', value: Math.round(tw).toLocaleString(), sub: pct === null ? (tw ? 'First week of data' : 'No orders yet') : `${pct >= 0 ? '▲' : '▼'} ${Math.abs(pct)}% vs last week`, icon: 'trending-up', color: pct !== null && pct < 0 ? '#D64545' : '#1E9E6D', onPress: () => askChat('Give me an analysis of how my business did this week compared with last week.') },
-        { label: 'Open orders', value: String(pendingOrders.length), sub: pendingOrders.length ? 'Waiting to be shipped' : 'All shipped', icon: 'cube-outline', color: '#1E56A0', onPress: () => openOrders('Unshipped') },
+        paidKnown
+          ? { label: 'Paid sales · 7 days', value: moneyText(paidWeek), sub: `${ordersWeek} order${ordersWeek === 1 ? '' : 's'} this week`, icon: 'cash-outline', color: '#1E9E6D', onPress: () => openOrders('All') }
+          : { label: 'Order value · 7 days', value: Math.round(tw).toLocaleString(), sub: pct === null ? (tw ? 'First week of data' : 'No orders yet') : `${pct >= 0 ? '▲' : '▼'} ${Math.abs(pct)}% vs last week`, icon: 'trending-up', color: pct !== null && pct < 0 ? '#D64545' : '#1E9E6D', onPress: () => openOrders('All') },
+        { label: 'Orders to ship', value: String(pendingOrders.length), sub: pendingOrders.length ? 'Waiting to be sent out' : 'All shipped', icon: 'cube-outline', color: '#1E56A0', onPress: () => openOrders('Unshipped') },
+        { label: 'Interested buyers · 30 days', value: leadsN === null ? '—' : String(leadsN), sub: 'People who asked or enquired', icon: 'person-add-outline', color: '#0E7490', onPress: () => openLeads() },
+        { label: 'Shop visitors · 30 days', value: visits === null ? '—' : String(visits), sub: myShop?.enabled ? `${shopStats?.totals.orders ?? 0} orders · ${shopStats?.totals.enquiries ?? 0} enquiries` : 'Your shop link is off', icon: 'storefront-outline', color: '#7C3AED', onPress: () => { openStorefront().catch(() => {}); } },
+        { label: 'Active campaigns', value: campaigns === null ? '—' : String((campaigns ?? []).filter(x => campaignLive(x) && !campaignOver(x)).length), sub: campaignsAwaiting().length ? `${campaignsAwaiting().length} waiting to be posted` : 'Promotions running now', icon: 'megaphone-outline', color: '#B45309', onPress: () => openCampaigns() },
         { label: 'Unread chats', value: String(unread.length), sub: unread.length ? 'Customers waiting' : 'Inbox clear', icon: 'chatbubbles-outline', color: '#7C3AED', onPress: () => goTab('inbox') },
         { label: 'Needs your decision', value: String(escalations.length), sub: escalations.length ? 'Nexora needs you' : 'Nothing urgent', icon: 'hand-left-outline', color: escalations.length ? '#C2760C' : '#5C6B7A', onPress: () => { refreshEscalations().catch(() => {}); setScreen('agendaPriority'); } },
       ];
-      const actions: { label: string; icon: string; onPress: () => void }[] = [
-        { label: 'Ask Nexora', icon: 'sparkles', onPress: () => goTab('brain') },
-        { label: 'Business Insights', icon: 'stats-chart-outline', onPress: () => openInsights() },
-        { label: 'Train AI', icon: 'school-outline', onPress: () => openFeature('operations') },
-        { label: 'Leads', icon: 'person-add-outline', onPress: () => openLeads() },
-        { label: 'Smart follow-ups', icon: 'paper-plane-outline', onPress: () => { openFollowups().catch(() => {}); } },
-        { label: 'Schedule', icon: 'calendar-outline', onPress: () => openSchedule() },
-        { label: 'Connect channels', icon: 'link-outline', onPress: () => openConnectChannels() },
-        { label: 'AI shop link', icon: 'storefront-outline', onPress: () => { openStorefront().catch(() => {}); } },
-        { label: 'Community', icon: 'chatbubbles-outline', onPress: openCommunity },
-        { label: 'Trending', icon: 'trending-up-outline', onPress: openTrends },
-        { label: 'Find partners', icon: 'people-circle-outline', onPress: () => { openNetwork().catch(() => {}); } },
+      // Getting started: the steps to a first real result, instead of empty charts.
+      const offers = [...knowledgeData.products.items, ...knowledgeData.services.items].filter(i => i.status !== 'Draft');
+      const hasPrice = (i: KnowledgeItem) => /\d/.test(i.fields.find(x => /price|cost|fee|rate/i.test(x.label))?.value || '');
+      const setup = [
+        { done: !!workspace, label: 'Create your company', sub: 'Free, takes a minute', onPress: () => openBilling(() => goTab('home')) },
+        { done: offers.length >= 3, label: 'Teach Nexora 3 products or services', sub: `${Math.min(offers.length, 3)}/3 added`, onPress: () => openAddKnowledge() },
+        { done: offers.some(i => hasPrice(i) && !!i.image), label: 'Add a price and photo', sub: 'So customers can order', onPress: () => openFeature('operations') },
+        { done: LIVE_CHANNELS.some(k => connectedChannels[k]), label: 'Connect WhatsApp, Instagram or Facebook', sub: 'Nexora answers customers there', onPress: () => openConnectChannels() },
+        { done: !!myShop?.enabled, label: 'Switch on your AI shop link', sub: 'One link to share everywhere', onPress: () => { openStorefront().catch(() => {}); } },
+        { done: orders.length > 0 || (shopStats?.totals.enquiries ?? 0) > 0, label: 'Get your first order or enquiry', sub: 'Share your shop link in your bio and status', onPress: () => { openStorefront().catch(() => {}); } },
       ];
-      const panel = { backgroundColor: '#FFFFFF', borderRadius: 18, padding: 18, borderWidth: 1, borderColor: '#E6ECF3' } as const;
+      const setupDone = setup.filter(x => x.done).length;
+      // To-do: things waiting on the owner, from real records.
+      const lowStock = lowStockItems;
+      const noPhoto = offers.filter(i => !i.image).length;
+      const todo = [
+        unpaid.length && { icon: 'card-outline', color: '#B42318', title: `${unpaid.length} unpaid order${unpaid.length === 1 ? '' : 's'}`, sub: `${moneyText(unpaid.reduce((n, o) => n + Number(o.total || 0), 0))} to collect`, onPress: () => openOrders('Unpaid') },
+        pendingOrders.length && { icon: 'cube-outline', color: '#1E56A0', title: `${pendingOrders.length} order${pendingOrders.length === 1 ? '' : 's'} to prepare or ship`, sub: 'Confirm and send them out', onPress: () => openOrders('Unshipped') },
+        autoRuns.filter(r => r.status === 'awaiting_approval').length && { icon: 'checkmark-done-outline', color: '#1E56A0', title: `${autoRuns.filter(r => r.status === 'awaiting_approval').length} message${autoRuns.filter(r => r.status === 'awaiting_approval').length === 1 ? '' : 's'} waiting for your approval`, sub: 'Drafted by your automations', onPress: () => openAutomations() },
+        myOpenTasks().length && { icon: 'checkbox-outline', color: '#0E7490', title: `${myOpenTasks().length} team task${myOpenTasks().length === 1 ? '' : 's'} open`, sub: myOpenTasks().slice(0, 2).map(t => t.title).join(', '), onPress: () => openSettings('team') },
+        followUpsDue().length && { icon: 'alarm-outline', color: '#B42318', title: `${followUpsDue().length} follow-up${followUpsDue().length === 1 ? '' : 's'} due`, sub: followUpsDue().slice(0, 3).map(c => c.name).join(', '), onPress: () => { const first = followUpsDue()[0]; if (followUpsDue().length === 1 && first) openContact(first); else openLeads(); } },
+        campaignsAwaiting().length && { icon: 'megaphone-outline', color: '#7C3AED', title: `${campaignsAwaiting().length} campaign${campaignsAwaiting().length === 1 ? '' : 's'} waiting to be published`, sub: campaignsAwaiting().slice(0, 2).map(x => x.name).join(', '), onPress: () => openCampaigns() },
+        escalations.length && { icon: 'hand-left-outline', color: '#C2760C', title: `${escalations.length} enquir${escalations.length === 1 ? 'y needs' : 'ies need'} you`, sub: escalations[0]?.reason?.slice(0, 80) || 'Customers waiting for a person', onPress: () => { refreshEscalations().catch(() => {}); setScreen('agendaPriority'); } },
+        unread.length && { icon: 'chatbubbles-outline', color: '#7C3AED', title: `${unread.length} unanswered chat${unread.length === 1 ? '' : 's'}`, sub: unread[0] ? `${unread[0].name}: ${unread[0].lastMessage}`.slice(0, 80) : '', onPress: () => goTab('inbox') },
+        lowStock.length && { icon: 'alert-circle-outline', color: '#D64545', title: `${lowStock.length} product${lowStock.length === 1 ? ' is' : 's are'} running low`, sub: lowStock.slice(0, 3).map(i => i.name).join(', '), onPress: () => openKnowledgeList('products') },
+        noPhoto && { icon: 'image-outline', color: '#1E56A0', title: `${noPhoto} item${noPhoto === 1 ? ' has' : 's have'} no photo`, sub: 'Photos help customers decide', onPress: () => openMissingImages() },
+        setupDone < setup.length && { icon: 'rocket-outline', color: '#0E7490', title: 'Finish setting up', sub: `${setupDone} of ${setup.length} steps done`, onPress: () => { const next = setup.find(x => !x.done); next?.onPress(); } },
+      ].filter(Boolean) as { icon: string; color: string; title: string; sub: string; onPress: () => void }[];
+      // Recommendations: only from this business's own numbers; each says why and opens the place to act.
+      const topSrc = shopStats?.sources.filter(r => r.src !== 'direct').sort((x, y) => (y.orders + y.enquiries) - (x.orders + x.enquiries) || y.visits - x.visits)[0];
+      const unpricedN = offers.filter(i => !hasPrice(i)).length;
+      const recs = [
+        unpaidOld.length && { icon: 'notifications-outline', text: `${unpaidOld.length} order${unpaidOld.length === 1 ? ' has' : 's have'} been unpaid for over 2 days (${moneyText(unpaidOld.reduce((n, o) => n + Number(o.total || 0), 0))}). Send a friendly payment reminder.`, cta: 'Open unpaid orders', onPress: () => openOrders('Unpaid') },
+        shopStats && shopStats.totals.visits >= 10 && shopStats.totals.orders + shopStats.totals.enquiries === 0 && { icon: 'analytics-outline', text: `Your shop had ${shopStats.totals.visits} visits in 30 days but no orders or enquiries. Clear prices, photos and delivery details usually help visitors decide.`, cta: 'Improve my shop', onPress: () => { openStorefront().catch(() => {}); } },
+        topSrc && (topSrc.orders + topSrc.enquiries) > 0 && { icon: 'megaphone-outline', text: `Most of your shop orders and enquiries came from ${topSrc.src} (${topSrc.orders} orders, ${topSrc.enquiries} enquiries). Posting there again is your best bet.`, cta: 'Write a post', onPress: () => { openStorefront().catch(() => {}); } },
+        unpricedN > 0 && offers.length > 0 && { icon: 'pricetag-outline', text: `${unpricedN} of your ${offers.length} products and services have no price, so customers can only ask for a quote on your shop.`, cta: 'Add prices', onPress: () => openFeature('operations') },
+        lowStock.length > 0 && { icon: 'cube-outline', text: `${lowStock[0].name} has ${stockOf(lowStock[0].fields).stock} left${lowStock.length > 1 ? ` (and ${lowStock.length - 1} more items are low)` : ''}. Restock before customers find it sold out.`, cta: 'See products', onPress: () => openKnowledgeList('products') },
+        (leadsN ?? 0) > 0 && { icon: 'paper-plane-outline', text: `${leadsN} people showed interest in the last 30 days. Following up within a day turns more of them into buyers.`, cta: 'Follow up', onPress: () => { openFollowups().catch(() => {}); } },
+      ].filter(Boolean).slice(0, 3) as { icon: string; text: string; cta: string; onPress: () => void }[];
+      // Quick actions, grouped the way an owner thinks about the day.
+      const actionGroups: { title: string; items: { label: string; icon: string; onPress: () => void }[] }[] = [
+        { title: 'Sell', items: [
+          { label: 'AI shop link', icon: 'storefront-outline', onPress: () => { openStorefront().catch(() => {}); } },
+          { label: 'Orders', icon: 'receipt-outline', onPress: () => openOrders('All') },
+          { label: 'Add a product', icon: 'add-circle-outline', onPress: () => openAddKnowledge() },
+          { label: 'Insights', icon: 'stats-chart-outline', onPress: () => openInsights() },
+        ] },
+        { title: 'Customers', items: [
+          { label: 'Inbox', icon: 'chatbubbles-outline', onPress: () => goTab('inbox') },
+          { label: 'Customers', icon: 'people-outline', onPress: () => openCustomers(() => goTab('home')) },
+          { label: 'Leads', icon: 'person-add-outline', onPress: () => openLeads() },
+          { label: 'Follow-ups', icon: 'paper-plane-outline', onPress: () => { openFollowups().catch(() => {}); } },
+        ] },
+        { title: 'Grow', items: [
+          { label: 'Create a post', icon: 'create-outline', onPress: () => openTruth('createPostHome') },
+          { label: 'Campaigns', icon: 'megaphone-outline', onPress: () => openCampaigns() },
+          { label: 'Find partners', icon: 'people-circle-outline', onPress: () => { openNetwork().catch(() => {}); } },
+          { label: 'Schedule', icon: 'calendar-outline', onPress: () => openSchedule() },
+        ] },
+        { title: 'Run', items: [
+          { label: 'Automations', icon: 'git-branch-outline', onPress: () => openAutomations() },
+          { label: 'Connect channels', icon: 'link-outline', onPress: () => openConnectChannels() },
+          { label: 'Team', icon: 'people-circle-outline', onPress: () => openSettings('team', { exit: () => goTab('home') }) },
+          { label: 'Ask Nexora', icon: 'sparkles', onPress: () => goTab('brain') },
+        ] },
+      ];
+      const narrow = hookWidth < 700;
+      const panel = { backgroundColor: '#FFFFFF', borderRadius: isDesktopWeb ? 14 : 18, padding: narrow ? 14 : 18, borderWidth: 1, borderColor: '#E6ECF3' } as const;
       const hour = new Date().getHours();
+      // AI Command Center (Home design): eight shortcuts in two rows.
+      const commandCenter: { label: string; icon: string; color: string; onPress: () => void }[] = [
+        { label: 'Train AI', icon: 'school-outline', color: '#1E56A0', onPress: () => handleCommandCenterPress('Train AI') },
+        { label: 'Connect Apps', icon: 'apps-outline', color: '#0E7490', onPress: () => handleCommandCenterPress('Connect Apps') },
+        { label: 'Schedule', icon: 'calendar-outline', color: '#7C3AED', onPress: () => handleCommandCenterPress('Schedule') },
+        { label: 'Create Post', icon: 'create-outline', color: '#DB2777', onPress: () => handleCommandCenterPress('Create Post') },
+        { label: 'Biz insights', icon: 'stats-chart-outline', color: '#1E9E6D', onPress: () => openInsights() },
+        { label: 'Leads', icon: 'person-add-outline', color: '#B45309', onPress: () => handleCommandCenterPress('Leads') },
+        { label: 'AI Employees', icon: 'people-outline', color: '#0F2942', onPress: () => openSettings('team', { exit: () => goTab('home') }) },
+        { label: 'Policies', icon: 'shield-checkmark-outline', color: '#B42318', onPress: () => handleCommandCenterPress('Policies') },
+      ];
+      const askHome = () => { const q = homeAsk.trim(); setHomeAsk(''); goTab('brain'); if (q) sendChatMessage(q); };
+      const desktop = isDesktopWeb;
+      const greeting = `${hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'}${fullName ? `, ${fullName.split(' ')[0]}` : ''}`;
+      const dateLine = `${businessName || workspace?.name || 'Your business'} · ${new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}`;
+      const ovRows = homeOverview ? [
+        { icon: 'cash-outline', label: 'Revenue', v: homeOverview.overview.revenue, onPress: () => openOrders('All') },
+        { icon: 'bag-handle-outline', label: 'Orders', v: homeOverview.overview.orders, onPress: () => openOrders('All') },
+        { icon: 'people-outline', label: 'Customers', v: homeOverview.overview.customers, onPress: () => openCustomers(() => goTab('home')) },
+        { icon: 'person-add-outline', label: 'Leads', v: homeOverview.overview.leads, onPress: () => openLeads() },
+      ] : [];
+      const mainKpis = kpis.slice(0, 4);
+      const statusKpis = kpis.slice(4);
+      const shopOff = !!myShop && !myShop.enabled;
+      const head = (title: string, opts: { icon?: string; count?: number; link?: string; onLink?: () => void } = {}) => (
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 1 }}>
+            {!!opts.icon && <Ionicons name={opts.icon as any} size={16} color="#1E56A0" />}
+            <Text style={{ fontSize: 15.5, fontWeight: '700', color: '#0B1220' }} numberOfLines={1}>{title}</Text>
+            {!!opts.count && <Text style={{ fontSize: 11, fontWeight: '800', color: '#FFFFFF', backgroundColor: '#1E56A0', paddingHorizontal: 7, paddingVertical: 2, borderRadius: 9, overflow: 'hidden' }}>{opts.count}</Text>}
+          </View>
+          {!!opts.link && <Pressable onPress={opts.onLink} hitSlop={6}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>{opts.link} ›</Text></Pressable>}
+        </View>
+      );
+      const sectionLabel = (t: string) => <Text style={{ fontSize: 12, fontWeight: '800', color: '#8A97A6', letterSpacing: 0.8, textTransform: 'uppercase', marginTop: narrow ? 4 : 6 }}>{t}</Text>;
+      const wide = !narrow;
+      const attention = todo.slice(0, desktop ? 6 : 4);
+      const activityRows = homeOverview?.activity ?? [];
       return (
         <View style={styles.mainScreen}>
           <StatusBar style="dark" />
-          {renderTopBar()}
-          <ScrollView style={{ flex: 1, backgroundColor: '#F4F7FB' }} contentContainerStyle={{ padding: 24, paddingBottom: 40, width: '100%', maxWidth: 1080, alignSelf: 'center', gap: 18 }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
-              <View style={{ flex: 1, minWidth: 260 }}>
-                <Text style={{ fontSize: 26, fontWeight: '800', color: '#0B1220' }}>{hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'}{fullName ? `, ${fullName.split(' ')[0]}` : ''}</Text>
-                <Text style={{ fontSize: 14, color: '#5C6B7A', marginTop: 2 }}>{businessName || workspace?.name || 'Your business'} · {new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}</Text>
+          {desktop ? renderDesktopBar(greeting, dateLine, (
+            <Pressable onPress={() => openTruth('createPostHome')} accessibilityRole="button" style={{ height: 40, paddingHorizontal: 14, borderRadius: 10, backgroundColor: '#1E56A0', flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Ionicons name="add" size={17} color="#FFFFFF" /><Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 14 }}>Create post</Text>
+            </Pressable>
+          )) : renderTopBar()}
+          <ScrollView style={{ flex: 1, backgroundColor: '#F4F7FB' }} keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: narrow ? 16 : desktop ? 28 : 24, paddingBottom: 40, width: '100%', maxWidth: desktop ? 1240 : 1120, alignSelf: 'center', gap: narrow ? 14 : 18 }}>
+            {!desktop && (
+              <View>
+                <Text style={{ fontSize: narrow ? 22 : 24, fontWeight: '700', color: '#0B1220' }}>{greeting}</Text>
+                <Text style={{ fontSize: 13.5, color: '#5C6B7A', marginTop: 2 }}>{dateLine}</Text>
               </View>
-              <Pressable onPress={() => goTab('brain')} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 10, minWidth: 320, flexGrow: 1, maxWidth: 480, height: 48, borderRadius: 24, paddingHorizontal: 18, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#D5DEE8' }}>
-                <Ionicons name="sparkles" size={18} color="#1E56A0" />
-                <Text style={{ color: '#8A97A6', fontSize: 14 }}>Ask Nexora anything about your business…</Text>
-              </Pressable>
+            )}
+
+            {/* Ask Nexora (design: "Ask Nexora about your business...", mic, send) */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, height: 56, borderRadius: 28, paddingLeft: 18, paddingRight: 8, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E1E8F0', shadowColor: '#0B1220', shadowOpacity: 0.04, shadowRadius: 8, shadowOffset: { width: 0, height: 2 } }}>
+              <Ionicons name="sparkles" size={18} color="#1E56A0" />
+              <TextInput value={homeAsk} onChangeText={setHomeAsk} onSubmitEditing={askHome} returnKeyType="send" placeholder="Ask Nexora about your business..." placeholderTextColor="#8A97A6" style={{ flex: 1, minWidth: 0, fontSize: 15, color: '#0B1220', height: 54, ...(IS_WEB ? { outlineStyle: 'none' } as any : null) }} />
+              <Pressable onPress={() => goTab('brain')} hitSlop={6} accessibilityRole="button" accessibilityLabel="Talk to Nexora" style={{ width: 36, height: 36, alignItems: 'center', justifyContent: 'center' }}><Ionicons name="mic-outline" size={21} color="#5C6B7A" /></Pressable>
+              <Pressable onPress={askHome} accessibilityRole="button" accessibilityLabel="Ask Nexora" style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: '#0F2942', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="arrow-up" size={20} color="#FFFFFF" /></Pressable>
             </View>
 
             {awayMode && (
@@ -8552,94 +11279,27 @@ function HomeScreenInner(){
               </Pressable>
             )}
 
-            <View style={{ flexDirection: 'row', gap: 14, flexWrap: 'wrap' }}>
-              {kpis.map(k => (
-                <Pressable key={k.label} onPress={k.onPress} accessibilityRole="button" style={[panel, { flexBasis: '22%', flexGrow: 1, minWidth: 180 }]}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <Text style={{ fontSize: 13, color: '#5C6B7A', fontWeight: '600' }}>{k.label}</Text>
-                    <Ionicons name={k.icon as any} size={18} color={k.color} />
+            {shopOff && myShop && (
+              <View style={[panel, { flexDirection: narrow ? 'column' : 'row', alignItems: narrow ? 'stretch' : 'center', gap: 12, borderColor: '#F5C46B', backgroundColor: '#FFFBF0', paddingVertical: 14 }]}>
+                <View style={{ flexDirection: 'row', gap: 12, flex: 1, alignItems: 'center' }}>
+                  <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#FFF1D6', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="storefront-outline" size={18} color="#B45309" /></View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={{ fontSize: 14.5, fontWeight: '700', color: '#0B1220' }}>Your AI shop link is switched off</Text>
+                    <Text style={{ fontSize: 13, color: '#5C6B7A', marginTop: 1 }} numberOfLines={2}>Customers who open {shopUrl(myShop.slug).replace(/^https?:\/\//, '')} can't see your products or order yet.</Text>
                   </View>
-                  <Text style={{ fontSize: 28, fontWeight: '800', color: '#0B1220', marginTop: 8 }}>{k.value}</Text>
-                  <Text style={{ fontSize: 12, color: k.color, marginTop: 2, fontWeight: '600' }}>{k.sub}</Text>
-                </Pressable>
-              ))}
-            </View>
-
-            <View style={{ flexDirection: 'row', gap: 18, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-              <View style={{ flexBasis: '58%', flexGrow: 1, minWidth: 340, gap: 18 }}>
-                <View style={{ backgroundColor: '#0B1220', borderRadius: 18, padding: 10, paddingBottom: 0 }}>{renderBriefingCard()}</View>
-                {homeOverview && (() => {
-                  const ov = homeOverview.overview;
-                  const tiles = [
-                    { icon: 'cash-outline', label: 'Revenue', value: ov.revenue.value.toLocaleString(), change: ov.revenue.change, onPress: () => openOrders('All') },
-                    { icon: 'bag-handle-outline', label: 'Orders', value: ov.orders.value.toLocaleString(), change: ov.orders.change, onPress: () => openOrders('All') },
-                    { icon: 'people-outline', label: 'Customers', value: ov.customers.value.toLocaleString(), change: ov.customers.change, onPress: () => openCustomers(() => goTab('home')) },
-                    { icon: 'person-add-outline', label: 'Leads', value: ov.leads.value.toLocaleString(), change: ov.leads.change, onPress: () => openLeads() },
-                  ];
-                  return (
-                    <View style={panel}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-                        <Text style={{ fontSize: 16, fontWeight: '800', color: '#0B1220' }}>Business overview</Text>
-                        <Text style={{ fontSize: 12, color: '#5C6B7A', backgroundColor: '#F1F5F9', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, overflow: 'hidden' }}>Last 30 days</Text>
-                      </View>
-                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
-                        {tiles.map(t => (
-                          <Pressable key={t.label} onPress={t.onPress} accessibilityRole="button" style={{ flexBasis: '47%', flexGrow: 1, padding: 14, borderRadius: 14, backgroundColor: '#F7F9FC', borderWidth: 1, borderColor: '#EEF2F7' }}>
-                            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                              <View style={{ width: 28, height: 28, borderRadius: 8, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}><Ionicons name={t.icon as any} size={15} color="#1E56A0" /></View>
-                              <Ionicons name="arrow-forward" size={14} color="#8A97A6" style={{ transform: [{ rotate: '-45deg' }] }} />
-                            </View>
-                            <Text style={{ fontSize: 22, fontWeight: '800', color: '#0B1220', marginTop: 10 }}>{t.value}</Text>
-                            <Text style={{ fontSize: 12, marginTop: 2, color: t.change === null ? '#8A97A6' : t.change >= 0 ? '#1E9E6D' : '#D64545', fontWeight: '600' }}>
-                              {t.change === null ? `${t.label}: no data for last month yet` : `${t.change >= 0 ? '+' : ''}${t.change}% ${t.label} vs last month`}
-                            </Text>
-                          </Pressable>
-                        ))}
-                      </View>
-                    </View>
-                  );
-                })()}
-                <View style={panel}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <Text style={{ fontSize: 16, fontWeight: '800', color: '#0B1220' }}>Latest conversations</Text>
-                    <Pressable onPress={() => goTab('inbox')}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>Open inbox ›</Text></Pressable>
-                  </View>
-                  {conversations.length === 0 && <Text style={[styles.attentionSubtitle, { marginTop: 10 }]}>No conversations yet. Connect WhatsApp, Instagram or Facebook so customer messages arrive here.</Text>}
-                  {conversations.slice(0, 5).map(c => (
-                    <Pressable key={c.id} onPress={() => openConversation(c)} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' }}>
-                      <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#1E56A0', fontWeight: '800' }}>{c.name.charAt(0).toUpperCase()}</Text></View>
-                      <View style={{ flex: 1, minWidth: 0 }}>
-                        <Text style={{ fontSize: 14, fontWeight: c.unread ? '800' : '600', color: '#0B1220' }} numberOfLines={1}>{c.name} <Text style={{ fontWeight: '400', color: '#8A97A6', fontSize: 12 }}>· {c.platform}</Text></Text>
-                        <Text style={{ fontSize: 13, color: '#5C6B7A' }} numberOfLines={1}>{c.lastMessage}</Text>
-                      </View>
-                      <Text style={{ fontSize: 12, color: '#8A97A6' }}>{c.lastTime}</Text>
-                      {c.unread > 0 && <View style={{ minWidth: 20, height: 20, borderRadius: 10, paddingHorizontal: 5, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#FFF', fontSize: 11, fontWeight: '800' }}>{c.unread}</Text></View>}
-                    </Pressable>
-                  ))}
                 </View>
-                {homeOverview && (
-                  <View style={panel}>
-                    <Text style={{ fontSize: 16, fontWeight: '800', color: '#0B1220', marginBottom: 4 }}>Recent activity</Text>
-                    {homeOverview.activity.length === 0 && <Text style={[styles.attentionSubtitle, { marginTop: 6 }]}>Nothing yet. Replies Nexora sends, new orders, leads and community answers will show here.</Text>}
-                    {homeOverview.activity.map((a, i) => {
-                      const tagColor = a.tag === 'Needs you' ? ['#FDECEC', '#B42318'] : a.tag === 'AI Handled' || a.tag === 'Done' ? ['#E9F8EE', '#15803D'] : a.tag === 'Opportunity' ? ['#FFF6E5', '#B7791F'] : ['#EAF1FB', '#1E56A0'];
-                      const icon = a.kind === 'reply' ? 'checkmark-circle' : a.kind === 'escalation' ? 'hand-left' : a.kind === 'order' ? 'bag-handle' : a.kind === 'lead' ? 'person-add' : a.kind === 'learned' ? 'bulb' : 'chatbubbles';
-                      return (
-                        <Pressable key={`${a.kind}-${i}`} onPress={() => (a.action === 'community' && a.post_id ? openCommPostById(a.post_id) : runBriefingAction(a.action))} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 11, borderBottomWidth: i === homeOverview.activity.length - 1 ? 0 : 1, borderBottomColor: '#F1F5F9' }}>
-                          <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center' }}><Ionicons name={icon as any} size={17} color="#1E56A0" /></View>
-                          <View style={{ flex: 1, minWidth: 0 }}>
-                            <Text style={{ fontSize: 14, fontWeight: '700', color: '#0B1220' }} numberOfLines={1}>{a.title}</Text>
-                            <Text style={{ fontSize: 12, color: '#5C6B7A' }} numberOfLines={1}>{a.subtitle}{a.subtitle ? ' · ' : ''}{commAgo(a.at)}</Text>
-                          </View>
-                          <Text style={{ fontSize: 11, fontWeight: '700', color: tagColor[1], backgroundColor: tagColor[0], paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, overflow: 'hidden' }}>{a.tag}</Text>
-                          <Ionicons name="chevron-forward" size={14} color="#8A97A6" />
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                )}
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <Pressable onPress={() => { openStorefront().catch(() => {}); }} style={{ height: 38, paddingHorizontal: 14, borderRadius: 19, borderWidth: 1, borderColor: '#D5DEE8', backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', flexGrow: narrow ? 1 : 0 }}><Text style={{ color: '#0B1220', fontWeight: '700', fontSize: 13.5 }}>Review shop</Text></Pressable>
+                  <Pressable onPress={() => { saveShop({ enabled: true }).catch(() => {}); }} disabled={shopBusy} accessibilityRole="button" style={{ height: 38, paddingHorizontal: 16, borderRadius: 19, backgroundColor: '#1E9E6D', flexDirection: 'row', gap: 6, alignItems: 'center', justifyContent: 'center', flexGrow: narrow ? 1 : 0 }}>
+                    {shopBusy ? <ActivityIndicator color="#FFFFFF" /> : <><Ionicons name="power" size={15} color="#FFFFFF" /><Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 13.5 }}>Switch on</Text></>}
+                  </Pressable>
+                </View>
               </View>
-              <View style={{ flexBasis: '36%', flexGrow: 1, minWidth: 280, gap: 18 }}>
+            )}
+
+            {/* Nexora insight + AI Command Center (Home design) */}
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: narrow ? 14 : 18, alignItems: 'stretch' }}>
+              <View style={{ flexBasis: narrow ? '100%' : '40%', flexGrow: 1, minWidth: narrow ? 0 : 320 }}>
                 {/* The Home-1 / 1b / 1c / 1d insight card straight from the Figma frame (artwork included), chosen from the
                     live business state, with the live title and description drawn over the baked text. */}
                 <View onLayout={e => setHomeCardW(Math.round(e.nativeEvent.layout.width))} style={{ borderRadius: 16, overflow: 'hidden', backgroundColor: '#FFFFFF', shadowColor: '#0B1220', shadowOpacity: 0.06, shadowRadius: 10, shadowOffset: { width: 0, height: 2 } }}>
@@ -8661,46 +11321,167 @@ function HomeScreenInner(){
                         <View pointerEvents="none" style={patch(t.desc)}>
                           <Text numberOfLines={t.desc.lines} adjustsFontSizeToFit minimumFontScale={0.8} style={{ fontSize: 12 * k, lineHeight: 15 * k, color: '#4B5563' }}>{homeInsight.desc}</Text>
                         </View>
-                        <Pressable onPress={() => setHomeView(homeInsight.showingAway ? 'now' : 'away')} hitSlop={8} accessibilityRole="button"
-                          accessibilityLabel={homeInsight.showingAway ? 'Show current business state' : 'Show what Nexora did while you were away'}
-                          style={{ position: 'absolute', left: (t.chipX - C.x) * k, top: (186 - C.y) * k, height: 20 * k, paddingHorizontal: 8 * k, borderRadius: 10 * k, backgroundColor: '#EAF1FB', flexDirection: 'row', alignItems: 'center', gap: 4 * k, zIndex: 30 }}>
-                          <Ionicons name="swap-horizontal" size={11 * k} color="#1E56A0" />
-                          <Text style={{ fontSize: 10 * k, fontWeight: '700', color: '#1E56A0' }}>{homeInsight.showingAway ? 'Now' : 'While away'}</Text>
-                        </Pressable>
+                        {renderCardDots(t.chipX - 4 - C.x, 186 - C.y, k)}
                       </Pressable>
                     );
                   })()}
                 </View>
-                <View style={panel}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <Text style={{ fontSize: 16, fontWeight: '800', color: '#0B1220' }}>Needs your decision</Text>
-                    {escalations.length > 0 && <Pressable onPress={() => { refreshEscalations().catch(() => {}); setScreen('agendaPriority'); }}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>View all ›</Text></Pressable>}
-                  </View>
-                  {escalations.length === 0 && <Text style={[styles.attentionSubtitle, { marginTop: 10 }]}>Nothing needs you right now. Nexora will flag customers who need a human.</Text>}
-                  {escalations.slice(0, 4).map(e => (
-                    <Pressable key={e.id} onPress={() => { refreshEscalations().catch(() => {}); setScreen('agendaPriority'); }} style={{ flexDirection: 'row', gap: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' }}>
-                      <View style={{ width: 8, height: 8, borderRadius: 4, marginTop: 6, backgroundColor: e.urgency === 'high' ? '#D64545' : e.urgency === 'normal' ? '#C2760C' : '#8A97A6' }} />
-                      <View style={{ flex: 1, minWidth: 0 }}>
-                        <Text style={{ fontSize: 14, fontWeight: '700', color: '#0B1220' }} numberOfLines={1}>{e.customer_name || 'Customer'}</Text>
-                        <Text style={{ fontSize: 12, color: '#5C6B7A' }} numberOfLines={2}>{e.reason}</Text>
+              </View>
+              <View style={[panel, { flexBasis: narrow ? '100%' : '52%', flexGrow: 1, minWidth: narrow ? 0 : 360 }]}>
+                {head('AI Command Center')}
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', rowGap: 14, marginTop: 6 }}>
+                  {commandCenter.map(c => (
+                    <Pressable key={c.label} onPress={c.onPress} accessibilityRole="button" style={{ width: '25%', alignItems: 'center', gap: 8, paddingVertical: 4 }}>
+                      <View style={{ width: narrow ? 52 : 56, height: narrow ? 52 : 56, borderRadius: 28, backgroundColor: '#F2F5F9', borderWidth: 1, borderColor: '#E6ECF3', alignItems: 'center', justifyContent: 'center' }}>
+                        <Ionicons name={c.icon as any} size={22} color={c.color} />
                       </View>
+                      <Text style={{ fontSize: 12.5, fontWeight: '600', color: '#1F2937', textAlign: 'center' }} numberOfLines={1}>{c.label}</Text>
                     </Pressable>
                   ))}
                 </View>
-                <View style={panel}>
-                  <Text style={{ fontSize: 16, fontWeight: '800', color: '#0B1220', marginBottom: 10 }}>Quick actions</Text>
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-                    {actions.map(a => (
-                      <Pressable key={a.label} onPress={a.onPress} accessibilityRole="button" style={{ flexBasis: '47%', flexGrow: 1, flexDirection: 'row', alignItems: 'center', gap: 8, padding: 10, borderRadius: 12, backgroundColor: '#F4F7FB' }}>
-                        <Ionicons name={a.icon as any} size={16} color="#1E56A0" />
-                        <Text style={{ fontSize: 13, fontWeight: '600', color: '#0B1220' }} numberOfLines={1}>{a.label}</Text>
-                      </Pressable>
-                    ))}
+              </View>
+            </View>
+
+            {/* Need Your Attention + Recent Activity (Home design) */}
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: narrow ? 14 : 18, alignItems: 'flex-start' }}>
+              <View style={[panel, { flexBasis: narrow ? '100%' : '48%', flexGrow: 1, minWidth: narrow ? 0 : 340 }]}>
+                {head('Need Your Attention', { count: todo.length, link: escalations.length ? 'View All' : undefined, onLink: () => { refreshEscalations().catch(() => {}); setScreen('agendaPriority'); } })}
+                {attention.length === 0 && (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 12 }}>
+                    <Ionicons name="checkmark-circle" size={20} color="#1E9E6D" />
+                    <Text style={styles.attentionSubtitle}>All clear. No unpaid orders, waiting customers or unfinished setup.</Text>
                   </View>
+                )}
+                {attention.map((t, i) => {
+                  const n = /^(\d+)/.exec(t.title)?.[1];
+                  return (
+                    <View key={t.title} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderBottomWidth: i === attention.length - 1 ? 0 : 1, borderBottomColor: '#F1F5F9' }}>
+                      <View style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: `${t.color}14`, alignItems: 'center', justifyContent: 'center' }}>
+                        {n ? <Text style={{ color: t.color, fontWeight: '800', fontSize: 14 }}>{Number(n) > 99 ? '99+' : n}</Text> : <Ionicons name={t.icon as any} size={18} color={t.color} />}
+                      </View>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={{ fontSize: 14, fontWeight: '700', color: '#0B1220' }} numberOfLines={1}>{t.title}</Text>
+                        {!!t.sub && <Text style={{ fontSize: 12.5, color: '#5C6B7A', marginTop: 1 }} numberOfLines={1}>{t.sub}</Text>}
+                      </View>
+                      <Pressable onPress={t.onPress} accessibilityRole="button" style={{ paddingHorizontal: 12, height: 32, borderRadius: 16, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}>
+                        <Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 12.5 }}>{/setting up/i.test(t.title) ? 'Continue' : /photo/i.test(t.title) ? 'Fix now' : 'Review'}</Text>
+                      </Pressable>
+                    </View>
+                  );
+                })}
+              </View>
+              <View style={[panel, { flexBasis: narrow ? '100%' : '48%', flexGrow: 1, minWidth: narrow ? 0 : 340 }]}>
+                {head('Recent Activity')}
+                {activityRows.length === 0 && <Text style={[styles.attentionSubtitle, { paddingVertical: 12 }]}>Nothing yet. Replies Nexora sends, new orders, leads and community answers will show here.</Text>}
+                {activityRows.slice(0, 6).map((a, i) => {
+                  const tagColor = a.tag === 'Needs you' ? ['#FDECEC', '#B42318'] : a.tag === 'AI Handled' || a.tag === 'Done' ? ['#E9F8EE', '#15803D'] : a.tag === 'Opportunity' ? ['#FFF6E5', '#B7791F'] : ['#EAF1FB', '#1E56A0'];
+                  const icon = a.kind === 'reply' ? 'checkmark-circle' : a.kind === 'escalation' ? 'hand-left' : a.kind === 'order' ? 'bag-handle' : a.kind === 'lead' ? 'person-add' : a.kind === 'learned' ? 'bulb' : 'chatbubbles';
+                  return (
+                    <Pressable key={`${a.kind}-${i}`} onPress={() => (a.action === 'community' && a.post_id ? openCommPostById(a.post_id) : runBriefingAction(a.action))} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderBottomWidth: i === Math.min(activityRows.length, 6) - 1 ? 0 : 1, borderBottomColor: '#F1F5F9' }}>
+                      <View style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center' }}><Ionicons name={icon as any} size={17} color="#1E56A0" /></View>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={{ fontSize: 14, fontWeight: '700', color: '#0B1220' }} numberOfLines={1}>{a.title}</Text>
+                        <Text style={{ fontSize: 12.5, color: '#5C6B7A', marginTop: 1 }} numberOfLines={1}>{a.subtitle}{a.subtitle ? ' · ' : ''}{commAgo(a.at)}</Text>
+                      </View>
+                      <Text style={{ fontSize: 11, fontWeight: '700', color: tagColor[1], backgroundColor: tagColor[0], paddingHorizontal: 9, paddingVertical: 4, borderRadius: 10, overflow: 'hidden' }}>{a.tag}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+
+            {/* Business Overview (Home design), with this week's live numbers underneath */}
+            <View style={panel}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                <Text style={{ fontSize: 15.5, fontWeight: '700', color: '#0B1220' }}>Business Overview</Text>
+                <Text style={{ fontSize: 12, color: '#5C6B7A', backgroundColor: '#F1F5F9', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, overflow: 'hidden' }}>Last 30 days</Text>
+              </View>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+                {(ovRows.length ? ovRows : [{ icon: 'cash-outline', label: 'Revenue', v: { value: 0, change: null }, onPress: () => openOrders('All') }, { icon: 'bag-handle-outline', label: 'Orders', v: { value: 0, change: null }, onPress: () => openOrders('All') }, { icon: 'people-outline', label: 'Customers', v: { value: 0, change: null }, onPress: () => openCustomers(() => goTab('home')) }, { icon: 'person-add-outline', label: 'Leads', v: { value: 0, change: null }, onPress: () => openLeads() }] as typeof ovRows).map(t => (
+                  <Pressable key={t.label} onPress={t.onPress} accessibilityRole="button" style={{ flexBasis: narrow ? '46%' : '22%', flexGrow: 1, padding: 14, borderRadius: 12, backgroundColor: '#F7F9FC', borderWidth: 1, borderColor: '#EEF2F7' }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <View style={{ width: 30, height: 30, borderRadius: 8, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}><Ionicons name={t.icon as any} size={15} color="#1E56A0" /></View>
+                      <Ionicons name="arrow-forward" size={14} color="#8A97A6" style={{ transform: [{ rotate: '-45deg' }] }} />
+                    </View>
+                    <Text style={{ fontSize: 22, fontWeight: '700', color: '#0B1220', marginTop: 10 }} numberOfLines={1} adjustsFontSizeToFit>{t.label === 'Revenue' ? moneyText(t.v.value) : t.v.value.toLocaleString()}</Text>
+                    <Text style={{ fontSize: 12, marginTop: 2, fontWeight: '600', color: t.v.change === null ? '#8A97A6' : t.v.change >= 0 ? '#1E9E6D' : '#D64545' }} numberOfLines={1}>
+                      {t.v.change === null ? `${t.label} · no earlier data yet` : `${t.v.change >= 0 ? '▲' : '▼'} ${Math.abs(t.v.change)}% ${t.label} vs last month`}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14, paddingTop: 14, borderTopWidth: 1, borderTopColor: '#F1F5F9' }}>
+                {kpis.map(k => (
+                  <Pressable key={k.label} onPress={k.onPress} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 11, height: 32, borderRadius: 16, backgroundColor: '#F7F9FC', borderWidth: 1, borderColor: '#EEF2F7' }}>
+                    <Ionicons name={k.icon as any} size={14} color={k.color} />
+                    <Text style={{ fontSize: 12.5, color: '#0B1220', fontWeight: '700' }}>{k.value}</Text>
+                    <Text style={{ fontSize: 12.5, color: '#5C6B7A' }}>{k.label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+
+            {setupDone < setup.length && (
+              <View style={panel}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <Ionicons name="rocket-outline" size={17} color="#1E56A0" />
+                  <Text style={{ fontSize: 15, fontWeight: '700', color: '#0B1220' }}>Finish setting up</Text>
+                  <Text style={{ fontSize: 13, color: '#5C6B7A' }}>{setupDone} of {setup.length}</Text>
+                  <View style={{ flex: 1, height: 6, borderRadius: 3, backgroundColor: '#E2EAF4', overflow: 'hidden', marginLeft: 6 }}><View style={{ width: `${Math.round((setupDone / setup.length) * 100)}%`, height: 6, backgroundColor: '#1E56A0' }} /></View>
                 </View>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 14 }}>
+                  {setup.map((st, i) => (
+                    <Pressable key={st.label} disabled={st.done} onPress={st.onPress} accessibilityRole="button" style={{ flexBasis: narrow ? '46%' : '15%', flexGrow: 1, minWidth: 0, padding: 12, borderRadius: 12, backgroundColor: st.done ? '#F3FAF6' : '#F7F9FC', borderWidth: 1, borderColor: st.done ? '#CDEBD9' : '#E6ECF3' }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Ionicons name={st.done ? 'checkmark-circle' : 'ellipse-outline'} size={18} color={st.done ? '#1E9E6D' : '#A5AFBB'} />
+                        <Text style={{ fontSize: 11.5, fontWeight: '700', color: '#8A97A6' }}>STEP {i + 1}</Text>
+                      </View>
+                      <Text style={{ fontSize: 13, fontWeight: '600', color: st.done ? '#8A97A6' : '#0B1220', marginTop: 6, lineHeight: 17 }} numberOfLines={2}>{st.label}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+            )}
+
+            {/* Conversations and Nexora's suggestions */}
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: narrow ? 14 : 18, alignItems: 'flex-start' }}>
+              <View style={{ flexBasis: narrow ? '100%' : '48%', flexGrow: 1, minWidth: narrow ? 0 : 340 }}>
+                <View style={panel}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <Text style={{ fontSize: 15.5, fontWeight: '700', color: '#0B1220' }}>Latest conversations</Text>
+                    <Pressable onPress={() => goTab('inbox')}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>Open inbox ›</Text></Pressable>
+                  </View>
+                  {conversations.length === 0 && <Text style={[styles.attentionSubtitle, { marginTop: 10 }]}>No conversations yet. Connect WhatsApp, Instagram or Facebook so customer messages arrive here.</Text>}
+                  {conversations.slice(0, 5).map(c => (
+                    <Pressable key={c.id} onPress={() => openConversation(c)} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' }}>
+                      <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#1E56A0', fontWeight: '800' }}>{c.name.charAt(0).toUpperCase()}</Text></View>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={{ fontSize: 14, fontWeight: c.unread ? '800' : '600', color: '#0B1220' }} numberOfLines={1}>{c.name} <Text style={{ fontWeight: '400', color: '#8A97A6', fontSize: 12 }}>· {c.platform}</Text></Text>
+                        <Text style={{ fontSize: 13, color: '#5C6B7A' }} numberOfLines={1}>{c.lastMessage}</Text>
+                      </View>
+                      <Text style={{ fontSize: 12, color: '#8A97A6' }}>{c.lastTime}</Text>
+                      {c.unread > 0 && <View style={{ minWidth: 20, height: 20, borderRadius: 10, paddingHorizontal: 5, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#FFF', fontSize: 11, fontWeight: '800' }}>{c.unread}</Text></View>}
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+              <View style={[panel, { flexBasis: narrow ? '100%' : '48%', flexGrow: 1, minWidth: narrow ? 0 : 340 }]}>
+                {head('Nexora suggests', { icon: 'sparkles' })}
+                {recs.length === 0 && <Text style={[styles.attentionSubtitle, { marginTop: 6 }]}>Suggestions appear here once Nexora has enough activity from your orders, shop and customers. Nothing is guessed.</Text>}
+                {recs.map((r, i) => (
+                  <View key={i} style={{ paddingVertical: 10, borderBottomWidth: i < recs.length - 1 ? 1 : 0, borderBottomColor: '#F1F5F9' }}>
+                    <View style={{ flexDirection: 'row', gap: 10 }}>
+                      <Ionicons name={r.icon as any} size={17} color="#1E56A0" style={{ marginTop: 1 }} />
+                      <Text style={{ flex: 1, fontSize: 13.5, color: '#1F2937', lineHeight: 19 }}>{r.text}</Text>
+                    </View>
+                    <Pressable onPress={r.onPress} style={{ alignSelf: 'flex-start', marginLeft: 27, marginTop: 6 }}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>{r.cta} ›</Text></Pressable>
+                  </View>
+                ))}
+                <Text style={{ fontSize: 11.5, color: '#8A97A6', marginTop: 6 }}>Based only on your own orders, shop visits and customers.</Text>
               </View>
             </View>
           </ScrollView>
+          {renderBottomNav()}
         </View>
       );
     }
@@ -8712,8 +11493,8 @@ function HomeScreenInner(){
       cmdSpot('Train AI', 67, 405), cmdSpot('Connect Apps', 157.5, 405), cmdSpot('Leads', 248, 405),
       { x: 287, y: 405, w: 78, h: 100, label: 'More', onPress: () => setHomeCommandExpanded(true) },
       { x: 300, y: 522, w: 80, h: 30, label: 'attention-view-all', onPress: () => { refreshEscalations().catch(() => {}); setScreen('agendaPriority'); } },
-      { x: 16, y: 575, w: 361, h: 60, label: 'attention-call', onPress: () => setScreen('callSummary') },
-      { x: 16, y: 636, w: 361, h: 60, label: 'attention-images', onPress: () => openMissingImages() },
+      { x: 16, y: 575, w: 361, h: 60, label: 'attention-call', onPress: () => { refreshEscalations().catch(() => {}); setScreen(escalations.length ? 'agendaPriority' : 'callSummary'); } },
+      { x: 16, y: 636, w: 361, h: 60, label: 'attention-images', onPress: () => { if (lowStockItems.length) { openKnowledgeList('products'); flash(`Running low: ${lowStockItems.slice(0, 3).map(i => i.name).join(', ')}. Open a product and update its Stock.`); } else openMissingImages(); } },
       { x: 16, y: 697, w: 361, h: 60, label: 'attention-orders', onPress: () => openOrders('Unshipped') },
       ...homeNav(0),
     ];
@@ -8744,19 +11525,15 @@ function HomeScreenInner(){
                   <View pointerEvents="none" style={patch(t.desc)}>
                     <Text numberOfLines={t.desc.lines} adjustsFontSizeToFit minimumFontScale={0.8} style={{ fontSize: 12 * hs, lineHeight: 15 * hs, color: '#4B5563' }}>{ins.desc}</Text>
                   </View>
-                  {/* Now / Away toggle for the insight card. */}
-                  <Pressable
-                    onPress={() => setHomeView(ins.showingAway ? 'now' : 'away')}
-                    accessibilityRole="button"
-                    accessibilityLabel={ins.showingAway ? 'Show current business state' : 'Show what Nexora did while you were away'}
-                    hitSlop={8}
-                    style={{ position: 'absolute', left: t.chipX * hs, top: 186 * hs, height: 20 * hs, paddingHorizontal: 8 * hs, borderRadius: 10 * hs, backgroundColor: '#EAF1FB', flexDirection: 'row', alignItems: 'center', gap: 4 * hs, zIndex: 30 }}>
-                    <Ionicons name="swap-horizontal" size={11 * hs} color="#1E56A0" />
-                    <Text style={{ fontSize: 10 * hs, fontWeight: '700', color: '#1E56A0' }}>{ins.showingAway ? 'Now' : 'While away'}</Text>
-                  </Pressable>
+                  {/* Which of the rotating cards is showing; tap for the next one (they also change every 30 seconds). */}
+                  {renderCardDots(t.chipX - 4, 186, hs)}
                 </>
               );
             })()}
+            {renderAttention(3, 0, hs)}
+            {renderHeaderLockup(0, hs)}
+            {renderViewAll(524, hs)}
+            {renderAvatar(hs)}
             {renderSpots(home1Spots, hs)}
           </View>
         </ScrollView>
@@ -8766,60 +11543,265 @@ function HomeScreenInner(){
 
   if (screen === 'orders') {
     const isUnshipped = (o: OrderRow) => o.status === 'pending' || o.status === 'processing';
-    const isDone = (o: OrderRow) => o.status === 'shipped' || o.status === 'delivered';
-    const unshippedN = orders.filter(isUnshipped).length;
-    const shown = orders.filter(o => (ordersFilter === 'All' ? true : ordersFilter === 'Unshipped' ? isUnshipped(o) : isDone(o)));
-    const pill = (st: OrderRow['status']) => st === 'pending' ? { bg: '#FDF3E1', fg: '#B7791F', label: 'Pending' } : st === 'processing' ? { bg: '#EAF1FB', fg: '#1E56A0', label: 'Processing' } : st === 'shipped' ? { bg: '#E3F6EE', fg: '#1E9E6D', label: 'Shipped' } : st === 'delivered' ? { bg: '#E3F6EE', fg: '#1E9E6D', label: 'Delivered' } : { bg: '#EEF1F4', fg: '#5C6B7A', label: 'Cancelled' };
+    const isDone = (o: OrderRow) => o.status === 'shipped' || o.status === 'delivered' || o.status === 'completed';
+    const isUnpaid = (o: OrderRow) => o.status !== 'cancelled' && (o.payment_status === 'unpaid' || o.payment_status === 'pending');
+    const counts = { Unshipped: orders.filter(isUnshipped).length, Unpaid: orders.filter(isUnpaid).length, Shipped: orders.filter(isDone).length, Cancelled: orders.filter(o => o.status === 'cancelled').length, All: orders.length };
+    const qq = ordersQuery.trim().toLowerCase();
+    const shown = orders.filter(o => (ordersFilter === 'All' ? true : ordersFilter === 'Unshipped' ? isUnshipped(o) : ordersFilter === 'Unpaid' ? isUnpaid(o) : ordersFilter === 'Cancelled' ? o.status === 'cancelled' : isDone(o)))
+      .filter(o => !qq || `${orderLabel(o)} ${o.customer_name} ${o.items} ${o.customer_phone ?? ''} ${o.customer_email ?? ''}`.toLowerCase().includes(qq));
+    const statusPill = (st: OrderRow['status']) => st === 'pending' ? { bg: '#FDF3E1', fg: '#B7791F' } : st === 'processing' ? { bg: '#EAF1FB', fg: '#1E56A0' } : st === 'cancelled' ? { bg: '#FDECEC', fg: '#B42318' } : { bg: '#E3F6EE', fg: '#1E9E6D' };
+    const payPill = (p?: PaymentStatus) => p === 'paid' ? { bg: '#E3F6EE', fg: '#1E9E6D' } : p === 'unpaid' ? { bg: '#FDECEC', fg: '#B42318' } : p === 'pending' ? { bg: '#FDF3E1', fg: '#B7791F' } : p === 'refunded' || p === 'partially_refunded' ? { bg: '#F3EEFF', fg: '#7C3AED' } : { bg: '#F1F5F9', fg: '#5C6B7A' };
+    const pill = (text: string, c: { bg: string; fg: string }) => <View style={{ backgroundColor: c.bg, borderRadius: 10, paddingHorizontal: 9, paddingVertical: 3 }}><Text style={{ color: c.fg, fontSize: 11, fontWeight: '700' }}>{text}</Text></View>;
+    const open = orderOpenId ? orders.find(o => o.id === orderOpenId) ?? null : null;
+    const btn = (text: string, onPress: () => void, kind: 'primary' | 'outline' | 'danger' = 'outline', disabled = false) => (
+      <Pressable disabled={disabled} onPress={onPress} style={[styles.resetButton, { flexGrow: 1, flexBasis: '45%', minHeight: 40, opacity: disabled ? 0.5 : 1 }, kind === 'primary' ? styles.resetButtonEnabled : kind === 'danger' ? { borderWidth: 1, borderColor: '#F5C2C2', backgroundColor: '#FDECEC' } : { borderWidth: 1, borderColor: '#5381BB' }]}>
+        <Text style={[styles.resetButtonText, { fontSize: 13 }, kind === 'outline' && { color: '#1E56A0' }, kind === 'danger' && { color: '#B42318' }]}>{text}</Text>
+      </Pressable>
+    );
+    const unpaidTotal = orders.filter(isUnpaid).reduce((n, o) => n + Number(o.total || 0), 0);
+    const sample = orders[0];
     return (
       <View style={styles.mainScreen}>
         <StatusBar style="dark" />
         <View style={[styles.knowledgeHeader, headerSafe]}>
           <Pressable onPress={() => { setMainTab('home'); setScreen('main'); }} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
           <Text style={styles.knowledgeHeaderTitle}>Orders</Text>
-          <Pressable onPress={() => refreshOrders().then(() => flash('Orders refreshed')).catch(() => flash("Couldn't refresh orders."))} hitSlop={8} accessibilityLabel="Refresh"><Ionicons name="refresh-outline" size={22} color="#0B1220" /></Pressable>
+          <View style={{ flexDirection: 'row', gap: 16 }}>
+            <Pressable onPress={() => exportOrdersCsv(shown)} hitSlop={8} accessibilityLabel="Export orders"><Ionicons name="download-outline" size={22} color="#0B1220" /></Pressable>
+            <Pressable onPress={() => refreshOrders().then(() => flash('Orders refreshed')).catch(() => flash("Couldn't refresh orders."))} hitSlop={8} accessibilityLabel="Refresh"><Ionicons name="refresh-outline" size={22} color="#0B1220" /></Pressable>
+          </View>
         </View>
-        <ScrollView style={styles.homeScroll} contentContainerStyle={styles.homeScrollContent}>
-          <Text style={[styles.attentionSubtitle, { marginBottom: 12 }]}>{unshippedN === 0 ? 'All orders have shipped.' : `${unshippedN} order${unshippedN === 1 ? '' : 's'} haven't shipped yet.`}</Text>
-          <View style={styles.filterRow}>
-            {(['Unshipped', 'Shipped', 'All'] as const).map(f => (
+        <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { width: '100%', maxWidth: 820, alignSelf: 'center' }]} keyboardShouldPersistTaps="handled">
+          {!ordersUpgraded && (
+            <View style={{ padding: 12, borderRadius: 12, backgroundColor: '#FFF6E5', marginBottom: 12 }}>
+              <Text style={{ color: '#92400E', fontWeight: '700' }}>Payments, history and receipts need one setup step</Text>
+              <Text style={{ color: '#92400E', fontSize: 13, marginTop: 2 }}>Run the "shop and orders" SQL script in Supabase. Shipping updates keep working meanwhile.</Text>
+            </View>
+          )}
+          <View style={{ flexDirection: 'row', gap: 10, marginBottom: 12 }}>
+            <View style={[styles.detailCard, { flex: 1, marginBottom: 0 }]}><Text style={{ fontSize: 20, fontWeight: '800', color: '#0B1220' }}>{counts.Unshipped}</Text><Text style={styles.attentionSubtitle}>To prepare or ship</Text></View>
+            <View style={[styles.detailCard, { flex: 1, marginBottom: 0 }]}><Text style={{ fontSize: 20, fontWeight: '800', color: counts.Unpaid ? '#B42318' : '#0B1220' }}>{counts.Unpaid}</Text><Text style={styles.attentionSubtitle}>Unpaid{counts.Unpaid && sample ? ` · ${orderMoney(sample, unpaidTotal)}` : ''}</Text></View>
+          </View>
+          <View style={[styles.searchBarPlain]}>
+            <Ionicons name="search-outline" size={16} color="#8A97A6" />
+            <TextInput value={ordersQuery} onChangeText={setOrdersQuery} placeholder="Search by order number, customer or item" placeholderTextColor="#8A97A6" style={[styles.homeSearchPlaceholder, { flex: 1, paddingVertical: 0 }]} />
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 12 }}>
+            {(['Unshipped', 'Unpaid', 'Shipped', 'Cancelled', 'All'] as const).map(f => (
               <Pressable key={f} onPress={() => setOrdersFilter(f)} style={[styles.filterChip, ordersFilter === f && styles.filterChipActive]}>
-                <Text style={[styles.filterChipText, ordersFilter === f && styles.filterChipTextActive]}>{f} ({f === 'Unshipped' ? unshippedN : f === 'Shipped' ? orders.filter(isDone).length : orders.length})</Text>
+                <Text style={[styles.filterChipText, ordersFilter === f && styles.filterChipTextActive]}>{f === 'Unshipped' ? 'To ship' : f === 'Shipped' ? 'Shipped / done' : f} ({counts[f]})</Text>
               </Pressable>
             ))}
-          </View>
-          {shown.length === 0 && <Text style={[styles.attentionSubtitle, { textAlign: 'center', marginTop: 24 }]}>Nothing here.</Text>}
-          {shown.map(o => {
-            const pl = pill(o.status);
-            return (
-              <View key={o.id} style={styles.detailCard}>
-                <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
-                  <View style={styles.attentionTextWrap}>
-                    <Text style={styles.attentionTitle}>{o.customer_name}</Text>
-                    <Text style={styles.attentionSubtitle}>{o.items}</Text>
-                    <Text style={[styles.attentionSubtitle, { marginTop: 2 }]}>${Number(o.total).toFixed(2)}  {'\u00b7'}  {timeAgo(o.created_at)}</Text>
-                  </View>
-                  <View style={{ backgroundColor: pl.bg, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 4 }}><Text style={{ color: pl.fg, fontSize: 11, fontWeight: '700' }}>{pl.label}</Text></View>
+          </ScrollView>
+{isOwnerRole() && (
+          <Pressable onPress={() => setNewOrder({ name: '', phone: '', items: '', total: '', paid: false, busy: false, error: '' })} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', marginBottom: 12 }}>
+            <Ionicons name="add-circle-outline" size={18} color="#1E56A0" /><Text style={{ color: '#1E56A0', fontWeight: '700' }}>Add an order yourself</Text>
+          </Pressable>
+          )}
+          {shown.length === 0 && (
+            <View style={{ alignItems: 'center', paddingVertical: 28 }}>
+              <Ionicons name="receipt-outline" size={34} color="#A5AFBB" />
+              <Text style={[styles.attentionSubtitle, { textAlign: 'center', marginTop: 8 }]}>{orders.length ? 'Nothing here.' : 'No orders yet. Share your AI shop link so customers can order any time.'}</Text>
+              {!orders.length && <Pressable onPress={() => { openStorefront().catch(() => {}); }} style={{ marginTop: 10 }}><Text style={{ color: '#1E56A0', fontWeight: '700' }}>Open AI shop link ›</Text></Pressable>}
+            </View>
+          )}
+          {shown.map(o => (
+            <Pressable key={o.id} onPress={() => { setOrderOpenId(o.id); setOrderForm({ tracking: o.tracking || '', delivery_fee: String(o.delivery_fee || ''), discount: String(o.discount || ''), refund: '', cancel_reason: '', note: '' }); }} style={styles.detailCard} accessibilityRole="button">
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
+                <View style={styles.attentionTextWrap}>
+                  <Text style={styles.attentionTitle}>{o.customer_name} <Text style={{ color: '#8A97A6', fontWeight: '500', fontSize: 13 }}>· {orderLabel(o)}</Text></Text>
+                  <Text style={styles.attentionSubtitle} numberOfLines={2}>{o.items}</Text>
+                  <Text style={[styles.attentionSubtitle, { marginTop: 2 }]}>{orderMoney(o, o.total)}  {'·'}  {timeAgo(o.created_at)}{o.source === 'shop' ? '  ·  Shop link' : ''}</Text>
                 </View>
-                {(o.status === 'pending' || o.status === 'processing' || o.status === 'shipped') && (
-                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
-                    {o.status === 'pending' && (
-                      <Pressable onPress={() => setOrderStatus(o, 'processing')} style={[styles.resetButton, { flex: 1, minHeight: 38, borderWidth: 1, borderColor: '#5381BB' }]}><Text style={[styles.resetButtonText, { color: '#1E56A0', fontSize: 13 }]}>Start processing</Text></Pressable>
-                    )}
-                    {(o.status === 'pending' || o.status === 'processing') && (
-                      <Pressable onPress={() => setOrderStatus(o, 'shipped')} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1, minHeight: 38 }]}><Text style={[styles.resetButtonText, { fontSize: 13 }]}>Mark shipped</Text></Pressable>
-                    )}
-                    {o.status === 'shipped' && (
-                      <Pressable onPress={() => setOrderStatus(o, 'delivered')} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1, minHeight: 38 }]}><Text style={[styles.resetButtonText, { fontSize: 13 }]}>Mark delivered</Text></Pressable>
-                    )}
-                  </View>
-                )}
+                <View style={{ alignItems: 'flex-end', gap: 6 }}>
+                  {pill(ORDER_STATUS_TEXT[o.status], statusPill(o.status))}
+                  {!!o.payment_status && pill(PAY_TEXT[o.payment_status], payPill(o.payment_status))}
+                </View>
               </View>
-            );
-          })}
-          <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); sendChatMessage("Which orders haven't shipped yet? Summarise them and tell me which to prioritise."); }} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 8, flexDirection: 'row', gap: 8 }]}>
+              {(o.status === 'pending' || o.status === 'processing' || o.status === 'shipped') && (
+                <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                  {o.status === 'pending' && btn('Confirm', () => { setOrderStatus(o, 'processing').catch(() => {}); })}
+                  {(o.status === 'pending' || o.status === 'processing') && btn('Mark shipped', () => { setOrderStatus(o, 'shipped').catch(() => {}); }, 'primary')}
+                  {o.status === 'shipped' && btn('Mark delivered', () => { setOrderStatus(o, 'delivered').catch(() => {}); }, 'primary')}
+                </View>
+              )}
+            </Pressable>
+          ))}
+          <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); sendChatMessage("Which orders haven't shipped or been paid yet? Summarise them and tell me which to prioritise."); }} style={[styles.resetButton, styles.resetButtonEnabled, { flexDirection: 'row', gap: 8, marginTop: 6 }]}>
             <Ionicons name="sparkles" size={16} color="#FFF" /><Text style={styles.resetButtonText}>Ask Nexora about these orders</Text>
           </Pressable>
         </ScrollView>
+
+        {/* Order details */}
+        <Modal visible={!!open} animationType="slide" onRequestClose={() => setOrderOpenId(null)} statusBarTranslucent>
+          {open && orderForm && (() => {
+            const o = open;
+            const lines = o.line_items?.length ? o.line_items : [];
+            const subtotal = o.subtotal ?? (lines.length ? lines.reduce((n, l) => n + Number(l.total || 0), 0) : Number(o.total));
+            const fee = Number(orderForm.delivery_fee.replace(/[^\d.]/g, '')) || 0, disc = Number(orderForm.discount.replace(/[^\d.]/g, '')) || 0;
+            const feesChanged = fee !== Number(o.delivery_fee || 0) || disc !== Number(o.discount || 0);
+            const phone = (o.customer_phone || '').replace(/[^\d+]/g, '');
+            const owner = isOwnerRole();
+            const section = (t: string) => <Text style={[styles.channelSectionLabel, { marginTop: 16 }]}>{t}</Text>;
+            return (
+              <View style={[styles.mainScreen, { paddingTop: IS_WEB ? 0 : insets.top }]}>
+                <View style={[styles.knowledgeHeader]}>
+                  <Pressable onPress={() => setOrderOpenId(null)} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+                  <Text style={styles.knowledgeHeaderTitle}>Order {orderLabel(o)}</Text>
+                  <Pressable onPress={() => orderReceipt(o)} hitSlop={8} accessibilityLabel="Receipt"><Ionicons name="document-text-outline" size={22} color="#0B1220" /></Pressable>
+                </View>
+                <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40 + insets.bottom, width: '100%', maxWidth: 760, alignSelf: 'center' }]} keyboardShouldPersistTaps="handled">
+                  <View style={styles.detailCard}>
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                      {pill(`Order: ${ORDER_STATUS_TEXT[o.status]}`, statusPill(o.status))}
+                      {pill(`Payment: ${PAY_TEXT[o.payment_status || 'unknown']}`, payPill(o.payment_status))}
+                      {o.source === 'shop' && pill(`Shop link${o.src ? ` · ${o.src}` : ''}`, { bg: '#EAF1FB', fg: '#1E56A0' })}
+                    </View>
+                    <Text style={[styles.attentionSubtitle, { marginTop: 8 }]}>Placed {new Date(o.created_at).toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' })}</Text>
+                  </View>
+
+                  {section('Customer')}
+                  <View style={styles.detailCard}>
+                    <Text style={styles.attentionTitle}>{o.customer_name}</Text>
+                    {!!o.customer_phone && <Text style={styles.attentionSubtitle}>{o.customer_phone}</Text>}
+                    {!!o.customer_email && <Text style={styles.attentionSubtitle}>{o.customer_email}</Text>}
+                    {!!o.delivery_address && <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}><Text style={{ fontWeight: '700' }}>Deliver to: </Text>{o.delivery_address}</Text>}
+                    {!!o.note && <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}><Text style={{ fontWeight: '700' }}>Note: </Text>{o.note}</Text>}
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+                      {phone.length >= 7 && btn('WhatsApp update', () => { notifyCustomer(o, 'whatsapp').catch(() => {}); })}
+                      {!!o.customer_email && btn('Email update', () => { notifyCustomer(o, 'email').catch(() => {}); })}
+                      {phone.length >= 7 && btn('Call', () => { Linking.openURL(`tel:${phone}`).catch(() => {}); })}
+                      {btn('Share update', () => { notifyCustomer(o, 'share').catch(() => {}); })}
+                    </View>
+                  </View>
+
+                  {section('Items')}
+                  <View style={styles.detailCard}>
+                    {lines.length ? lines.map((l, i) => (
+                      <View key={i} style={{ flexDirection: 'row', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' }}>
+                        <Text style={{ flex: 1, fontSize: 14, color: '#0B1220' }}>{l.qty} × {l.name}</Text>
+                        <Text style={{ fontSize: 14, color: '#0B1220', fontWeight: '600' }}>{orderMoney(o, l.total)}</Text>
+                      </View>
+                    )) : <Text style={{ fontSize: 14, color: '#0B1220' }}>{o.items}</Text>}
+                    <View style={{ flexDirection: 'row', marginTop: 8 }}><Text style={[styles.attentionSubtitle, { flex: 1 }]}>Subtotal</Text><Text style={styles.attentionSubtitle}>{orderMoney(o, subtotal)}</Text></View>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8 }}>
+                      <Text style={[styles.attentionSubtitle, { flex: 1 }]}>Delivery fee</Text>
+                      <TextInput value={orderForm.delivery_fee} onChangeText={v => setOrderForm(f => f && { ...f, delivery_fee: v })} keyboardType="decimal-pad" placeholder="0" placeholderTextColor="#A5AFBB" style={[styles.editInput, { width: 110, height: 38, textAlign: 'right' }]} />
+                    </View>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8 }}>
+                      <Text style={[styles.attentionSubtitle, { flex: 1 }]}>Discount</Text>
+                      <TextInput value={orderForm.discount} onChangeText={v => setOrderForm(f => f && { ...f, discount: v })} keyboardType="decimal-pad" placeholder="0" placeholderTextColor="#A5AFBB" style={[styles.editInput, { width: 110, height: 38, textAlign: 'right' }]} />
+                    </View>
+                    <View style={{ flexDirection: 'row', marginTop: 10 }}><Text style={[styles.attentionTitle, { flex: 1 }]}>Total</Text><Text style={styles.attentionTitle}>{orderMoney(o, feesChanged ? Math.max(0, subtotal + fee - disc) : o.total)}</Text></View>
+                    {feesChanged && btn('Save fees and new total', () => { updateOrder(o, { delivery_fee: fee, discount: disc, total: Math.max(0, subtotal + fee - disc) }, `Total updated to ${orderMoney(o, Math.max(0, subtotal + fee - disc))}${fee ? ` (delivery ${orderMoney(o, fee)})` : ''}${disc ? ` (discount ${orderMoney(o, disc)})` : ''}`, true, 'Total updated').catch(() => {}); }, 'primary', !ordersUpgraded)}
+                  </View>
+
+                  {section('Payment')}
+                  <View style={styles.detailCard}>
+                    <Text style={styles.attentionSubtitle}>Payment is tracked separately from delivery: an order can be paid but not shipped, or cancelled with a refund still to send.</Text>
+                    {!!o.paid_at && <Text style={[styles.attentionSubtitle, { marginTop: 6 }]}>Paid {orderMoney(o, o.amount_paid || o.total)} on {new Date(o.paid_at).toLocaleDateString()}</Text>}
+                    {!!Number(o.refunded_amount) && <Text style={[styles.attentionSubtitle, { marginTop: 4, color: '#7C3AED' }]}>Refunded {orderMoney(o, o.refunded_amount)}</Text>}
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+                      {o.payment_status !== 'paid' && o.payment_status !== 'refunded' && o.payment_status !== 'partially_refunded' && btn('Mark as paid', () => { setPayment(o, 'paid').catch(() => {}); }, 'primary', !ordersUpgraded)}
+                      {(o.payment_status === 'unpaid' || o.payment_status === 'unknown') && btn('Customer says they paid', () => { setPayment(o, 'pending').catch(() => {}); }, 'outline', !ordersUpgraded)}
+                      {o.payment_status === 'paid' && btn('Mark as unpaid', () => { setPayment(o, 'unpaid').catch(() => {}); }, 'outline', !ordersUpgraded)}
+                    </View>
+                    {(o.payment_status === 'paid' || o.payment_status === 'partially_refunded') && owner && (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 }}>
+                        <TextInput value={orderForm.refund} onChangeText={v => setOrderForm(f => f && { ...f, refund: v })} keyboardType="decimal-pad" placeholder="Refund amount" placeholderTextColor="#A5AFBB" style={[styles.editInput, { flex: 1, height: 40 }]} />
+                        <Pressable onPress={() => { const amt = Number(orderForm.refund.replace(/[^\d.]/g, '')); refundOrder(o, amt).then(ok => { if (ok) setOrderForm(f => f && { ...f, refund: '' }); }).catch(() => {}); }} style={{ paddingHorizontal: 14, height: 40, borderRadius: 12, backgroundColor: '#7C3AED', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#FFF', fontWeight: '700' }}>Record refund</Text></Pressable>
+                      </View>
+                    )}
+                    {!owner && <Text style={[styles.attentionSubtitle, { marginTop: 8, fontSize: 12 }]}>Only the business owner can record refunds or cancel orders.</Text>}
+                  </View>
+
+                  {section('Delivery')}
+                  <View style={styles.detailCard}>
+                    <Text style={styles.detailFieldLabel}>Tracking number or rider details (optional)</Text>
+                    <TextInput value={orderForm.tracking} onChangeText={v => setOrderForm(f => f && { ...f, tracking: v })} placeholder="e.g. DHL 1234567890 or Rider: John, 0801…" placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={200} />
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+                      {o.status === 'pending' && btn('Confirm order', () => { setOrderStatus(o, 'processing').catch(() => {}); })}
+                      {(o.status === 'pending' || o.status === 'processing') && btn('Mark shipped', () => { setOrderStatus(o, 'shipped', { tracking: orderForm.tracking.trim() }).catch(() => {}); }, 'primary')}
+                      {o.status === 'shipped' && btn('Mark delivered', () => { setOrderStatus(o, 'delivered').catch(() => {}); }, 'primary')}
+                      {o.status === 'delivered' && btn('Complete order', () => { setOrderStatus(o, 'completed').catch(() => {}); }, 'primary', !ordersUpgraded)}
+                      {o.status !== 'pending' && o.status !== 'cancelled' && orderForm.tracking.trim() !== (o.tracking || '') && btn('Save tracking', () => { updateOrder(o, { tracking: orderForm.tracking.trim() }, `Tracking updated: ${orderForm.tracking.trim()}`, true, 'Tracking saved').catch(() => {}); })}
+                      {o.status === 'cancelled' && owner && btn('Reopen order', () => { setOrderStatus(o, 'pending', { cancelled_at: null, cancel_reason: '' }).catch(() => {}); })}
+                    </View>
+                    {o.status !== 'cancelled' && o.status !== 'completed' && owner && (
+                      <View style={{ marginTop: 14 }}>
+                        <TextInput value={orderForm.cancel_reason} onChangeText={v => setOrderForm(f => f && { ...f, cancel_reason: v })} placeholder="Reason for cancelling (shown to the customer)" placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={200} />
+                        <View style={{ flexDirection: 'row', marginTop: 8 }}>
+                          {btn('Cancel order', () => {
+                            Alert.alert('Cancel this order?', `${orderLabel(o)} will be cancelled${(o.line_items ?? []).length ? ' and its items go back into stock' : ''}.${o.payment_status === 'paid' ? ' It is paid: record the refund after you send it.' : ''}`, [
+                              { text: 'Keep order', style: 'cancel' },
+                              { text: 'Cancel order', style: 'destructive', onPress: () => { setOrderStatus(o, 'cancelled', { cancel_reason: orderForm.cancel_reason.trim() }).catch(() => {}); } },
+                            ]);
+                          }, 'danger')}
+                        </View>
+                      </View>
+                    )}
+                    {!!orderTrackLink(o) && (
+                      <Pressable onPress={() => Share.share({ message: orderTrackLink(o) }).catch(() => {})} style={{ marginTop: 12 }}><Text style={{ color: '#1E56A0', fontWeight: '700' }}>Share the customer's tracking link ›</Text></Pressable>
+                    )}
+                  </View>
+
+                  {section('Internal note')}
+                  <View style={styles.detailCard}>
+                    <TextInput value={orderForm.note} onChangeText={v => setOrderForm(f => f && { ...f, note: v })} placeholder="Only your team sees this" placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={300} />
+                    {!!orderForm.note.trim() && btn('Add note', () => { updateOrder(o, {}, `Note: ${orderForm.note.trim()}`, false, 'Note added').then(ok => { if (ok) setOrderForm(f => f && { ...f, note: '' }); }).catch(() => {}); }, 'outline', !ordersUpgraded)}
+                  </View>
+
+                  {section('History')}
+                  <View style={styles.detailCard}>
+                    {(o.history ?? []).length === 0 && <Text style={styles.attentionSubtitle}>Changes to this order will be listed here.</Text>}
+                    {(o.history ?? []).slice().reverse().map((h, i) => (
+                      <View key={i} style={{ flexDirection: 'row', gap: 10, paddingVertical: 6 }}>
+                        <Ionicons name={h.customer === false ? 'lock-closed-outline' : 'ellipse'} size={h.customer === false ? 13 : 8} color={h.customer === false ? '#8A97A6' : '#1E56A0'} style={{ marginTop: 5 }} />
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontSize: 13.5, color: '#0B1220' }}>{h.text}</Text>
+                          <Text style={{ fontSize: 11.5, color: '#8A97A6' }}>{new Date(h.at).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}{h.by ? ` · ${h.by}` : ''}{h.customer === false ? ' · internal' : ''}</Text>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+                    {btn(o.payment_status === 'paid' ? 'Receipt' : 'Invoice', () => orderReceipt(o))}
+                  </View>
+                </ScrollView>
+              </View>
+            );
+          })()}
+        </Modal>
+
+        {/* Add an order yourself (walk-in, phone or chat orders) */}
+        <Modal visible={!!newOrder} transparent animationType="fade" onRequestClose={() => setNewOrder(null)} statusBarTranslucent>
+          <View style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)', justifyContent: 'center', padding: 16 }}>
+            {newOrder && (
+              <View style={{ width: '100%', maxWidth: 520, alignSelf: 'center', backgroundColor: '#FFF', borderRadius: 20, padding: 20 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Text style={{ flex: 1, fontSize: 18, fontWeight: '700', color: '#0B1220' }}>Add an order</Text>
+                  <Pressable onPress={() => setNewOrder(null)} hitSlop={8} accessibilityLabel="Close"><Ionicons name="close" size={22} color="#5C6B7A" /></Pressable>
+                </View>
+                <Text style={[styles.detailFieldLabel, { marginTop: 12 }]}>Customer</Text>
+                <TextInput value={newOrder.name} onChangeText={v => setNewOrder(f => f && { ...f, name: v })} placeholder="e.g. John Doe" placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={120} />
+                <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Phone (optional)</Text>
+                <TextInput value={newOrder.phone} onChangeText={v => setNewOrder(f => f && { ...f, phone: v })} placeholder="+1 555 123 4567" placeholderTextColor="#A5AFBB" keyboardType="phone-pad" style={styles.editInput} maxLength={40} />
+                <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>What they bought</Text>
+                <TextInput value={newOrder.items} onChangeText={v => setNewOrder(f => f && { ...f, items: v })} placeholder="e.g. Sneakers x2, Socks x1" placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={500} />
+                <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Total</Text>
+                <TextInput value={newOrder.total} onChangeText={v => setNewOrder(f => f && { ...f, total: v })} placeholder="0" placeholderTextColor="#A5AFBB" keyboardType="decimal-pad" style={styles.editInput} maxLength={14} />
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 12 }}>
+                  <Text style={[styles.attentionTitle, { flex: 1, fontSize: 14 }]}>Already paid</Text>
+                  <Switch value={newOrder.paid} onValueChange={v => setNewOrder(f => f && { ...f, paid: v })} trackColor={{ true: '#5381BB', false: '#D5DEE8' }} thumbColor="#FFFFFF" />
+                </View>
+                {!!newOrder.error && <Text style={{ color: '#B42318', fontSize: 13, marginTop: 8 }}>{newOrder.error}</Text>}
+                <Pressable disabled={newOrder.busy} onPress={() => { createManualOrder().catch(() => {}); }} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 14 }]}>
+                  {newOrder.busy ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>Save order</Text>}
+                </Pressable>
+              </View>
+            )}
+          </View>
+        </Modal>
       </View>
     );
   }
@@ -9146,6 +12128,10 @@ function HomeScreenInner(){
         <StatusBar style="dark" />
         {renderTopBar()}
         <ScrollView style={styles.homeScroll} contentContainerStyle={styles.homeScrollContent}>
+          <Pressable onPress={() => setScreen('main')} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back" style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', marginBottom: 10, cursor: 'pointer' } as any}>
+            <Ionicons name="chevron-back" size={22} color="#0B1220" />
+            <Text style={{ fontSize: 20, fontWeight: '700', color: '#0B1220' }}>Train AI</Text>
+          </Pressable>
           <Pressable onPress={() => setMainTab('brain')} style={styles.homeSearchBar}>
             <Ionicons name="add" size={18} color="#0B1220" />
             <Text style={styles.homeSearchPlaceholder}>Ask Nexora about your business…</Text>
@@ -9458,29 +12444,63 @@ function HomeScreenInner(){
           </View>
         </ScrollView>
         {renderSourceSheet()}
-        <Modal visible={tellOpen} transparent animationType="slide" onRequestClose={() => setTellOpen(false)} statusBarTranslucent>
+        <Modal visible={tellOpen} transparent animationType="slide" onRequestClose={() => { if (!tellStage) setTellOpen(false); }} statusBarTranslucent>
           <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-          <Pressable style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)' }} onPress={() => setTellOpen(false)} accessibilityLabel="Close" />
-          <View style={{ backgroundColor: '#FFF', borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 20, paddingBottom: 20 + insets.bottom }}>
+          <Pressable style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)' }} onPress={() => { if (!tellStage) setTellOpen(false); }} accessibilityLabel="Close" />
+          <View style={{ backgroundColor: '#FFF', borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 20, paddingBottom: 20 + insets.bottom, width: '100%', maxWidth: 640, alignSelf: 'center' }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <Ionicons name="sparkles" size={18} color="#1E56A0" />
-              <Text style={{ fontSize: 18, fontWeight: '700', color: '#0B1220' }}>Tell Nexora</Text>
+              <NexoraMark size={24} />
+              <Text style={{ fontSize: 18, fontWeight: '700', color: '#0B1220', flex: 1 }}>Tell Nexora</Text>
+              {!tellStage && <Pressable onPress={() => setTellOpen(false)} hitSlop={10} accessibilityLabel="Close"><Ionicons name="close" size={22} color="#6B7A8C" /></Pressable>}
             </View>
-            <Text style={[styles.attentionSubtitle, { marginTop: 6 }]}>Describe your products, prices, services, opening hours, delivery or refund rules in your own words. Nexora turns it into knowledge you can review before it's saved.</Text>
-            <TextInput
-              value={tellText}
-              onChangeText={setTellText}
-              multiline
-              autoFocus
-              maxLength={5000}
-              placeholder={'e.g. We sell the ASX wireless headphone for $59 in black and blue. Delivery in Lagos takes 1-2 days and costs $3. Refunds within 7 days if unused.'}
-              placeholderTextColor="#A5AFBB"
-              style={[styles.editInput, { height: 150, paddingTop: 12, textAlignVertical: 'top', marginTop: 12 }]}
-            />
-            <Text style={[styles.attentionSubtitle, { textAlign: 'right', marginTop: 4 }]}>{tellText.length}/5000</Text>
-            <Pressable onPress={submitTellNexora} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 10 }]}>
-              <Text style={styles.resetButtonText}>Teach Nexora</Text>
-            </Pressable>
+            {!tellStage ? (
+              <>
+                <Text style={[styles.attentionSubtitle, { marginTop: 6 }]}>Type what Nexora should know, or what it should find and add for you. It searches the web when needed, and you review everything before it's saved.</Text>
+                <TextInput
+                  value={tellText}
+                  onChangeText={setTellText}
+                  multiline
+                  autoFocus
+                  maxLength={5000}
+                  placeholder={'e.g. "Add the full specifications of the iPhone 15 Pro"\nor "We open 9am to 6pm, Monday to Saturday. Delivery in Lagos is \u20a62,000."'}
+                  placeholderTextColor="#A5AFBB"
+                  style={[styles.editInput, { height: 130, paddingTop: 12, textAlignVertical: 'top', marginTop: 12 }]}
+                />
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 10, gap: 10 }}>
+                  <Text style={[styles.attentionSubtitle, { flex: 1 }]}>{tellText.length}/5000</Text>
+                  <Pressable onPress={submitTellNexora} disabled={tellText.trim().length < 8} accessibilityRole="button" accessibilityLabel="Send to Nexora"
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 8, height: 44, paddingHorizontal: 20, borderRadius: 22, backgroundColor: tellText.trim().length >= 8 ? '#1E56A0' : '#8FB0D6' }}>
+                    <Ionicons name="sparkles" size={16} color="#FFFFFF" />
+                    <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '600' }}>Send</Text>
+                  </Pressable>
+                </View>
+              </>
+            ) : (
+              <View style={{ marginTop: 14 }}>
+                <Text numberOfLines={3} style={{ fontSize: 14, color: '#4B5B6E', backgroundColor: '#F2F4F7', borderRadius: 12, padding: 12 }}>{tellText}</Text>
+                {(([
+                  ['boot', 'Starting Nexora'],
+                  ...(tellStage.searched || tellStage.step === 'search' ? [['search', 'Searching the web'], ['read', 'Reading what it found']] : []),
+                  ['upload', 'Uploading to your knowledge'],
+                ] as [string, string][])).map(([k, label], i, arr) => {
+                  const order = arr.map(x => x[0]);
+                  const cur = order.indexOf(tellStage.step);
+                  const state = i < cur ? 'done' : i === cur ? 'now' : 'next';
+                  return (
+                    <View key={k} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 14 }}>
+                      <View style={{ width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center', backgroundColor: state === 'done' ? '#1E9E6D' : state === 'now' ? '#EAF1FB' : '#F2F4F7' }}>
+                        {state === 'done' ? <Ionicons name="checkmark" size={16} color="#FFFFFF" /> : state === 'now' ? <ActivityIndicator size="small" color="#1E56A0" /> : <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#C9D2DC' }} />}
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 15, color: state === 'next' ? '#8A97A6' : '#0B1220', fontWeight: state === 'now' ? '600' : '400' }}>{label}</Text>
+                        {state === 'now' && <Text style={{ fontSize: 12.5, color: '#6B7A8C', marginTop: 2 }} numberOfLines={2}>{tellStage.label}</Text>}
+                      </View>
+                    </View>
+                  );
+                })}
+                <Text style={{ fontSize: 12.5, color: '#8A97A6', marginTop: 16 }}>Keep this open. A web search can take up to a minute.</Text>
+              </View>
+            )}
           </View>
           </KeyboardAvoidingView>
         </Modal>
@@ -9554,14 +12574,21 @@ function HomeScreenInner(){
         {showAddMenu && <Pressable style={styles.fabBackdrop} onPress={() => setShowAddMenu(false)} accessibilityLabel="Close menu" />}
         {showAddMenu && (
           <View style={[styles.fabMenu, { bottom: 140 + insets.bottom }]}>
-            {([
-              // PDF / CSV / TXT -> uploaded, read by the extract-knowledge AI, then you review what it found.
-              { icon: 'cloud-upload-outline', label: 'Upload a file', onPress: async () => { setShowAddMenu(false); const f = await pickDocument(); if (f) startKnowledgeUpload(f); } },
-              // Product / service form -> saved to your knowledge base, then shown in its list.
-              { icon: 'cube-outline', label: 'Add a product', onPress: () => { setShowAddMenu(false); setAddItemForm({ kind: 'product', name: '', model: '', specs: '', price: '', type: '', description: '', image: '' }); } },
-              { icon: 'construct-outline', label: 'Add a service', onPress: () => { setShowAddMenu(false); setAddItemForm({ kind: 'service', name: '', model: '', specs: '', price: '', type: '', description: '', image: '' }); } },
-              // Type it in your own words -> Nexora turns it into knowledge items for you to review.
-              { icon: 'chatbubble-ellipses-outline', label: 'Tell Nexora', onPress: () => { setShowAddMenu(false); setTellText(''); setTellOpen(true); } },
+            {addMenuLevel === 'upload' && (
+              <Pressable onPress={() => setAddMenuLevel('main')} style={[styles.fabMenuItem, { paddingVertical: 8 }]} accessibilityRole="button" accessibilityLabel="Back">
+                <Ionicons name="chevron-back" size={16} color="#6B7A8C" />
+                <Text style={[styles.fabMenuText, { color: '#6B7A8C', fontSize: 13 }]}>Upload Files</Text>
+              </Pressable>
+            )}
+            {(addMenuLevel === 'main' ? [
+              // Type what Nexora should know or find; it searches the web when needed and adds it for you to review.
+              { icon: 'chatbubble-ellipses-outline', label: 'Tell Nexora', onPress: () => { setShowAddMenu(false); setTellText(''); setTellStage(null); setTellOpen(true); } },
+              { icon: 'cloud-upload-outline', label: 'Upload Files', onPress: () => setAddMenuLevel('upload') },
+            ] : [
+              // A photo of a product, price list, menu or flyer: Nexora reads it and suggests what to add.
+              { icon: 'camera-outline', label: 'Camera', onPress: () => { setShowAddMenu(false); takeKnowledgePhoto('document').catch(() => {}); } },
+              // PDF, CSV, TXT or a photo from the phone or computer.
+              { icon: 'folder-open-outline', label: 'Files', onPress: async () => { setShowAddMenu(false); const f = await pickDocument(); if (f) startKnowledgeUpload(f); } },
             ] as { icon: string; label: string; onPress: () => void }[]).map(opt => (
               <Pressable key={opt.label} onPress={opt.onPress} style={({ pressed }) => [styles.fabMenuItem, pressed && { backgroundColor: '#F2F5F9' }]} accessibilityRole="button" accessibilityLabel={opt.label}>
                 <Ionicons name={opt.icon as any} size={18} color="#0B1220" />
@@ -9571,7 +12598,7 @@ function HomeScreenInner(){
           </View>
         )}
         <Pressable
-          onPress={() => setShowAddMenu(v => !v)}
+          onPress={() => { setAddMenuLevel('main'); setShowAddMenu(v => !v); }}
           accessibilityRole="button"
           accessibilityLabel="Add knowledge"
           style={[styles.knowledgeFab, { bottom: 76 + insets.bottom }]}
@@ -9838,6 +12865,36 @@ function HomeScreenInner(){
             </View>
           </View>
 
+          {(activeCategory === 'products' || activeCategory === 'services') && (
+            <View style={[styles.detailCard, { backgroundColor: '#F2F8FD', borderWidth: 1, borderColor: '#C9DDF5' }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <Ionicons name="sparkles" size={18} color="#1E56A0" />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.attentionTitle}>Write this listing with AI</Text>
+                  <Text style={styles.attentionSubtitle}>A clear description, key features, FAQs and a promo line, from what you entered here.</Text>
+                </View>
+                <Pressable disabled={listingAI?.busy} onPress={() => { runListingAI().catch(() => {}); }} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 14, backgroundColor: '#1E56A0' }}>
+                  {listingAI?.busy ? <ActivityIndicator color="#FFF" size="small" /> : <Text style={{ color: '#FFF', fontWeight: '700' }}>Write</Text>}
+                </Pressable>
+              </View>
+              {!!listingAI?.error && <Text style={{ color: '#B42318', fontSize: 13, marginTop: 8 }}>{listingAI.error}</Text>}
+              {!!listingAI?.description && (
+                <View style={{ marginTop: 12, gap: 6 }}>
+                  {!!listingAI.title && <Text style={{ fontSize: 15, fontWeight: '800', color: '#0B1220' }}>{listingAI.title}</Text>}
+                  <Text selectable style={{ fontSize: 13.5, color: '#1F2937', lineHeight: 20 }}>{listingAI.description}</Text>
+                  {listingAI.features.map((x, i) => <Text key={i} style={{ fontSize: 13, color: '#334155' }}>• {x}</Text>)}
+                  {listingAI.faqs.map((x, i) => <Text key={`q${i}`} style={{ fontSize: 13, color: '#334155' }}><Text style={{ fontWeight: '700' }}>Q: {x.q}</Text>  {x.a}</Text>)}
+                  {!!listingAI.promo && <Text selectable style={{ fontSize: 13, color: '#1E56A0', fontStyle: 'italic' }}>Promo: {listingAI.promo}</Text>}
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 }}>
+                    <Pressable onPress={useListingAI} style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, backgroundColor: '#1E56A0' }}><Text style={{ color: '#FFF', fontWeight: '700', fontSize: 13 }}>Use description and features</Text></Pressable>
+                    {listingAI.faqs.length > 0 && <Pressable disabled={listingAI.added} onPress={() => { addListingFaqs().catch(() => {}); }} style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, backgroundColor: '#FFF', borderWidth: 1, borderColor: '#5381BB', opacity: listingAI.added ? 0.5 : 1 }}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>{listingAI.added ? 'FAQs added' : `Add ${listingAI.faqs.length} FAQs`}</Text></Pressable>}
+                    {!!listingAI.promo && <Pressable onPress={() => Share.share({ message: listingAI.promo }).catch(() => {})} style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, backgroundColor: '#FFF', borderWidth: 1, borderColor: '#5381BB' }}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>Share promo</Text></Pressable>}
+                  </View>
+                  <Text style={{ fontSize: 11.5, color: '#64748B' }}>Written only from your own details. Check it before saving.</Text>
+                </View>
+              )}
+            </View>
+          )}
           <View style={styles.detailCard}>
             {restFields.map(f => (
               <View key={f.label} style={{ marginBottom: 14 }}>
@@ -9845,14 +12902,17 @@ function HomeScreenInner(){
                   <KnowledgeIcon name={KNOWLEDGE_FIELD_ICON[f.label] || 'ellipse-outline'} size={14} color="#8A97A6" />
                   {/* FIX: truth's edit screen marks every field but Status
                       as required with a red asterisk — none were shown. */}
-                  <Text style={styles.detailFieldLabel}>{f.label}{f.label !== 'Status' && <Text style={{ color: '#D64545' }}> *</Text>}</Text>
+                  <Text style={styles.detailFieldLabel}>{f.label}{f.label === STOCK_ALERT_LABEL ? ' (optional, default 5)' : f.label === STOCK_LABEL ? ' (how many you have)' : ''}{f.label !== 'Status' && f.label !== STOCK_LABEL && f.label !== STOCK_ALERT_LABEL && <Text style={{ color: '#D64545' }}> *</Text>}</Text>
                 </View>
                 {f.label === 'Status' ? (
                   <Text style={[styles.detailFieldValue, { marginTop: 6 }, f.value === 'Need review' && { color: '#E5A63A' }, f.value === 'Verified' && { color: '#1E9E6D' }]}>{f.value}</Text>
                 ) : (
                   <TextInput
                     value={f.value}
-                    onChangeText={v => updateField(f.label, v)}
+                    onChangeText={v => updateField(f.label, f.label === STOCK_LABEL || f.label === STOCK_ALERT_LABEL ? v.replace(/[^\d]/g, '') : v)}
+                    keyboardType={f.label === STOCK_LABEL || f.label === STOCK_ALERT_LABEL ? 'number-pad' : 'default'}
+                    placeholder={f.label === STOCK_LABEL ? 'e.g. 24' : f.label === STOCK_ALERT_LABEL ? '5' : undefined}
+                    placeholderTextColor="#A5AFBB"
                     style={[styles.editInput, MULTILINE_EDIT_FIELDS.has(f.label) && { height: 90, paddingTop: 12, textAlignVertical: 'top' }]}
                     multiline={MULTILINE_EDIT_FIELDS.has(f.label)}
                   />
@@ -9973,37 +13033,7 @@ function HomeScreenInner(){
           )}
 
           {addKnowledgeStep === 'processing' && (
-            <View style={{ alignItems: 'center', paddingTop: 24 }}>
-              {processingOrbFailed ? (
-                <View style={styles.processingOrb}>
-                  <Ionicons name="sparkles" size={26} color="#FFF" />
-                </View>
-              ) : (
-                <ExpoImage
-                  source={{ uri: PROCESSING_ORB_URL }}
-                  style={{ width: 140, height: 80 }}
-                  contentFit="contain"
-                  cachePolicy="memory-disk"
-                  onError={() => setProcessingOrbFailed(true)}
-                />
-              )}
-              <Text style={[styles.attentionTitle, { marginTop: 16, marginBottom: 16 }]}>NEXORA is analyzing your file…</Text>
-              {/* FIX: every step used to show a green checkmark, all at
-                  once, for the whole 1800ms wait — Figma shows the first
-                  2 steps already done and the remaining 3 still in
-                  progress (a spinner, not a checkmark). A real timed
-                  per-step reveal is more than this mock upload needs;
-                  matching Figma's single captured frame (2 done / 3 in
-                  progress) gets the same visual result. */}
-              {['Reading documents', 'Extracting Information', 'Understanding content', 'Organizing knowledge', 'Looking for Images'].map((step, i) => (
-                <View key={step} style={styles.featureRow}>
-                  {i < 2
-                    ? <Ionicons name="checkmark-circle" size={16} color="#1E9E6D" />
-                    : <ActivityIndicator size="small" color="#3B82F6" />}
-                  <Text style={styles.attentionSubtitle}>{step}</Text>
-                </View>
-              ))}
-            </View>
+            <AnalyzingSteps title={procFlow.title} steps={procFlow.steps} done={procFlow.done} detail={procFlow.detail} />
           )}
 
           {addKnowledgeStep === 'summary' && (
@@ -10287,20 +13317,94 @@ function HomeScreenInner(){
     );
   }
 
+  // Computer: a side panel next to the design screen, so the page uses the whole width with things that help.
+  const renderTruthSidePanel = (w: number) => {
+    if (w < 260) return null;
+    const family: 'post' | 'leads' | 'customers' | 'schedule' | 'channels' =
+      TRUTH_BUCKET[truthKey] === 'social-media2' ? 'post'
+      : /^lead/.test(truthKey) ? 'leads'
+      : /^(customer|addCustomer|interaction)/.test(truthKey) ? 'customers'
+      : /^(schedule|createSchedule|conflict)/.test(truthKey) ? 'schedule' : 'channels';
+    const INFO = {
+      post: { title: 'Create a post with NEXORA', tips: ['Pick what you want to promote: a product, a service, a promotion or an announcement.', 'NEXORA writes the caption and designs the image from your Train AI details.', 'Check how it looks on each platform, then publish now or schedule it.'], ask: 'Suggest 3 post ideas for my business this week, with captions.' },
+      leads: { title: 'Turn leads into customers', tips: ['Leads are people who showed interest but haven’t bought yet.', 'Reply quickly: leads contacted within an hour convert far more often.', 'Send a personalised demo or offer, then move them to Customers when they buy.'], ask: 'Which of my leads should I follow up with today, and what should I say?' },
+      customers: { title: 'Know your customers', tips: ['See each customer’s orders, messages and calls in one place.', 'Tag VIPs and segments so NEXORA can tailor offers.', 'Use the AI recommendation to send a personalised offer.'], ask: 'Who are my best customers and what should I offer them next?' },
+      schedule: { title: 'Plan your day', tips: ['Book follow-ups, meetings and tasks with customers and leads.', 'NEXORA warns you about clashes and suggests free times.', 'High-priority items show first on your Home screen.'], ask: 'What is on my schedule this week and what should I prioritise?' },
+      channels: { title: 'Connect your channels', tips: ['Connect WhatsApp, Instagram and Facebook so NEXORA can answer customers.', 'Choose what NEXORA may do on each channel.', 'You can pause NEXORA at any time from Security & Privacy.'], ask: 'Help me set up my customer channels.' },
+    }[family];
+    const links: [string, string, () => void][] = [
+      ['storefront-outline', 'Market', () => goTab('market')],
+      ['person-add-outline', 'Leads', () => openLeads()],
+      ['people-outline', 'Customers', () => openCustomers(() => goTab('market'))],
+      ['calendar-outline', 'Schedule', () => openSchedule()],
+    ];
+    const send = () => {
+      const q = truthAsk.trim() || INFO.ask;
+      setTruthAsk(''); setMainTab('brain'); setScreen('main'); sendChatMessage(q);
+    };
+    const card = { backgroundColor: '#FFFFFF', borderRadius: 18, borderWidth: 1, borderColor: '#E6ECF3', padding: 20 } as const;
+    return (
+      <View style={{ width: w, gap: 16 }}>
+        <View style={card}>
+          <Text style={{ fontSize: 17, fontWeight: '800', color: '#0B1220' }}>{INFO.title}</Text>
+          {INFO.tips.map((t, i) => (
+            <View key={i} style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+              <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: '#0F2942', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '700' }}>{i + 1}</Text></View>
+              <Text style={{ flex: 1, fontSize: 14, lineHeight: 20, color: '#4B5B6E' }}>{t}</Text>
+            </View>
+          ))}
+        </View>
+        <View style={[card, { backgroundColor: '#E6F6FA', borderColor: '#CDEBF3' }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Ionicons name="sparkles" size={18} color="#1A9CC4" />
+            <Text style={{ fontSize: 16, fontWeight: '700', color: '#1A9CC4' }}>Ask NEXORA</Text>
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12, backgroundColor: '#FFFFFF', borderRadius: 12, borderWidth: 1, borderColor: '#D5E6EE', paddingHorizontal: 12 }}>
+            <TextInput value={truthAsk} onChangeText={setTruthAsk} onSubmitEditing={send} returnKeyType="send" placeholder={INFO.ask} placeholderTextColor="#8A97A6" style={{ flex: 1, minWidth: 0, height: 44, fontSize: 14, color: '#0B1220' }} />
+            <Pressable onPress={send} accessibilityRole="button" accessibilityLabel="Ask NEXORA" hitSlop={6}><Ionicons name="arrow-up-circle" size={28} color="#1E56A0" /></Pressable>
+          </View>
+        </View>
+        <View style={card}>
+          <Text style={{ fontSize: 15, fontWeight: '800', color: '#0B1220', marginBottom: 6 }}>Go to</Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+            {links.map(([ic, label, go]) => (
+              <Pressable key={label} onPress={go} accessibilityRole="button" style={(st: any) => ({ flexBasis: '46%', flexGrow: 1, flexDirection: 'row', alignItems: 'center', gap: 8, padding: 12, borderRadius: 12, backgroundColor: st.hovered ? '#EAF1FB' : '#F4F7FB', cursor: 'pointer' } as any)}>
+                <Ionicons name={ic as any} size={18} color="#1E56A0" />
+                <Text style={{ fontSize: 14, fontWeight: '600', color: '#0B1220' }}>{label}</Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+      </View>
+    );
+  };
   if (screen === 'truth') {
-    const tScale = width / FIGMA_WIDTH;
+    // Web on a computer: the Figma screens sit in the phone-sized card. Its size is worked out here the same way the
+    // page shell does it, because the last measured size can still be the full-width page you came from (Market).
+    // On a computer (wide page with the sidebar) the screen is shown as a centred page card: the design's phone
+    // status bar (top 44) and bottom tab bar (from 776) are cut off, because the sidebar does that job there.
+    const webDesktop = IS_WEB && !!userId && hookWidth >= 1000;
+    const tW = webDesktop ? Math.min(520, hookWidth - WEB_SIDEBAR_W - 48)
+      : !IS_WEB || hookWidth < 700 ? width
+      : Math.min(width, 480, hookWidth, Math.floor((hookHeight - (hookWidth >= 900 ? 24 : 0)) * FIGMA_WIDTH / FIGMA_HEIGHT));
+    const tScale = tW / FIGMA_WIDTH;
+    const cropTop = webDesktop ? 44 : 0, cropBottom = webDesktop ? 776 : FIGMA_HEIGHT;
     const tHeight = FIGMA_HEIGHT * tScale;
-    const spots = getTruthHotspots(truthKey);
+    const shownH = (cropBottom - cropTop) * tScale;
+    const allSpots = getTruthHotspots(truthKey);
+    const spots = webDesktop ? allSpots.filter(sp => !sp.label.startsWith('nav-')) : allSpots;
     const fieldInputs = getTruthInputs(truthKey);
     const truthUri = TRUTH_URLS[truthKey];
     return (
-      <View style={[styles.fullScreen, { backgroundColor: '#FFF' }]} onLayout={onRootLayout}>
+      <View style={[styles.fullScreen, { backgroundColor: webDesktop ? '#EEF2F7' : '#FFF' }]} onLayout={onRootLayout}>
         <StatusBar hidden />
-        <ScrollView scrollEnabled={tHeight > height + 1} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ width }}>
-          <View style={{ width, height: tHeight, overflow: 'hidden' }}>
+        <ScrollView scrollEnabled={webDesktop || tHeight > height + 1} showsVerticalScrollIndicator={webDesktop} keyboardShouldPersistTaps="handled"
+          contentContainerStyle={webDesktop ? { flexDirection: 'row', justifyContent: 'center', alignItems: 'flex-start', gap: 24, padding: 24 } : { width: tW }}>
+          <View style={[{ width: tW, height: shownH, overflow: 'hidden' }, webDesktop && { borderRadius: 18, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E6ECF3', shadowColor: '#0B1220', shadowOpacity: 0.08, shadowRadius: 18, shadowOffset: { width: 0, height: 4 } }]}>
+          <View style={{ position: 'absolute', left: 0, top: -cropTop * tScale, width: tW, height: tHeight }}>
             <ExpoImage
               source={{ uri: truthUri }}
-              style={{ width: width * ((TRUTH_SRC_WIDTH[truthKey] ?? FIGMA_WIDTH) / FIGMA_WIDTH), height: tHeight }}
+              style={{ width: tW * ((TRUTH_SRC_WIDTH[truthKey] ?? FIGMA_WIDTH) / FIGMA_WIDTH), height: tHeight }}
               contentFit="fill"
               cachePolicy="memory-disk"
               recyclingKey={truthUri}
@@ -10327,7 +13431,8 @@ function HomeScreenInner(){
               </React.Fragment>
             ))}
             {getTruthOverlays(truthKey, tScale)}
-            {spots.map((s, i) => (
+            {!webDesktop && withPillNav(spots, tScale, 0, 0, TRUTH_BUCKET[truthKey] === 'social-media2' ? 'nav-market' : undefined).bar}
+            {withPillNav(spots, tScale).spots.map((s, i) => (
               <Pressable
                 key={`${s.label}-${i}`}
                 onPress={s.onPress}
@@ -10343,6 +13448,8 @@ function HomeScreenInner(){
               </Pressable>
             ))}
           </View>
+          </View>
+          {webDesktop && renderTruthSidePanel(Math.min(440, hookWidth - WEB_SIDEBAR_W - tW - 72))}
         </ScrollView>
         {truthImgFailed && (
           <View pointerEvents="none" style={styles.truthMissing}>
@@ -10651,9 +13758,12 @@ function HomeScreenInner(){
         <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 100 }]} keyboardShouldPersistTaps="handled">
           {leadsMode && (
             <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+              <Pressable onPress={() => setScreen('main')} hitSlop={10} accessibilityRole="button" accessibilityLabel="Back" style={{ marginRight: 8, marginTop: 2, width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFFFFF', cursor: 'pointer' } as any}>
+                <Ionicons name="chevron-back" size={22} color="#0B1220" />
+              </Pressable>
               <View style={{ flex: 1 }}>
                 <Text style={{ fontSize: 22, fontWeight: '700', color: '#0B1220' }}>Leads</Text>
-                <Text style={[styles.attentionSubtitle, { marginTop: 2 }]}>Find, track and convert your leads with AI</Text>
+                <Text style={[styles.attentionSubtitle, { marginTop: 2 }]}>People interested in buying, and who to follow up with</Text>
               </View>
               <View style={{ alignItems: 'flex-end', gap: 8 }}>
                 <Pressable onPress={() => setContactForm({ kind: 'lead', name: '', phone: '', email: '', location: '', note: '' })} hitSlop={6}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 15 }}>+ Add</Text></Pressable>
@@ -10787,6 +13897,56 @@ function HomeScreenInner(){
             </Pressable>
           </View>
 
+          {/* CRM: follow-up date, private notes and activity log */}
+          {crmForm?.id === c.id && (() => {
+            const f = crmForm;
+            const dayPlus = (n: number) => { const d = new Date(); d.setDate(d.getDate() + n); return localIsoDate(d); };
+            const due = c.follow_up_at && c.follow_up_at <= localIsoDate();
+            return (
+              <>
+                <View style={[styles.detailCard, { marginTop: 14, borderWidth: due ? 1 : 0, borderColor: '#F5C2C2' }]}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <Ionicons name="alarm-outline" size={17} color={due ? '#B42318' : '#1E56A0'} />
+                    <Text style={[styles.attentionTitle, { flex: 1 }]}>{c.follow_up_at ? `Follow up ${due ? 'today (due)' : `on ${new Date(`${c.follow_up_at}T12:00:00`).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}`}` : 'No follow-up planned'}</Text>
+                    {!!c.follow_up_at && <Pressable onPress={() => { setFollowUp(c, null).catch(() => {}); }}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>{due ? 'Done' : 'Clear'}</Text></Pressable>}
+                  </View>
+                  {!!c.follow_up_note && <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}>{c.follow_up_note}</Text>}
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+                    {([['Tomorrow', 1], ['In 3 days', 3], ['Next week', 7], ['In 2 weeks', 14]] as const).map(([l, n]) => (
+                      <Pressable key={l} onPress={() => { setFollowUp(c, dayPlus(n), f.dateNote.trim()).catch(() => {}); }} style={[styles.filterChip, { marginBottom: 0 }]}><Text style={styles.filterChipText}>{l}</Text></Pressable>
+                    ))}
+                  </View>
+                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+                    <TextInput value={f.date} onChangeText={v => setCrmForm(x => x && { ...x, date: v.replace(/[^\d-]/g, '').slice(0, 10) })} placeholder="YYYY-MM-DD" placeholderTextColor="#A5AFBB" style={[styles.editInput, { width: 130, height: 40 }]} />
+                    <TextInput value={f.dateNote} onChangeText={v => setCrmForm(x => x && { ...x, dateNote: v })} placeholder="What to follow up about (optional)" placeholderTextColor="#A5AFBB" style={[styles.editInput, { flex: 1, height: 40 }]} maxLength={200} />
+                  </View>
+                  {/^\d{4}-\d{2}-\d{2}$/.test(f.date) && f.date !== (c.follow_up_at || '') && (
+                    <Pressable onPress={() => { setFollowUp(c, f.date, f.dateNote.trim()).catch(() => {}); }} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 8, minHeight: 38 }]}><Text style={[styles.resetButtonText, { fontSize: 13 }]}>Set follow-up for {f.date}</Text></Pressable>
+                  )}
+                </View>
+                <View style={styles.detailCard}>
+                  <Text style={styles.attentionTitle}>Private notes</Text>
+                  <TextInput value={f.notes} onChangeText={v => setCrmForm(x => x && { ...x, notes: v })} multiline placeholder="Preferences, sizes, budget, family names… only your team sees this" placeholderTextColor="#A5AFBB" maxLength={4000} style={[styles.editInput, { minHeight: 80, textAlignVertical: 'top', paddingTop: 10, marginTop: 8 }]} />
+                  {f.notes !== (c.notes || '') && (
+                    <Pressable onPress={() => { if (!crmUpgraded(c)) { flash('Run the CRM SQL script in Supabase to save notes.'); return; } updateContact(c, { notes: f.notes.trim() }, 'Notes saved').catch(() => {}); }} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 8, minHeight: 38 }]}><Text style={[styles.resetButtonText, { fontSize: 13 }]}>Save notes</Text></Pressable>
+                  )}
+                </View>
+                <View style={styles.detailCard}>
+                  <Text style={styles.attentionTitle}>Log an activity</Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                    {([['Notes', 'Note'], ['Calls', 'Call'], ['Meetings', 'Meeting'], ['Emails', 'Email'], ['Messages', 'Message']] as const).map(([t, l]) => (
+                      <Pressable key={t} onPress={() => setCrmForm(x => x && { ...x, logType: t })} style={[styles.filterChip, { marginBottom: 0 }, f.logType === t && styles.filterChipActive]}><Text style={[styles.filterChipText, f.logType === t && styles.filterChipTextActive]}>{l}</Text></Pressable>
+                    ))}
+                  </View>
+                  <TextInput value={f.logText} onChangeText={v => setCrmForm(x => x && { ...x, logText: v })} placeholder="What happened? e.g. Called, wants 2 more next week" placeholderTextColor="#A5AFBB" maxLength={1000} multiline style={[styles.editInput, { minHeight: 60, textAlignVertical: 'top', paddingTop: 10, marginTop: 8 }]} />
+                  {!!f.logText.trim() && (
+                    <Pressable onPress={() => { const label = ({ Notes: 'Note', Calls: 'Call', Meetings: 'Meeting', Emails: 'Email', Messages: 'Message' } as Record<string, string>)[f.logType] || 'Note'; logInteraction(c, f.logType, `${label} logged`, f.logText.trim()).then(ok => { if (ok) { setCrmForm(x => x && { ...x, logText: '' }); flash('Saved to the timeline'); } }).catch(() => {}); }} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 8, minHeight: 38 }]}><Text style={[styles.resetButtonText, { fontSize: 13 }]}>Add to timeline</Text></Pressable>
+                  )}
+                </View>
+              </>
+            );
+          })()}
+
           {leadMode ? (
             <>
               <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>Stage</Text>
@@ -10820,6 +13980,25 @@ function HomeScreenInner(){
                   <Text style={styles.resetButtonText}>Convert to customer</Text>
                 </Pressable>
               )}
+              {(() => {
+                const tl = contactTimeline?.id === c.id ? contactTimeline : null;
+                const icon: Record<string, string> = { Messages: 'chatbubble-outline', Orders: 'bag-handle-outline', Calls: 'call-outline', Notes: 'document-text-outline', Meetings: 'people-outline', Emails: 'mail-outline', Enquiries: 'help-circle-outline', 'Follow-ups': 'alarm-outline' };
+                return (
+                  <View style={[styles.detailCard, { marginTop: 10 }]}>
+                    <Text style={[styles.attentionTitle, { marginBottom: 6 }]}>Timeline</Text>
+                    {!tl || tl.loading ? <ActivityIndicator color="#1E56A0" /> : tl.rows.length === 0 ? <Text style={styles.attentionSubtitle}>Enquiries, orders, calls and notes for {c.name.split(' ')[0]} will appear here.</Text> : tl.rows.map(r => (
+                      <View key={r.id} style={{ flexDirection: 'row', gap: 10, paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' }}>
+                        <Ionicons name={(icon[r.type] || 'ellipse-outline') as any} size={16} color="#1E56A0" style={{ marginTop: 2 }} />
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontSize: 13.5, fontWeight: '600', color: '#0B1220' }}>{r.title}</Text>
+                          {!!r.detail && <Text style={{ fontSize: 12.5, color: '#475569', marginTop: 1 }}>{r.detail}</Text>}
+                          <Text style={{ fontSize: 11.5, color: '#8A97A6', marginTop: 1 }}>{new Date(r.created_at).toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' })}</Text>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                );
+              })()}
             </>
           ) : (
             <>
@@ -10871,9 +14050,9 @@ function HomeScreenInner(){
                 <>
                   {myOrders.length === 0 && <Text style={[styles.attentionSubtitle, { textAlign: 'center', marginTop: 24 }]}>No orders under the name "{c.name}" yet.</Text>}
                   {myOrders.map(o => (
-                    <Pressable key={o.id} onPress={() => openOrders('All')} style={[styles.detailCard, { marginTop: 10 }]}>
-                      <Text style={styles.attentionTitle}>{o.items}</Text>
-                      <Text style={[styles.attentionSubtitle, { marginTop: 2 }]}>${Number(o.total).toFixed(2)}{'  ·  '}{o.status}{'  ·  '}{timeAgo(o.created_at)}</Text>
+                    <Pressable key={o.id} onPress={() => { openOrders('All'); setOrderOpenId(o.id); setOrderForm({ tracking: o.tracking || '', delivery_fee: String(o.delivery_fee || ''), discount: String(o.discount || ''), refund: '', cancel_reason: '', note: '' }); }} style={[styles.detailCard, { marginTop: 10 }]}>
+                      <Text style={styles.attentionTitle}>{orderLabel(o)} · {o.items}</Text>
+                      <Text style={[styles.attentionSubtitle, { marginTop: 2 }]}>{orderMoney(o, o.total)}{'  ·  '}{ORDER_STATUS_TEXT[o.status]}{o.payment_status ? `  ·  ${PAY_TEXT[o.payment_status]}` : ''}{'  ·  '}{timeAgo(o.created_at)}</Text>
                     </Pressable>
                   ))}
                 </>
@@ -10890,6 +14069,25 @@ function HomeScreenInner(){
                       <Text style={styles.conversationTime}>{conv.lastTime}</Text>
                     </Pressable>
                   ) : <Text style={[styles.attentionSubtitle, { marginTop: 12 }]}>No conversation with {c.name} in your Inbox yet.</Text>}
+                  {(() => {
+                const tl = contactTimeline?.id === c.id ? contactTimeline : null;
+                const icon: Record<string, string> = { Messages: 'chatbubble-outline', Orders: 'bag-handle-outline', Calls: 'call-outline', Notes: 'document-text-outline', Meetings: 'people-outline', Emails: 'mail-outline', Enquiries: 'help-circle-outline', 'Follow-ups': 'alarm-outline' };
+                return (
+                  <View style={[styles.detailCard, { marginTop: 10 }]}>
+                    <Text style={[styles.attentionTitle, { marginBottom: 6 }]}>Timeline</Text>
+                    {!tl || tl.loading ? <ActivityIndicator color="#1E56A0" /> : tl.rows.length === 0 ? <Text style={styles.attentionSubtitle}>Enquiries, orders, calls and notes for {c.name.split(' ')[0]} will appear here.</Text> : tl.rows.map(r => (
+                      <View key={r.id} style={{ flexDirection: 'row', gap: 10, paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' }}>
+                        <Ionicons name={(icon[r.type] || 'ellipse-outline') as any} size={16} color="#1E56A0" style={{ marginTop: 2 }} />
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontSize: 13.5, fontWeight: '600', color: '#0B1220' }}>{r.title}</Text>
+                          {!!r.detail && <Text style={{ fontSize: 12.5, color: '#475569', marginTop: 1 }}>{r.detail}</Text>}
+                          <Text style={{ fontSize: 11.5, color: '#8A97A6', marginTop: 1 }}>{new Date(r.created_at).toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' })}</Text>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                );
+              })()}
                   {myOrders.slice(0, 10).map(o => (
                     <View key={o.id} style={[styles.detailCard, { marginTop: 10, flexDirection: 'row', alignItems: 'center', gap: 12 }]}>
                       <View style={[styles.conversationAvatar, { width: 36, height: 36, borderRadius: 18, backgroundColor: '#0F2942' }]}><Ionicons name="bag-handle" size={16} color="#FFF" /></View>
@@ -11005,6 +14203,47 @@ function HomeScreenInner(){
         <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40 }]} keyboardShouldPersistTaps="handled">
           {netLoading && <ActivityIndicator color="#1E56A0" style={{ marginTop: 20 }} />}
           {!!netError && !netLoading && <Text style={[styles.attentionSubtitle, { color: '#C2760C', marginBottom: 10 }]}>{netError}</Text>}
+
+          {!netLoading && netTab === 'matches' && (() => {
+            const auto = ownerPrefs?.ai.partner_autopilot ?? {};
+            const last = auto.last_result;
+            const row = (title: string, sub: string, value: boolean, onChange: (v: boolean) => void) => (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 12 }}>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '700' }}>{title}</Text>
+                  <Text style={{ color: '#9FB0C6', fontSize: 12, marginTop: 2, lineHeight: 17 }}>{sub}</Text>
+                </View>
+                <Switch value={value} onValueChange={onChange} trackColor={{ true: '#1E9E6D', false: '#3B4E66' }} thumbColor="#FFFFFF" />
+              </View>
+            );
+            return (
+              <View style={{ borderRadius: 18, padding: 16, backgroundColor: '#0F2942', marginBottom: 12 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="sparkles" size={18} color="#FFFFFF" /></View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '800' }}>Let Nexora find partners for me</Text>
+                    <Text style={{ color: '#B6C3D4', fontSize: 12.5, marginTop: 2, lineHeight: 18 }}>Nexora sets up your profile, finds businesses that fit what you offer and need, and searches the web too. Contacts are only shared when both sides accept.</Text>
+                  </View>
+                </View>
+                <Pressable onPress={() => runPartnerAutopilot()} disabled={netAuto.busy} accessibilityRole="button" style={{ marginTop: 14, height: 46, borderRadius: 23, backgroundColor: '#FFFFFF', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                  {netAuto.busy ? <ActivityIndicator color="#0F2942" /> : <><Ionicons name="flash" size={16} color="#0F2942" /><Text style={{ color: '#0F2942', fontSize: 15, fontWeight: '800' }}>Find partners for me now</Text></>}
+                </Pressable>
+                {row('Send introductions for me', 'Nexora sends a short, friendly message to the best 3 matches (fit 55% or more). Off: Nexora only suggests them and you decide.', !!auto.auto_connect, v => {
+                  if (!v) { savePartnerAuto({ auto_connect: false }); return; }
+                  Alert.alert('Send introductions for you?', 'Nexora will send connection requests in your business name to up to 3 strong matches each time it runs. They can accept or decline.', [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Allow', onPress: () => { savePartnerAuto({ auto_connect: true }).then(ok => ok && flash('Nexora will send introductions for you')); } },
+                  ]);
+                })}
+                {row('Do this every week', last?.at ? `Last run ${new Date(last.at).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}: ${last.note ? last.note : `${last.new_strong ?? 0} new strong match${last.new_strong === 1 ? '' : 'es'}${last.sent?.length ? `, ${last.sent.length} introduced` : ''}`}.` : 'Nexora checks for new partners once a week and notifies you.', !!auto.weekly, v => {
+                  if (v && !netVisible) { runPartnerAutopilot({ thenWeekly: true }); return; }
+                  savePartnerAuto({ weekly: v }).then(ok => ok && flash(v ? 'Nexora will look for partners every week' : 'Weekly partner search is off'));
+                })}
+                {!!netAuto.result && <Text style={{ color: '#B6E3C9', fontSize: 13, marginTop: 12, lineHeight: 19 }}>{netAuto.result}</Text>}
+                {!!netAuto.error && <Text style={{ color: '#FFB4A8', fontSize: 13, marginTop: 12 }}>{netAuto.error}</Text>}
+              </View>
+            );
+          })()}
 
           {!netLoading && netTab === 'matches' && (
             !netVisible ? (
@@ -11141,14 +14380,14 @@ function HomeScreenInner(){
               {field('Industry', 'industry', 'e.g. Phone & audio accessories', { max: 80 })}
               <View style={{ flexDirection: 'row', gap: 10 }}>
                 <View style={{ flex: 1 }}>{field('City', 'city', 'e.g. Lagos', { max: 60 })}</View>
-                <View style={{ flex: 1 }}>{field('Country', 'country', 'e.g. Nigeria', { max: 60 })}</View>
+                <View style={{ flex: 1 }}>{field('Country', 'country', 'e.g. United States', { max: 60 })}</View>
               </View>
               {field('About you', 'bio', 'One or two sentences about your business', { multiline: true, max: 600 })}
               {field('What you offer partners', 'offers', 'Products, services, wholesale, skills, referrals…', { multiline: true, max: 600 })}
               {field('What you are looking for', 'needs', 'Suppliers, logistics, marketing, investors, distributors…', { multiline: true, max: 600 })}
               {field('Tags (comma separated)', 'tags', 'e.g. electronics, wholesale, lagos', { max: 200 })}
               <Text style={[styles.channelSectionLabel, { marginTop: 16 }]}>Contact details (private until you accept)</Text>
-              {field('WhatsApp number', 'whatsapp', '+234 803 000 0000', { keyboardType: 'phone-pad', max: 30 })}
+              {field('WhatsApp number', 'whatsapp', '+1 555 123 4567', { keyboardType: 'phone-pad', max: 30 })}
               {field('Email', 'email', 'name@business.com', { keyboardType: 'email-address', max: 120 })}
               {field('Website', 'website', 'www.yourbusiness.com', { keyboardType: 'url', max: 200 })}
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 16, padding: 12, borderRadius: 12, backgroundColor: '#F5F6F8' }}>
@@ -11259,7 +14498,7 @@ function HomeScreenInner(){
     const label = (t: string) => <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>{t}</Text>;
     const steps = [
       { icon: 'chatbubbles-outline', t: 'Nexora handles customers', d: 'Answers, books and sells from what you taught it.' },
-      { icon: 'hand-left-outline', t: "It can't decide something", d: 'A complaint, a refund outside policy, a big order or a hot lead.' },
+      { icon: 'hand-left-outline', t: "It can't decide something", d: 'A complaint, a refund outside policy, a big order or a buyer who is ready to pay.' },
       { icon: 'mail-outline', t: 'It tells you right away', d: 'In the app and by email.' },
       { icon: 'call-outline', t: "Still open? It calls you", d: 'Press 1 got it, 2 remind me, 4 say what to do, 5 solved.' },
     ];
@@ -11280,7 +14519,7 @@ function HomeScreenInner(){
         {card(
           <View>
             <Text style={styles.detailFieldLabel}>Mobile number (with country code)</Text>
-            <TextInput value={alertPhone} onChangeText={(v) => { setAlertPhone(v); setAlertCodeSent(''); }} placeholder="+2348012345678" placeholderTextColor="#A5AFBB" keyboardType="phone-pad" autoComplete="tel" style={styles.editInput} maxLength={20} accessibilityLabel="Mobile number" />
+            <TextInput value={alertPhone} onChangeText={(v) => { setAlertPhone(v); setAlertCodeSent(''); }} placeholder="+15551234567" placeholderTextColor="#A5AFBB" keyboardType="phone-pad" autoComplete="tel" style={styles.editInput} maxLength={20} accessibilityLabel="Mobile number" />
             {verified ? (
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10 }}>
                 <Ionicons name="checkmark-circle" size={16} color="#1E9E6D" /><Text style={{ fontSize: 13, color: '#1E9E6D', fontWeight: '700', flex: 1 }}>Confirmed</Text>
@@ -11392,7 +14631,7 @@ function HomeScreenInner(){
             <Text style={{ color: '#FFFFFF', fontSize: 20, fontWeight: '800' }}>Nexora runs things. You decide the big stuff.</Text>
             <Text style={{ color: '#B9C6D8', fontSize: 14, marginTop: 6, lineHeight: 20 }}>{verified && c.call_enabled && c.call_when !== 'never'
               ? `If something can't wait, Nexora emails you, then calls ${c.phone} after ${c.call_after_min ? `${c.call_after_min} min` : 'no delay'} if you haven't answered${c.sms_fallback ? ', and texts if you miss it' : ''}.`
-              : 'Confirm your number and Nexora will phone you about complaints, refunds, big orders and hot leads it can\'t handle on its own.'}</Text>
+              : 'Confirm your number and Nexora will phone you about complaints, refunds, big orders and serious buyers it can\'t handle on its own.'}</Text>
           </View>
           {wide ? <View style={{ flexDirection: 'row', gap: 20, alignItems: 'flex-start' }}>{left}{right}</View> : <View>{left}{right}</View>}
         </ScrollView>
@@ -11408,15 +14647,15 @@ function HomeScreenInner(){
     const twoCol = cw >= 860, threeCol = cw >= 1080;
     const k = D?.kpis;
     const onFree = D?.business?.plan === 'free';
-    const kpiTiles: { label: string; value: string; change?: number | null; note?: string; spark?: number[]; icon: string }[] = k ? [
-      { label: 'Revenue · 30 days', value: inMoney(k.revenue_30d.value, cur), change: k.revenue_30d.change, spark: k.revenue_30d.spark, icon: 'cash-outline' },
-      { label: 'Orders · 30 days', value: String(k.orders_30d.value), change: k.orders_30d.change, spark: k.orders_30d.spark, icon: 'bag-handle-outline' },
-      { label: 'Average order', value: inMoney(k.avg_order.value, cur), change: k.avg_order.change, icon: 'pricetag-outline' },
+    const kpiTiles: { label: string; value: string; change?: number | null; sig?: string; note?: string; spark?: number[]; icon: string }[] = k ? [
+      { label: 'Revenue · 30 days', value: inMoney(k.revenue_30d.value, cur), change: k.revenue_30d.change, sig: k.revenue_30d.significance, spark: k.revenue_30d.spark, icon: 'cash-outline' },
+      { label: 'Orders · 30 days', value: String(k.orders_30d.value), change: k.orders_30d.change, sig: k.orders_30d.significance, spark: k.orders_30d.spark, icon: 'bag-handle-outline' },
+      { label: 'Average order', value: inMoney(k.avg_order.value, cur), change: k.avg_order.change, sig: k.avg_order.significance, icon: 'pricetag-outline' },
       { label: 'Customers', value: String(k.customers.value), note: `${k.customers.new_30d} new in 30 days`, spark: k.customers.spark, icon: 'people-outline' },
       { label: 'Repeat buyers', value: k.repeat_rate.value === null ? '—' : `${k.repeat_rate.value}%`, note: 'of customers ordered 2+ times', icon: 'repeat-outline' },
       { label: 'Lead conversion', value: k.lead_conversion.value === null ? '—' : `${k.lead_conversion.value}%`, note: `${k.lead_conversion.open_leads} open lead${k.lead_conversion.open_leads === 1 ? '' : 's'}`, icon: 'funnel-outline' },
       { label: 'Customer lifetime value', value: inMoney(k.lifetime_value.value, cur, true), note: 'average spent per customer', icon: 'diamond-outline' },
-      { label: 'Forecast · next 30 days', value: inMoney(k.forecast_30d.value, cur, true), note: k.forecast_30d.trend === 'up' ? 'Trend is rising' : k.forecast_30d.trend === 'down' ? 'Trend is falling' : 'Trend is steady', icon: k.forecast_30d.trend === 'down' ? 'trending-down-outline' : 'trending-up-outline' },
+      { label: 'Estimate · next 30 days (not a result)', value: inMoney(k.forecast_30d.value, cur, true), note: k.forecast_30d.confidence === 'low' ? 'Early estimate: few sales so far' : k.forecast_30d.trend === 'up' ? 'Trend is rising' : k.forecast_30d.trend === 'down' ? 'Trend is falling' : 'Trend is steady', icon: k.forecast_30d.trend === 'down' ? 'trending-down-outline' : 'trending-up-outline' },
     ] : [];
     const toneStyle = (t: string) => t === 'good' ? { icon: 'checkmark-circle', color: IN_GOOD, bg: '#E9F8EE', word: 'Working' } : t === 'warn' ? { icon: 'alert-circle', color: IN_WARN, bg: '#FFF4E5', word: 'Watch' } : { icon: 'bulb', color: IN_C[0], bg: '#EAF1FB', word: 'Insight' };
     const effortWord: Record<string, string> = { low: 'Easy', medium: 'Moderate', high: 'Big project' };
@@ -11428,6 +14667,64 @@ function HomeScreenInner(){
     return (
       <View style={styles.mainScreen}>
         <StatusBar style="light" />
+        {/* Set or change a goal */}
+        <Modal visible={!!goalForm} transparent animationType="fade" onRequestClose={() => setGoalForm(null)} statusBarTranslucent>
+          <Pressable style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.5)' }} onPress={() => setGoalForm(null)} accessibilityLabel="Close" />
+          {!!goalForm && (() => {
+            const f = goalForm;
+            const set = (patch: Partial<GoalForm>) => setGoalForm({ ...f, ...patch });
+            const chipRow = <T extends string>(opts: [T, string][], value: T, onPick: (v: T) => void) => (
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                {opts.map(([k, label]) => (
+                  <Pressable key={k} onPress={() => onPick(k)} accessibilityRole="radio" accessibilityState={{ checked: value === k }}
+                    style={{ paddingHorizontal: 12, height: 34, borderRadius: 17, justifyContent: 'center', borderWidth: 1.5, borderColor: value === k ? IN_C[0] : '#D5DEE8', backgroundColor: value === k ? '#EAF1FB' : '#FFFFFF' }}>
+                    <Text style={{ fontSize: 13, fontWeight: value === k ? '800' : '600', color: value === k ? IN_C[0] : '#334155' }}>{label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            );
+            const label = (t: string) => <Text style={{ fontSize: 12.5, fontWeight: '700', color: '#334155', marginTop: 14 }}>{t}</Text>;
+            const input = (value: string, onChange: (t: string) => void, placeholder: string, extra: any = {}) => (
+              <TextInput value={value} onChangeText={onChange} placeholder={placeholder} placeholderTextColor="#A5AFBB"
+                style={{ marginTop: 6, minHeight: 44, borderRadius: 12, borderWidth: 1, borderColor: '#D5DEE8', paddingHorizontal: 12, fontSize: 15, color: IN_INK, backgroundColor: '#FFFFFF' }} {...extra} />
+            );
+            return (
+              <View style={{ position: 'absolute', left: 0, right: 0, bottom: 0, top: 0, justifyContent: 'center', alignItems: 'center', padding: 16 }} pointerEvents="box-none">
+                <View style={{ width: '100%', maxWidth: 520, maxHeight: '92%', backgroundColor: '#FFFFFF', borderRadius: 20, overflow: 'hidden' }}>
+                  <ScrollView contentContainerStyle={{ padding: 20 }} keyboardShouldPersistTaps="handled">
+                    <Text style={{ fontSize: 19, fontWeight: '900', color: IN_INK }}>{f.id ? 'Change your goal' : 'Set a goal'}</Text>
+                    <Text style={{ fontSize: 13, color: IN_MUTED, marginTop: 4 }}>Nexora tracks it from your own sales and tells you what to do to reach it.</Text>
+                    {label('What do you want to grow?')}
+                    {chipRow<GoalForm['kind']>([['revenue', 'Sales'], ['orders', 'Orders'], ['customers', 'New customers'], ['custom', 'Something else']], f.kind, v => set({ kind: v }))}
+                    {label(f.kind === 'revenue' ? `Target amount${cur ? ` (${cur})` : ''}` : f.kind === 'custom' ? 'Target number' : 'Target number')}
+                    {input(f.target, t => set({ target: t.replace(/[^0-9.,]/g, '') }), f.kind === 'revenue' ? 'e.g. 500000' : 'e.g. 30', { keyboardType: 'numeric' })}
+                    {f.kind === 'custom' && <>
+                      {label('Counted in (optional)')}
+                      {input(f.unit, t => set({ unit: t }), 'e.g. outlets, subscribers, kg')}
+                      {label('Where you are now')}
+                      {input(f.progress, t => set({ progress: t.replace(/[^0-9.]/g, '') }), 'e.g. 3', { keyboardType: 'numeric' })}
+                    </>}
+                    {label('By when?')}
+                    {chipRow<GoalForm['period']>([['week', 'This week'], ['month', 'This month'], ['quarter', 'This quarter'], ['year', 'This year'], ['date', 'By a date']], f.period, v => set({ period: v }))}
+                    {f.period === 'date' && input(f.deadline, t => set({ deadline: t }), 'YYYY-MM-DD, e.g. 2026-12-31')}
+                    {label('Name (optional)')}
+                    {input(f.title, t => set({ title: t }), 'Nexora names it for you if you leave this empty', { maxLength: 120 })}
+                    {label('Why it matters (optional)')}
+                    {input(f.why, t => set({ why: t }), 'e.g. to pay for a new shop by December', { multiline: true, maxLength: 400, style: { marginTop: 6, minHeight: 64, borderRadius: 12, borderWidth: 1, borderColor: '#D5DEE8', paddingHorizontal: 12, paddingVertical: 10, fontSize: 15, color: IN_INK, textAlignVertical: 'top' } })}
+                    <View style={{ flexDirection: 'row', gap: 10, marginTop: 20 }}>
+                      <Pressable onPress={() => setGoalForm(null)} accessibilityRole="button" style={{ flex: 1, height: 46, borderRadius: 12, borderWidth: 1, borderColor: '#D5DEE8', alignItems: 'center', justifyContent: 'center' }}>
+                        <Text style={{ fontSize: 15, fontWeight: '700', color: '#334155' }}>Cancel</Text>
+                      </Pressable>
+                      <Pressable onPress={() => { saveGoal().catch(() => {}); }} disabled={goalBusy} accessibilityRole="button" style={{ flex: 1.4, height: 46, borderRadius: 12, backgroundColor: IN_C[0], alignItems: 'center', justifyContent: 'center' }}>
+                        {goalBusy ? <ActivityIndicator color="#FFFFFF" /> : <Text style={{ fontSize: 15, fontWeight: '800', color: '#FFFFFF' }}>{f.id ? 'Save changes' : 'Save goal'}</Text>}
+                      </Pressable>
+                    </View>
+                  </ScrollView>
+                </View>
+              </View>
+            );
+          })()}
+        </Modal>
         <ScrollView style={{ flex: 1, backgroundColor: '#F4F7FB' }} contentContainerStyle={{ paddingBottom: 48 }}>
           {/* Hero: the business's own picture (or its industry), name and the AI summary */}
           <View style={{ backgroundColor: '#0B1220', minHeight: 230, paddingTop: (insets.top || 16) + 8 }}>
@@ -11479,7 +14776,7 @@ function HomeScreenInner(){
                   Business Insights is built from your company's own sales, customers and chats. Tell Nexora your business name, what you sell and your country. It takes a minute, it's free, and Nexora will then draw your charts and suggest ideas made for you.
                 </Text>
                 <View style={{ alignSelf: 'stretch', maxWidth: 440, width: '100%', marginTop: 18, marginHorizontal: 'auto' } as any}>
-                  {([['name', 'Business name', 'e.g. Global Foods Ltd', 120], ['industry', 'What do you sell or do?', 'e.g. Foodstuff and groceries', 80], ['country', 'Country', 'e.g. Nigeria', 60]] as const).map(([key, label, ph, max]) => (
+                  {([['name', 'Business name', 'e.g. Global Foods Ltd', 120], ['industry', 'What do you sell or do?', 'e.g. Foodstuff and groceries', 80], ['country', 'Country', 'e.g. United States', 60]] as const).map(([key, label, ph, max]) => (
                     <View key={key} style={{ marginTop: 10 }}>
                       <Text style={{ fontSize: 12.5, fontWeight: '700', color: '#334155' }}>{label}</Text>
                       <TextInput value={bizForm[key]} onChangeText={t => setBizForm(f => ({ ...f, [key]: t }))} placeholder={ph} placeholderTextColor="#A5AFBB" maxLength={max}
@@ -11510,9 +14807,269 @@ function HomeScreenInner(){
             {D && D.business?.has_business && (
               <>
                 {renderAutonomyCard()}
-                {/* KPI tiles */}
+
+                {/* Where the business is: worked out from its own data (days of data, orders, weeks with sales) */}
+                {!!D.stage && (() => {
+                  const st = D.stage;
+                  const tone = st.key === 'setting_up' ? { bg: '#FFF4E5', fg: IN_WARN, icon: 'construct-outline' } : st.key === 'starting' ? { bg: '#EAF1FB', fg: IN_C[0], icon: 'leaf-outline' } : st.key === 'growing' ? { bg: '#E9F8EE', fg: IN_GOOD, icon: 'trending-up-outline' } : { bg: '#F1F5F9', fg: IN_INK, icon: 'ribbon-outline' };
+                  const conf = st.confidence === 'low' ? 'Early data' : st.confidence === 'medium' ? 'Some history' : 'Solid history';
+                  const go = (a: string) => {
+                    if (a === 'train') setScreen('knowledgeHealth');
+                    else if (a === 'channels') openConnectChannels();
+                    else if (a === 'shop') openStorefront().catch(() => {});
+                    else if (a === 'orders') openOrders('All');
+                    else if (a === 'customers') openCustomers(() => openInsights());
+                  };
+                  return (
+                    <View style={{ backgroundColor: '#FFFFFF', borderRadius: 18, padding: 16, borderWidth: 1, borderColor: IN_GRID, flexDirection: twoCol ? 'row' : 'column', gap: 16 }}>
+                      <View style={{ flex: twoCol ? 1 : undefined, minWidth: 0 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, backgroundColor: tone.bg }}>
+                            <Ionicons name={tone.icon as any} size={14} color={tone.fg} />
+                            <Text style={{ fontSize: 12.5, fontWeight: '800', color: tone.fg }}>{st.label}</Text>
+                          </View>
+                          <Text style={{ fontSize: 12, color: IN_FAINT, fontWeight: '600' }}>{conf}</Text>
+                        </View>
+                        <Text style={{ fontSize: 14, color: IN_INK, marginTop: 10, lineHeight: 20 }}>{st.text}</Text>
+                        <Text style={{ fontSize: 12.5, color: IN_MUTED, marginTop: 6 }}>{`${st.days_active} day${st.days_active === 1 ? '' : 's'} of data · ${st.orders_total} order${st.orders_total === 1 ? '' : 's'} · sales in ${st.weeks_with_sales} of the last 12 weeks`}</Text>
+                        {!!st.next && <Text style={{ fontSize: 12.5, color: IN_C[0], marginTop: 6, fontWeight: '600' }}>{st.next}</Text>}
+                      </View>
+                      {!!D.launch?.length && (
+                        <View style={{ flex: 1, minWidth: 0, gap: 8 }}>
+                          <Text style={{ fontSize: 12, fontWeight: '800', color: IN_MUTED, letterSpacing: 0.5 }}>YOUR LAUNCH CHECKLIST</Text>
+                          {D.launch.map((c: any) => (
+                            <Pressable key={c.key} onPress={() => !c.done && go(c.action)} disabled={c.done} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                              <Ionicons name={c.done ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={c.done ? IN_GOOD : IN_FAINT} />
+                              <View style={{ flex: 1 }}>
+                                <Text style={{ fontSize: 13.5, fontWeight: '700', color: IN_INK }}>{c.label}</Text>
+                                <Text style={{ fontSize: 12, color: IN_MUTED }}>{c.text}</Text>
+                              </View>
+                              {!c.done && <Ionicons name="chevron-forward" size={16} color={IN_FAINT} />}
+                            </Pressable>
+                          ))}
+                        </View>
+                      )}
+                    </View>
+                  );
+                })()}
+
+                {/* Goals the owner set, how they are tracking, and Nexora's plan for the week */}
+                {(() => {
+                  const goals: any[] = D.goals ?? [];
+                  const canEdit = !!D.can_edit_goals && D.goals_ready !== false;
+                  const val = (g: any, v: number | null) => v === null || v === undefined ? '—' : g.kind === 'revenue' ? inMoney(v, cur) : `${Math.round(v).toLocaleString()}${g.unit ? ` ${g.unit}` : g.kind === 'orders' ? ' orders' : g.kind === 'customers' ? ' customers' : ''}`;
+                  const chip: Record<string, { word: string; color: string; bg: string }> = {
+                    on_track: { word: 'On track', color: IN_GOOD, bg: '#E9F8EE' }, at_risk: { word: 'At risk', color: IN_WARN, bg: '#FFF4E5' }, behind: { word: 'Behind', color: IN_BAD, bg: '#FDECEC' },
+                    achieved: { word: 'Achieved', color: IN_GOOD, bg: '#E9F8EE' }, just_started: { word: 'Just started', color: IN_C[0], bg: '#EAF1FB' }, missed: { word: 'Missed', color: IN_MUTED, bg: '#F1F5F9' },
+                  };
+                  const ask = (q: string) => { setMainTab('brain'); setScreen('main'); sendChatMessage(q); };
+                  const coach = I?.coach;
+                  return (
+                    <InCard title="Your goals" subtitle={goals.length ? 'Live progress from your own sales, and what it takes to get there' : 'Tell Nexora what you are aiming for'}
+                      right={canEdit && goals.length > 0 && goals.length < 3 ? <Pressable onPress={() => setGoalForm(newGoal())} accessibilityRole="button"><Text style={{ color: IN_C[0], fontSize: 12.5, fontWeight: '700' }}>+ Add a goal</Text></Pressable> : undefined}>
+                      {D.goals_ready === false ? (
+                        <Text style={{ fontSize: 13, color: IN_MUTED }}>Goals aren't switched on for your business yet. They will appear here soon.</Text>
+                      ) : !goals.length ? (
+                        <View style={{ alignItems: 'flex-start', gap: 10 }}>
+                          <Text style={{ fontSize: 13.5, color: '#334155', lineHeight: 20 }}>Set a target, like your sales this month or new customers this quarter. Nexora tracks it every day, warns you when you fall behind and tells you what to do about it. You can also just tell Nexora in chat, e.g. "I want to make 500,000 this month".</Text>
+                          {canEdit
+                            ? <Pressable onPress={() => setGoalForm(newGoal())} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, height: 42, borderRadius: 21, backgroundColor: IN_C[0] }}><Ionicons name="flag" size={16} color="#FFFFFF" /><Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 14 }}>Set your first goal</Text></Pressable>
+                            : <Text style={{ fontSize: 12.5, color: IN_FAINT }}>The business owner sets goals.</Text>}
+                        </View>
+                      ) : (
+                        <View style={{ gap: 12 }}>
+                          {goals.map((g: any) => {
+                            const c = chip[g.status] || chip.on_track;
+                            const done = g.status === 'achieved';
+                            const pace = done ? 'Target reached. Mark it as achieved and set the next one.'
+                              : g.status === 'missed' ? 'The time for this goal has ended.'
+                              : [g.days_left ? `${g.days_left} day${g.days_left === 1 ? '' : 's'} left` : '', g.per_day_needed ? `needs about ${val(g, g.per_day_needed)} a day` : '', g.projected !== null && g.projected !== undefined ? `on pace for ${val(g, g.projected)}` : '', g.orders_needed ? `about ${g.orders_needed} more orders` : ''].filter(Boolean).join(' · ');
+                            return (
+                              <View key={g.id} style={{ borderRadius: 14, borderWidth: 1, borderColor: IN_GRID, padding: 14, backgroundColor: '#FBFCFE' }}>
+                                <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8 }}>
+                                  <Text style={{ flex: 1, fontSize: 15, fontWeight: '800', color: IN_INK }}>{g.title}</Text>
+                                  <View style={{ paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, backgroundColor: c.bg }}><Text style={{ fontSize: 11.5, fontWeight: '800', color: c.color }}>{c.word}</Text></View>
+                                </View>
+                                <Text style={{ fontSize: 13, color: '#334155', marginTop: 6 }}><Text style={{ fontWeight: '800', color: IN_INK }}>{val(g, g.current)}</Text>{` of ${val(g, g.target)} ${g.window}`}</Text>
+                                <View style={{ height: 8, borderRadius: 4, backgroundColor: '#EEF2F7', marginTop: 8, overflow: 'hidden' }}>
+                                  <View style={{ width: `${Math.max(2, g.pct)}%`, height: 8, borderRadius: 4, backgroundColor: c.color }} />
+                                  {/* where you should be by today */}
+                                  {!done && g.elapsed_pct > 0 && g.elapsed_pct < 100 && <View style={{ position: 'absolute', left: `${g.elapsed_pct}%`, top: 0, bottom: 0, width: 2, backgroundColor: IN_INK, opacity: 0.35 }} />}
+                                </View>
+                                {!!pace && <Text style={{ fontSize: 12, color: IN_MUTED, marginTop: 6 }}>{pace}</Text>}
+                                {!!g.why && <Text style={{ fontSize: 12, color: IN_FAINT, marginTop: 4, fontStyle: 'italic' }}>{`Why: ${g.why}`}</Text>}
+                                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 14, marginTop: 10 }}>
+                                  {!done && <Pressable onPress={() => ask(`Help me reach my goal "${g.title}". I'm at ${val(g, g.current)} of ${val(g, g.target)} ${g.window} with ${g.days_left} days left. What should I do this week? Give me specific steps.`)} accessibilityRole="button"><Text style={{ color: IN_C[0], fontSize: 12.5, fontWeight: '700' }}>Plan it with Nexora</Text></Pressable>}
+                                  {canEdit && <Pressable onPress={() => editGoal(g)} accessibilityRole="button"><Text style={{ color: IN_MUTED, fontSize: 12.5, fontWeight: '700' }}>Edit</Text></Pressable>}
+                                  {canEdit && <Pressable onPress={() => goalAction(g.id, 'goal_done')} accessibilityRole="button"><Text style={{ color: IN_GOOD, fontSize: 12.5, fontWeight: '700' }}>Mark achieved</Text></Pressable>}
+                                  {canEdit && <Pressable onPress={() => goalAction(g.id, 'goal_delete')} accessibilityRole="button"><Text style={{ color: IN_FAINT, fontSize: 12.5, fontWeight: '700' }}>Remove</Text></Pressable>}
+                                </View>
+                              </View>
+                            );
+                          })}
+                        </View>
+                      )}
+                      {!!coach?.actions?.length && (
+                        <View style={{ marginTop: 14, borderRadius: 14, backgroundColor: '#0B1220', padding: 14 }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <Ionicons name="compass" size={16} color="#7FB2FF" />
+                            <Text style={{ fontSize: 11.5, fontWeight: '800', color: '#7FB2FF', letterSpacing: 0.6 }}>NEXORA'S PLAN FOR THIS WEEK</Text>
+                          </View>
+                          {!!coach.headline && <Text style={{ fontSize: 14.5, fontWeight: '800', color: '#FFFFFF', marginTop: 8 }}>{coach.headline}</Text>}
+                          {coach.actions.map((a: any, i: number) => (
+                            <View key={i} style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
+                              <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: 'rgba(127,178,255,0.18)', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#9CC3FF', fontSize: 12, fontWeight: '800' }}>{i + 1}</Text></View>
+                              <View style={{ flex: 1 }}>
+                                <Text style={{ fontSize: 13.5, fontWeight: '700', color: '#FFFFFF' }}>{a.title}</Text>
+                                {!!a.detail && <Text style={{ fontSize: 12.5, color: '#B6C3D4', marginTop: 2, lineHeight: 18 }}>{a.detail}</Text>}
+                              </View>
+                            </View>
+                          ))}
+                        </View>
+                      )}
+                    </InCard>
+                  );
+                })()}
+
+                {/* Problems found in the numbers, each with ways to fix it */}
+                {!!D.problems?.length && (
+                  <InCard title="Problems Nexora spotted" subtitle="Found in your own numbers, with ways to fix them">
+                    <View style={{ gap: 12 }}>
+                      {D.problems.map((p: any) => {
+                        const sev = p.severity === 'high' ? { c: IN_BAD, bg: '#FDECEC', w: 'Needs attention' } : p.severity === 'medium' ? { c: IN_WARN, bg: '#FFF4E5', w: 'Worth fixing' } : { c: IN_C[0], bg: '#EAF1FB', w: 'Small' };
+                        return (
+                          <View key={p.key} style={{ borderRadius: 14, borderLeftWidth: 4, borderLeftColor: sev.c, backgroundColor: '#FBFCFE', borderWidth: 1, borderColor: IN_GRID, padding: 14 }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                              <Text style={{ flex: 1, minWidth: 160, fontSize: 14.5, fontWeight: '800', color: IN_INK }}>{p.title}</Text>
+                              <View style={{ paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, backgroundColor: sev.bg }}><Text style={{ fontSize: 11, fontWeight: '800', color: sev.c }}>{sev.w}</Text></View>
+                            </View>
+                            <Text style={{ fontSize: 12.5, color: IN_MUTED, marginTop: 4, lineHeight: 18 }}>{p.evidence}</Text>
+                            <Text style={{ fontSize: 11.5, fontWeight: '800', color: IN_MUTED, marginTop: 10, letterSpacing: 0.4 }}>WHAT YOU CAN DO</Text>
+                            {(p.solutions ?? []).map((sol: string, i: number) => (
+                              <View key={i} style={{ flexDirection: 'row', gap: 8, marginTop: 6 }}>
+                                <Ionicons name="arrow-forward-circle" size={16} color={IN_GOOD} style={{ marginTop: 1 }} />
+                                <Text style={{ flex: 1, fontSize: 13, color: '#334155', lineHeight: 19 }}>{sol}</Text>
+                              </View>
+                            ))}
+                            <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); sendChatMessage(`Help me fix this problem in my business: ${p.title}. ${p.evidence} Give me a simple step-by-step plan for this week.`); }} accessibilityRole="button" style={{ marginTop: 10, alignSelf: 'flex-start' }}>
+                              <Text style={{ color: IN_C[0], fontSize: 12.5, fontWeight: '700' }}>Help me fix this</Text>
+                            </Pressable>
+                          </View>
+                        );
+                      })}
+                    </View>
+                  </InCard>
+                )}
+                {/* Four groups (company guide): Sales, Marketing, Customers, AI usage */}
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                  {([['sales', 'Sales', 'cash-outline'], ['marketing', 'Marketing', 'megaphone-outline'], ['customers', 'Customers', 'people-outline'], ['ai', 'AI usage', 'sparkles-outline']] as const).map(([g, l, ic]) => (
+                    <Pressable key={g} onPress={() => setInsightsGroup(g)} accessibilityRole="tab" accessibilityState={{ selected: insightsGroup === g }} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, height: 38, borderRadius: 19, backgroundColor: insightsGroup === g ? IN_C[0] : '#FFFFFF', borderWidth: 1, borderColor: insightsGroup === g ? IN_C[0] : IN_GRID }}>
+                      <Ionicons name={ic as any} size={15} color={insightsGroup === g ? '#FFFFFF' : IN_INK} />
+                      <Text style={{ fontSize: 13.5, fontWeight: '800', color: insightsGroup === g ? '#FFFFFF' : IN_INK }}>{l}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+                {(() => {
+                  // Extra numbers for the chosen group, all from this business's own records.
+                  const D30 = 30 * 86400000, nowT = Date.now();
+                  const o30 = orders.filter(o => nowT - new Date(o.created_at).getTime() < D30);
+                  const refunds = o30.reduce((n, o) => n + Number(o.refunded_amount || 0), 0);
+                  const unpaidAmt = orders.filter(o => o.status !== 'cancelled' && o.payment_status === 'unpaid').reduce((n, o) => n + Number(o.total || 0), 0);
+                  const cancelled = o30.filter(o => o.status === 'cancelled').length;
+                  const st = shopStats;
+                  const used = planUsage?.ai_tasks;
+                  const byKind: Record<string, number> = {};
+                  for (const r of aiUsageRows ?? []) byKind[r.kind] = (byKind[r.kind] || 0) + Number(r.tasks || 0);
+                  const KIND_NAME: Record<string, string> = { reply: 'Customer replies', shop_reply: 'Shop chat replies', trends: 'Trend searches', briefing: 'Daily briefings', insights: 'Insights', market: 'Market finds', learning: 'Learning from chats', quote: 'Quotes', find: 'Web searches', research: 'Business research', listing: 'Listings written', caption: 'Posts written', email: 'Emails sent', partners: 'Partner searches', web_community: 'Community searches', chat: 'Questions to Nexora' };
+                  const kindRows = Object.entries(byKind).sort((a, b) => b[1] - a[1]);
+                  const totalTasks = kindRows.reduce((n, [, v]) => n + v, 0);
+                  const tile = (label: string, value: string, note: string, onPress?: () => void) => (
+                    <Pressable key={label} disabled={!onPress} onPress={onPress} style={{ flexGrow: 1, flexBasis: threeCol ? '22%' : twoCol ? '30%' : '46%', minWidth: 150, backgroundColor: '#FFFFFF', borderRadius: 16, padding: 14, borderWidth: 1, borderColor: IN_GRID }}>
+                      <Text style={{ fontSize: 12.5, color: IN_MUTED, fontWeight: '700' }}>{label}</Text>
+                      <Text style={{ fontSize: 22, fontWeight: '900', color: IN_INK, marginTop: 6 }}>{value}</Text>
+                      <Text style={{ fontSize: 12, color: IN_MUTED, marginTop: 2 }}>{note}</Text>
+                    </Pressable>
+                  );
+                  const say = (text: string, cta?: string, onPress?: () => void) => (
+                    <View style={{ backgroundColor: '#EAF1FB', borderRadius: 14, padding: 12, flexDirection: 'row', gap: 10, alignItems: 'flex-start' }}>
+                      <Ionicons name="bulb" size={16} color={IN_C[0]} style={{ marginTop: 2 }} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 13.5, color: IN_INK, lineHeight: 20 }}>{text}</Text>
+                        {!!cta && <Pressable onPress={onPress} style={{ marginTop: 4 }}><Text style={{ color: IN_C[0], fontWeight: '800', fontSize: 13 }}>{cta} ›</Text></Pressable>}
+                      </View>
+                    </View>
+                  );
+                  if (insightsGroup === 'sales') return (
+                    <View style={{ gap: 10 }}>
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+                        {tile('Refunds · 30 days', inMoney(refunds, cur), refunds ? 'Recorded in Orders' : 'No refunds recorded', () => openOrders('All'))}
+                        {tile('Waiting to be paid', inMoney(unpaidAmt, cur), 'Orders marked unpaid', () => openOrders('Unpaid'))}
+                        {tile('Cancelled · 30 days', String(cancelled), `${o30.length} orders in total`, () => openOrders('Cancelled'))}
+                      </View>
+                      {unpaidAmt > 0 && say(`${inMoney(unpaidAmt, cur)} is still waiting to be paid. Sales above count orders; money is only confirmed once you mark an order paid.`, 'See unpaid orders', () => openOrders('Unpaid'))}
+                    </View>
+                  );
+                  if (insightsGroup === 'marketing') return (
+                    <View style={{ gap: 10 }}>
+                      {!st ? <Text style={{ fontSize: 13, color: IN_MUTED }}>Switch on your AI shop link to see visitors, where they come from and how many order.</Text> : (
+                        <>
+                          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+                            {tile('Shop visitors · 30 days', String(st.totals.visits), `${st.totals.chats} started a chat`, () => { openStorefront().catch(() => {}); })}
+                            {tile('Enquiries', String(st.totals.enquiries), 'Questions and quote requests', () => openLeads())}
+                            {tile('Shop orders', String(st.totals.orders), `${st.totals.paid_orders} marked paid`, () => openOrders('All'))}
+                            {tile('Conversion', st.conversion === null ? '—' : `${st.conversion}%`, 'Visitors who ordered or enquired')}
+                          </View>
+                          {st.sources.length > 0 && (
+                            <View style={{ backgroundColor: '#FFFFFF', borderRadius: 16, padding: 14, borderWidth: 1, borderColor: IN_GRID }}>
+                              <Text style={{ fontSize: 14, fontWeight: '800', color: IN_INK, marginBottom: 6 }}>Traffic sources and campaigns</Text>
+                              {st.sources.map(r => {
+                                const max = Math.max(...st.sources.map(x => x.visits), 1);
+                                return (
+                                  <View key={r.src} style={{ paddingVertical: 6 }}>
+                                    <View style={{ flexDirection: 'row' }}>
+                                      <Text style={{ flex: 1, fontSize: 13, color: IN_INK, textTransform: 'capitalize' }}>{r.src === 'direct' ? 'Direct / unknown' : r.src}</Text>
+                                      <Text style={{ fontSize: 12, color: IN_MUTED }}>{r.visits} visits · {r.enquiries} enquiries · {r.orders} orders</Text>
+                                    </View>
+                                    <View style={{ height: 6, borderRadius: 3, backgroundColor: '#EEF2F7', marginTop: 4 }}><View style={{ width: `${Math.round((r.visits / max) * 100)}%`, height: 6, borderRadius: 3, backgroundColor: IN_C[0] }} /></View>
+                                  </View>
+                                );
+                              })}
+                            </View>
+                          )}
+                          {st.totals.visits >= 10 && st.totals.orders === 0
+                            ? say(`Your shop received ${st.totals.visits} visits in 30 days, but no one placed an order. Prices, photos and delivery details on your shop usually help.`, 'Open shop settings', () => { openStorefront().catch(() => {}); })
+                            : st.totals.visits > 0 && say(`${st.totals.visits} visits led to ${st.totals.orders} orders and ${st.totals.enquiries} enquiries in 30 days. Use a tracked link for each place you post to see which works best.`, 'Get tracked links', () => { openStorefront().catch(() => {}); })}
+                        </>
+                      )}
+                    </View>
+                  );
+                  if (insightsGroup === 'ai') return (
+                    <View style={{ gap: 10 }}>
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+                        {tile('AI tasks this month', used ? `${used.used.toLocaleString()}${used.limit !== null ? ` / ${used.limit.toLocaleString()}` : ''}` : '—', used?.limit ? `${Math.max(0, used.limit - used.used).toLocaleString()} left on your plan` : 'Included in your plan', () => openBilling(() => setScreen('insights')))}
+                        {tile('Tasks · 30 days', totalTasks.toLocaleString(), 'Completed by Nexora')}
+                        {tile('Customer replies', String((byKind.reply || 0) + (byKind.shop_reply || 0)), 'Answered for you')}
+                        {tile('Cost', 'Included', 'AI tasks are part of your plan price')}
+                      </View>
+                      {kindRows.length > 0 && (
+                        <View style={{ backgroundColor: '#FFFFFF', borderRadius: 16, padding: 14, borderWidth: 1, borderColor: IN_GRID }}>
+                          <Text style={{ fontSize: 14, fontWeight: '800', color: IN_INK, marginBottom: 6 }}>What Nexora did (30 days)</Text>
+                          {kindRows.map(([kd, n]) => (
+                            <View key={kd} style={{ flexDirection: 'row', paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' }}>
+                              <Text style={{ flex: 1, fontSize: 13, color: IN_INK }}>{KIND_NAME[kd] || kd}</Text>
+                              <Text style={{ fontSize: 13, fontWeight: '700', color: IN_INK }}>{n}</Text>
+                            </View>
+                          ))}
+                        </View>
+                      )}
+                      {used?.limit && used.used / used.limit >= 0.8 && say(`You have used ${Math.round((used.used / used.limit) * 100)}% of this month's AI tasks. When they run out, Nexora stops replying to customers until next month or an upgrade.`, 'See plans', () => openBilling(() => setScreen('insights')))}
+                    </View>
+                  );
+                  return null;
+                })()}
+                {/* KPI tiles for the chosen group */}
                 <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
-                  {kpiTiles.map(t => (
+                  {kpiTiles.filter(t => insightsGroup === 'sales' ? /^(Revenue|Orders|Average order|Estimate)/.test(t.label) : insightsGroup === 'customers' ? /^(Customers|Repeat|Lead|Customer lifetime)/.test(t.label) : false).map(t => (
                     <View key={t.label} style={{ flexGrow: 1, flexBasis: threeCol ? '22%' : twoCol ? '30%' : '46%', minWidth: 150, backgroundColor: '#FFFFFF', borderRadius: 16, padding: 14, borderWidth: 1, borderColor: IN_GRID }}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                         <View style={{ width: 28, height: 28, borderRadius: 8, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}><Ionicons name={t.icon as any} size={15} color={IN_C[0]} /></View>
@@ -11522,13 +15079,13 @@ function HomeScreenInner(){
                         <Text style={{ fontSize: 22, fontWeight: '900', color: IN_INK, flexShrink: 1 }} numberOfLines={1} adjustsFontSizeToFit>{t.value}</Text>
                         {!!t.spark && <InSparkline values={t.spark} width={70} height={26} />}
                       </View>
-                      <View style={{ marginTop: 6 }}>{t.change !== undefined ? <InChange value={t.change} /> : <Text style={{ fontSize: 11.5, color: IN_FAINT }}>{t.note}</Text>}</View>
+                      <View style={{ marginTop: 6 }}>{t.change !== undefined ? <InChange value={t.change} significance={t.sig} /> : <Text style={{ fontSize: 11.5, color: IN_FAINT }}>{t.note}</Text>}</View>
                     </View>
                   ))}
                 </View>
 
                 {row(<>
-                  <InCard title="Business health" subtitle="Five checks, 20 points each" style={{ flex: twoCol ? 0.9 : undefined }}>
+                  <InCard title={D.health.mode === 'launch' ? 'Launch readiness' : 'Business health'} subtitle={D.health.mode === 'launch' ? 'Five setup steps, 20 points each' : 'Five checks, 20 points each'} style={{ flex: twoCol ? 0.9 : undefined }}>
                     <InGauge score={D.health.score} parts={D.health.parts} />
                   </InCard>
                   <InCard title="Revenue, day by day" subtitle="Tap or hover a day to see its numbers" style={{ flex: twoCol ? 1.4 : undefined }}>
@@ -11547,31 +15104,31 @@ function HomeScreenInner(){
                 </>)}
 
                 {row(<>
-                  <InCard title="Best sellers" subtitle="Revenue in the last 90 days, with your product photos" style={{ flex: 1 }}>
+                  <InCard title="Best sellers" subtitle="Revenue in the last 90 days, with your product photos" style={{ flex: twoCol ? 1 : undefined }}>
                     <InRankBars items={D.products.map((p: any) => ({ label: p.name, value: p.revenue, image: p.image, sub: `${p.units} sold · ${p.orders} order${p.orders === 1 ? '' : 's'}` }))} fmt={v => inMoney(v, cur, true)} />
                   </InCard>
-                  <InCard title="When customers buy" subtitle="Orders by day and time, last 90 days" style={{ flex: 1 }}>
+                  <InCard title="When customers buy" subtitle="Orders by day and time, last 90 days" style={{ flex: twoCol ? 1 : undefined }}>
                     <InHeatmap grid={D.heat} />
                   </InCard>
                 </>)}
 
                 <View style={{ flexDirection: threeCol ? 'row' : 'column', gap: 16 }}>
-                  <InCard title="From contact to loyal customer" subtitle="How many move to the next step" style={{ flex: 1 }}>
+                  <InCard title="From contact to loyal customer" subtitle="How many move to the next step" style={{ flex: threeCol ? 1 : undefined }}>
                     <InFunnel steps={D.funnel} />
                   </InCard>
-                  <InCard title="Where customers come from" subtitle="By channel" style={{ flex: 1 }}>
+                  <InCard title="Where customers come from" subtitle="By channel" style={{ flex: threeCol ? 1 : undefined }}>
                     <InDonut items={D.channels} center="people" size={130} />
                   </InCard>
-                  <InCard title="Top places" subtitle="Where your customers are" style={{ flex: 1 }}>
+                  <InCard title="Top places" subtitle="Where your customers are" style={{ flex: threeCol ? 1 : undefined }}>
                     <InRankBars items={D.places.map((p: any) => ({ label: p.label, value: p.value }))} fmt={v => `${v}`} />
                   </InCard>
                 </View>
 
                 {row(<>
-                  <InCard title="Who brings the money" subtitle={D.top_share !== null ? `Your top 20% of customers bring ${D.top_share}% of all spending` : 'Spending by customer group'} style={{ flex: 1 }}>
+                  <InCard title="Who brings the money" subtitle={D.top_share !== null ? `Your top 20% of customers bring ${D.top_share}% of all spending` : 'Spending by customer group'} style={{ flex: twoCol ? 1 : undefined }}>
                     <InStack items={D.tiers} cur={cur} />
                   </InCard>
-                  <InCard title="AI shop link · 30 days" subtitle="Visits, chats with your Nexora, and leads" style={{ flex: 1 }}
+                  <InCard title="AI shop link · 30 days" subtitle="Visits, chats with your Nexora, and leads" style={{ flex: twoCol ? 1 : undefined }}
                     right={<Pressable onPress={() => { openStorefront().catch(() => {}); }}><Text style={{ color: IN_C[0], fontSize: 12.5, fontWeight: '700' }}>Open</Text></Pressable>}>
                     <InFunnel steps={[{ label: 'Visits', value: D.shop.visits }, { label: 'Chats', value: D.shop.chats }, { label: 'Leads', value: D.shop.leads }]} />
                     {!D.shop.visits && <Text style={{ fontSize: 12, color: IN_FAINT, marginTop: 8 }}>Share your shop link in your bio and WhatsApp status to start getting visits.</Text>}
@@ -11655,7 +15212,7 @@ function HomeScreenInner(){
 
                 {row(<>
                   {!!D.unsold?.length && (
-                    <InCard title="Products not selling yet" subtitle="In your catalogue but not in any order for 90 days" style={{ flex: 1 }}>
+                    <InCard title="Products not selling yet" subtitle="In your catalogue but not in any order for 90 days" style={{ flex: twoCol ? 1 : undefined }}>
                       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
                         {D.unsold.map((u: any) => (
                           <View key={u.name} style={{ width: 104 }}>
@@ -11670,7 +15227,7 @@ function HomeScreenInner(){
                     </InCard>
                   )}
                   {!!D.trends?.length && (
-                    <InCard title="What's moving in your market" subtitle="From Trending for you, refreshed every 6 hours" style={{ flex: 1 }}
+                    <InCard title="What's moving in your market" subtitle="From Trending for you, refreshed every hour" style={{ flex: twoCol ? 1 : undefined }}
                       right={<Pressable onPress={openTrends}><Text style={{ color: IN_C[0], fontSize: 12.5, fontWeight: '700' }}>See all</Text></Pressable>}>
                       <View style={{ gap: 12 }}>
                         {D.trends.map((t: any, i: number) => (
@@ -11751,10 +15308,391 @@ function HomeScreenInner(){
     );
   }
 
+  if (screen === 'automations') {
+    const list = automations ?? [];
+    const waiting = autoRuns.filter(r => r.status === 'awaiting_approval');
+    const recent = autoRuns.filter(r => r.status !== 'awaiting_approval').slice(0, 25);
+    const f = autoForm;
+    const describe = (a: { trigger: AutoTrigger; trigger_days: number; action: AutoAction; action_days: number; action_text: string }) =>
+      `When ${AUTO_TRIGGERS[a.trigger].label.charAt(0).toLowerCase()}${AUTO_TRIGGERS[a.trigger].label.slice(1)}${AUTO_TRIGGERS[a.trigger].days ? ` ${a.trigger_days} days` : ''}, ${AUTO_ACTIONS[a.action].label.charAt(0).toLowerCase()}${AUTO_ACTIONS[a.action].label.slice(1)}${AUTO_ACTIONS[a.action].days ? ` ${a.action_days} day${a.action_days === 1 ? '' : 's'}` : ''}${a.action === 'tag' && a.action_text ? ` "${a.action_text}"` : ''}.`;
+    const chip = (on: boolean, text: string, onPress: () => void) => (
+      <Pressable key={text} onPress={onPress} style={[styles.filterChip, { marginBottom: 0 }, on && styles.filterChipActive]}><Text style={[styles.filterChipText, on && styles.filterChipTextActive]}>{text}</Text></Pressable>
+    );
+    const desktop = isDesktopWeb;
+    const blockWaiting = (<>
+          {waiting.length > 0 && (
+            <>
+              <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>Waiting for your approval ({waiting.length})</Text>
+              {waiting.map(r => (
+                <View key={r.id} style={[styles.detailCard, { borderWidth: 1, borderColor: '#C9DDF5' }]}>
+                  <Text style={styles.attentionTitle}>{r.payload?.to ? `To ${r.payload.to}` : r.title}</Text>
+                  <Text style={[styles.attentionSubtitle, { marginTop: 2 }]}>{r.title}</Text>
+                  <Text selectable style={{ fontSize: 14, color: '#0B1220', marginTop: 8, lineHeight: 20 }}>{r.payload?.message || r.detail}</Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+                    {String(r.payload?.phone || '').replace(/\D/g, '').length >= 7 && <Pressable onPress={() => { approveRun(r, 'whatsapp').catch(() => {}); }} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, backgroundColor: '#16A34A' }}><Text style={{ color: '#FFF', fontWeight: '700', fontSize: 13 }}>Approve · WhatsApp</Text></Pressable>}
+                    {!!r.payload?.email && <Pressable onPress={() => { approveRun(r, 'email').catch(() => {}); }} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, backgroundColor: '#1E56A0' }}><Text style={{ color: '#FFF', fontWeight: '700', fontSize: 13 }}>Approve · Email</Text></Pressable>}
+                    <Pressable onPress={() => { approveRun(r, 'share').catch(() => {}); }} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: '#5381BB' }}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>Approve · Share</Text></Pressable>
+                    <Pressable onPress={() => { supabase.from('automation_runs').update({ status: 'dismissed' }).eq('id', r.id).then(() => loadAutomations()); }} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12 }}><Text style={{ color: '#B42318', fontWeight: '700', fontSize: 13 }}>Dismiss</Text></Pressable>
+                  </View>
+                </View>
+              ))}
+            </>
+          )}
+
+    </>);
+    const blockSide = (<>
+          <Pressable onPress={() => openRules(() => openAutomations())} style={[styles.detailCard, { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 8 }]}>
+            <Ionicons name="book-outline" size={20} color="#1E56A0" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.attentionTitle}>Rules for customer chats</Text>
+              <Text style={styles.attentionSubtitle}>How Nexora should handle refunds, discounts and other situations when it replies</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color="#8A97A6" />
+          </Pressable>
+
+          {recent.length > 0 && (
+            <>
+              <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>What automations did</Text>
+              <View style={styles.detailCard}>
+                {recent.map(r => (
+                  <View key={r.id} style={{ flexDirection: 'row', gap: 10, paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' }}>
+                    <Ionicons name={r.status === 'failed' ? 'alert-circle-outline' : r.status === 'dismissed' ? 'close-circle-outline' : 'checkmark-circle-outline'} size={16} color={r.status === 'failed' ? '#B42318' : r.status === 'dismissed' ? '#8A97A6' : '#1E9E6D'} style={{ marginTop: 2 }} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 13.5, fontWeight: '600', color: '#0B1220' }}>{r.title}</Text>
+                      {!!r.detail && <Text style={{ fontSize: 12.5, color: '#475569' }} numberOfLines={2}>{r.detail}</Text>}
+                      <Text style={{ fontSize: 11.5, color: '#8A97A6' }}>{relTime(r.created_at)}{r.status === 'approved' ? ' · approved and sent by you' : r.status === 'dismissed' ? ' · dismissed' : ''}</Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            </>
+          )}
+    </>);
+    return (
+      <View style={styles.mainScreen}>
+        <StatusBar style="dark" />
+        {renderPageHeader('Automations', 'Set a rule once and Nexora repeats it. Messages to customers always wait for your approval.', () => goTab('home'), { label: 'New automation', icon: 'add', onPress: () => setAutoForm({ name: '', trigger: 'order_new', trigger_days: 2, action: 'notify', action_days: 1, action_text: '', busy: false, error: '' }) })}
+        <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40, width: '100%', maxWidth: desktop ? 1240 : 820, alignSelf: 'center' }, desktop && { padding: 28, backgroundColor: '#F4F7FB', flexGrow: 1 }]} keyboardShouldPersistTaps="handled">
+          {!desktop && <View style={{ borderRadius: 18, padding: 16, backgroundColor: '#0B1220' }}>
+            <Text style={{ color: '#FFFFFF', fontSize: 17, fontWeight: '800' }}>Set it once, Nexora repeats it</Text>
+            <Text style={{ color: '#B6C3D4', fontSize: 13, marginTop: 4, lineHeight: 19 }}>Rules like "when an order comes in, tell me". Nexora checks every 10 minutes and handles each order or customer once. Messages to customers are only drafted: nothing is sent until you approve it.</Text>
+          </View>}
+          {autoError === 'setup' && (
+            <View style={{ marginTop: 12, padding: 12, borderRadius: 12, backgroundColor: '#FFF6E5' }}>
+              <Text style={{ color: '#92400E', fontWeight: '700' }}>One setup step</Text>
+              <Text style={{ color: '#92400E', fontSize: 13, marginTop: 2 }}>Run the "automation, team and referrals" SQL script in Supabase to switch on automations.</Text>
+            </View>
+          )}
+          {!!autoError && autoError !== 'setup' && <Text style={{ color: '#B42318', marginTop: 12 }}>{autoError}</Text>}
+
+          {desktop && (
+            <View style={{ flexDirection: 'row', gap: 14, marginBottom: 20 }}>
+              {([['Active automations', String(list.filter(a => a.enabled).length), 'flash-outline', '#1E56A0'], ['Actions taken', String(list.reduce((n, a) => n + (a.runs || 0), 0)), 'checkmark-done-outline', '#1E9E6D'], ['Waiting for approval', String(waiting.length), 'hand-left-outline', waiting.length ? '#C2760C' : '#5C6B7A']] as [string, string, string, string][]).map(([l, v, ic, c]) => (
+                <View key={l} style={{ flex: 1, backgroundColor: '#FFFFFF', borderRadius: 14, padding: 16, borderWidth: 1, borderColor: '#E6ECF3', flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+                  <View style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: `${c}14`, alignItems: 'center', justifyContent: 'center' }}><Ionicons name={ic as any} size={19} color={c} /></View>
+                  <View><Text style={{ fontSize: 22, fontWeight: '700', color: '#0B1220' }}>{v}</Text><Text style={{ fontSize: 12.5, color: '#5C6B7A' }}>{l}</Text></View>
+                </View>
+              ))}
+            </View>
+          )}
+          <View style={desktop ? { flexDirection: 'row', gap: 24, alignItems: 'flex-start' } : undefined}>
+            <View style={desktop ? { flex: 1.5, minWidth: 0 } : undefined}>
+              {!desktop && blockWaiting}
+          <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>Your automations</Text>
+          {automations === null ? <ActivityIndicator color="#1E56A0" /> : list.length === 0 && autoError !== 'setup' ? (
+            <Text style={styles.attentionSubtitle}>None yet. Start with one of the ready-made ones below, or tap + to build your own.</Text>
+          ) : list.map(a => (
+            <View key={a.id} style={[styles.detailCard, desktop && { borderWidth: 1, borderColor: '#E6ECF3' }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.attentionTitle}>{a.name}</Text>
+                  <Text style={[styles.attentionSubtitle, { marginTop: 2 }]}>{describe(a)}</Text>
+                  <Text style={{ fontSize: 11.5, color: '#8A97A6', marginTop: 4 }}>{a.runs} time{a.runs === 1 ? '' : 's'}{a.last_run_at ? ` · checked ${relTime(a.last_run_at)}` : ' · waiting for the first check'}</Text>
+                </View>
+                <Switch value={a.enabled} onValueChange={v => { setAutomations(l => (l ?? []).map(x => x.id === a.id ? { ...x, enabled: v } : x)); supabase.from('automations').update({ enabled: v, updated_at: new Date().toISOString() }).eq('id', a.id).then(() => {}); }} trackColor={{ true: '#5381BB', false: '#D5DEE8' }} thumbColor="#FFFFFF" />
+              </View>
+              <Pressable onPress={() => Alert.alert('Delete this automation?', a.name, [{ text: 'Cancel', style: 'cancel' }, { text: 'Delete', style: 'destructive', onPress: () => { supabase.from('automations').delete().eq('id', a.id).then(() => loadAutomations()); } }])} style={{ marginTop: 8, alignSelf: 'flex-start' }}><Text style={{ color: '#B42318', fontSize: 13, fontWeight: '600' }}>Delete</Text></Pressable>
+            </View>
+          ))}
+
+          <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>Ready-made automations</Text>
+          <View style={desktop ? { flexDirection: 'row', flexWrap: 'wrap', gap: 12 } : undefined}>
+          {AUTO_RECIPES.filter(r => !list.some(a => a.trigger === r.trigger && a.action === r.action)).map(r => (
+            <Pressable key={r.name} onPress={() => setAutoForm({ ...r, busy: false, error: '' })} style={[styles.detailCard, { flexDirection: 'row', alignItems: 'center', gap: 12 }, desktop && { flexBasis: '48%', flexGrow: 1, marginBottom: 0, borderWidth: 1, borderColor: '#E6ECF3' }]}>
+              <Ionicons name="flash-outline" size={20} color="#1E56A0" />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.attentionTitle}>{r.name}</Text>
+                <Text style={styles.attentionSubtitle}>{describe(r)}</Text>
+              </View>
+              <Ionicons name="add-circle" size={22} color="#1E56A0" />
+            </Pressable>
+          ))}
+          </View>
+
+              {!desktop && blockSide}
+            </View>
+            {desktop && <View style={{ flex: 1, minWidth: 0 }}>{blockWaiting}{blockSide}</View>}
+          </View>
+        </ScrollView>
+
+        <Modal visible={!!f} transparent animationType="fade" onRequestClose={() => setAutoForm(null)} statusBarTranslucent>
+          <View style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)', justifyContent: 'center', padding: 16 }}>
+            <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center' }} keyboardShouldPersistTaps="handled">
+              {f && (
+                <View style={{ width: '100%', maxWidth: 560, alignSelf: 'center', backgroundColor: '#FFF', borderRadius: 20, padding: 20 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <Text style={{ flex: 1, fontSize: 18, fontWeight: '700', color: '#0B1220' }}>New automation</Text>
+                    <Pressable onPress={() => setAutoForm(null)} hitSlop={8} accessibilityLabel="Close"><Ionicons name="close" size={22} color="#5C6B7A" /></Pressable>
+                  </View>
+                  <Text style={[styles.detailFieldLabel, { marginTop: 12 }]}>Name</Text>
+                  <TextInput value={f.name} onChangeText={v => setAutoForm(x => x && { ...x, name: v })} placeholder="e.g. Payment reminder" placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={120} />
+                  <Text style={[styles.detailFieldLabel, { marginTop: 12 }]}>When…</Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 }}>
+                    {(Object.keys(AUTO_TRIGGERS) as AutoTrigger[]).map(t => chip(f.trigger === t, AUTO_TRIGGERS[t].label.replace(/ (after|for)$/, ''), () => setAutoForm(x => x && { ...x, trigger: t, trigger_days: t === 'customer_inactive' ? 60 : t === 'order_unpaid' ? 2 : x.trigger_days })))}
+                  </View>
+                  {!!AUTO_TRIGGERS[f.trigger].days && (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                      <Text style={styles.attentionSubtitle}>After</Text>
+                      <TextInput value={String(f.trigger_days)} onChangeText={v => setAutoForm(x => x && { ...x, trigger_days: Math.min(365, Math.max(1, Number(v.replace(/\D/g, '')) || 1)) })} keyboardType="number-pad" style={[styles.editInput, { width: 70, height: 38, textAlign: 'center' }]} />
+                      <Text style={styles.attentionSubtitle}>days</Text>
+                    </View>
+                  )}
+                  <Text style={[styles.detailFieldLabel, { marginTop: 12 }]}>Then…</Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 }}>
+                    {(Object.keys(AUTO_ACTIONS) as AutoAction[]).filter(ac => !(f.trigger === 'low_stock' && (ac === 'followup' || ac === 'draft_message' || ac === 'tag'))).map(ac => chip(f.action === ac, AUTO_ACTIONS[ac].label.replace(/ in$/, ''), () => setAutoForm(x => x && { ...x, action: ac })))}
+                  </View>
+                  {!!AUTO_ACTIONS[f.action].days && (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                      <Text style={styles.attentionSubtitle}>In</Text>
+                      <TextInput value={String(f.action_days)} onChangeText={v => setAutoForm(x => x && { ...x, action_days: Math.min(90, Math.max(0, Number(v.replace(/\D/g, '')) || 0)) })} keyboardType="number-pad" style={[styles.editInput, { width: 70, height: 38, textAlign: 'center' }]} />
+                      <Text style={styles.attentionSubtitle}>days (0 = today)</Text>
+                    </View>
+                  )}
+                  {!!AUTO_ACTIONS[f.action].text && (
+                    <>
+                      <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>{AUTO_ACTIONS[f.action].text}</Text>
+                      <TextInput value={f.action_text} onChangeText={v => setAutoForm(x => x && { ...x, action_text: v })} multiline={f.action === 'draft_message'} maxLength={1000} placeholderTextColor="#A5AFBB" style={[styles.editInput, f.action === 'draft_message' && { minHeight: 90, textAlignVertical: 'top', paddingTop: 10 }]} />
+                    </>
+                  )}
+                  <View style={{ marginTop: 12, padding: 12, borderRadius: 12, backgroundColor: '#F2F8FD' }}>
+                    <Text style={{ fontSize: 13, color: '#1E3A5F', lineHeight: 18 }}>{describe(f)}{f.action === 'draft_message' ? ' You approve each message before it goes out.' : ''}</Text>
+                  </View>
+                  {!!f.error && <Text style={{ color: '#B42318', fontSize: 13, marginTop: 8 }}>{f.error}</Text>}
+                  <Pressable disabled={f.busy} onPress={() => { saveAutomation().catch(() => {}); }} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 14 }]}>
+                    {f.busy ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>Turn on</Text>}
+                  </Pressable>
+                </View>
+              )}
+            </ScrollView>
+          </View>
+        </Modal>
+      </View>
+    );
+  }
+
+  if (screen === 'campaigns') {
+    const list = campaigns ?? [];
+    const statusOf = (x: Campaign) => campaignOver(x) ? { t: 'Ended', bg: '#F1F5F9', fg: '#5C6B7A' } : campaignLive(x) ? { t: x.published_at ? 'Live' : 'Live · not posted yet', bg: '#E3F6EE', fg: '#1E9E6D' } : x.status === 'scheduled' ? { t: `Starts ${x.starts_at ? new Date(x.starts_at).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) : ''}`, bg: '#EAF1FB', fg: '#1E56A0' } : { t: 'Draft', bg: '#FDF3E1', fg: '#B7791F' };
+    const results = (x: Campaign) => {
+      const r = shopStats?.sources.find(s2 => s2.src === x.src);
+      const c = x.coupon_code ? shopStats?.coupons?.[x.coupon_code] : undefined;
+      return { visits: r?.visits ?? 0, enquiries: r?.enquiries ?? 0, orders: Math.max(r?.orders ?? 0, c?.orders ?? 0), uses: x.uses };
+    };
+    const f = campaignForm;
+    const CHANNELS = ['instagram', 'whatsapp', 'facebook', 'tiktok', 'email', 'flyer', 'other'];
+    const writeWithAi = async () => {
+      if (!f) return;
+      setCampaignForm(x => x && { ...x, aiBusy: true, error: '' });
+      try {
+        const r = await callFn('nexora-shop', { action: 'caption', platform: f.channel === 'flyer' || f.channel === 'other' ? 'Instagram' : f.channel.charAt(0).toUpperCase() + f.channel.slice(1) }, 45000);
+        const first = String((r.captions || [])[0] || '').replace(/https?:\/\/\S+/g, '').trim();
+        setCampaignForm(x => x && { ...x, aiBusy: false, message: first || x.message });
+      } catch (e: any) { setCampaignForm(x => x && { ...x, aiBusy: false, error: e?.message || "Couldn't write it right now." }); }
+    };
+    const desktop = isDesktopWeb;
+    return (
+      <View style={styles.mainScreen}>
+        <StatusBar style="dark" />
+        {renderPageHeader('Campaigns', 'Each campaign gets a tracked shop link and an optional discount code, so you can see what worked.', () => goTab('home'), { label: 'New campaign', icon: 'add', onPress: () => setCampaignForm(newCampaignForm()) })}
+        <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40, width: '100%', maxWidth: desktop ? 1240 : 820, alignSelf: 'center' }, desktop && { padding: 28, backgroundColor: '#F4F7FB', flexGrow: 1 }]} keyboardShouldPersistTaps="handled">
+          {desktop && (() => {
+            const all = list.map(results);
+            const live = list.filter(x => campaignLive(x) && !campaignOver(x)).length;
+            const tiles: [string, number, string, string][] = [['Live campaigns', live, 'megaphone-outline', '#1E56A0'], ['Visits from campaigns', all.reduce((n, r) => n + r.visits, 0), 'eye-outline', '#7C3AED'], ['Enquiries', all.reduce((n, r) => n + r.enquiries, 0), 'chatbubbles-outline', '#0E7490'], ['Orders', all.reduce((n, r) => n + r.orders, 0), 'bag-handle-outline', '#1E9E6D']];
+            return (
+              <View style={{ flexDirection: 'row', gap: 14, marginBottom: 8 }}>
+                {tiles.map(([l, v, ic, c]) => (
+                  <View key={l} style={{ flex: 1, backgroundColor: '#FFFFFF', borderRadius: 14, padding: 16, borderWidth: 1, borderColor: '#E6ECF3', flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+                    <View style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: `${c}14`, alignItems: 'center', justifyContent: 'center' }}><Ionicons name={ic as any} size={19} color={c} /></View>
+                    <View><Text style={{ fontSize: 22, fontWeight: '700', color: '#0B1220' }}>{v.toLocaleString()}</Text><Text style={{ fontSize: 12.5, color: '#5C6B7A' }}>{l} · 30 days</Text></View>
+                  </View>
+                ))}
+              </View>
+            );
+          })()}
+          {!desktop && <View style={{ borderRadius: 18, padding: 16, backgroundColor: '#0B1220' }}>
+            <Text style={{ color: '#FFFFFF', fontSize: 17, fontWeight: '800' }}>Promote, then see what worked</Text>
+            <Text style={{ color: '#B6C3D4', fontSize: 13, marginTop: 4, lineHeight: 19 }}>Each campaign gets its own tracked shop link and, if you like, a discount code. Visits, enquiries, orders and code uses are counted for each one.</Text>
+          </View>}
+          {campaignsError === 'setup' && (
+            <View style={{ marginTop: 12, padding: 12, borderRadius: 12, backgroundColor: '#FFF6E5' }}>
+              <Text style={{ color: '#92400E', fontWeight: '700' }}>One setup step</Text>
+              <Text style={{ color: '#92400E', fontSize: 13, marginTop: 2 }}>Run the "CRM and campaigns" SQL script in Supabase to start using campaigns.</Text>
+            </View>
+          )}
+          {!!campaignsError && campaignsError !== 'setup' && <Text style={{ color: '#B42318', marginTop: 12 }}>{campaignsError}</Text>}
+          {!myShop?.enabled && (
+            <Pressable onPress={() => { openStorefront().catch(() => {}); }} style={{ marginTop: 12, padding: 12, borderRadius: 12, backgroundColor: '#EAF1FB' }}>
+              <Text style={{ color: '#1E56A0', fontSize: 13, lineHeight: 18 }}>Campaign links open your AI shop link, which is switched off. Tap here to set it up and switch it on.</Text>
+            </Pressable>
+          )}
+          {campaigns === null ? <ActivityIndicator color="#1E56A0" style={{ marginTop: 24 }} /> : list.length === 0 && campaignsError !== 'setup' ? (
+            <View style={{ alignItems: 'center', paddingVertical: 30 }}>
+              <Ionicons name="megaphone-outline" size={34} color="#A5AFBB" />
+              <Text style={[styles.attentionSubtitle, { textAlign: 'center', marginTop: 8 }]}>No campaigns yet. Create one for a sale, a new product or a season, then post it wherever your customers are.</Text>
+              <Pressable onPress={() => setCampaignForm(newCampaignForm())} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 14, paddingHorizontal: 24 }]}><Text style={styles.resetButtonText}>Create a campaign</Text></Pressable>
+            </View>
+          ) : (<View style={desktop ? { flexDirection: 'row', flexWrap: 'wrap', gap: 16, marginTop: 12, alignItems: 'stretch' } : undefined}>{list.map(x => {
+            const st = statusOf(x);
+            const r = results(x);
+            const link = campaignLink(x);
+            return (
+              <View key={x.id} style={[styles.detailCard, { marginTop: 12 }, desktop && { marginTop: 0, marginBottom: 0, flexBasis: '48%', flexGrow: 1, borderWidth: 1, borderColor: '#E6ECF3' }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.attentionTitle}>{x.name}</Text>
+                    <Text style={[styles.attentionSubtitle, { textTransform: 'capitalize' }]}>{x.channel}{x.coupon_code ? `  ·  code ${x.coupon_code} (${x.discount_type === 'percent' ? `${x.discount_value}%` : x.discount_value} off)` : ''}{x.ends_at ? `  ·  until ${new Date(x.ends_at).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}` : ''}</Text>
+                  </View>
+                  <View style={{ backgroundColor: st.bg, borderRadius: 10, paddingHorizontal: 9, paddingVertical: 3 }}><Text style={{ color: st.fg, fontSize: 11, fontWeight: '700' }}>{st.t}</Text></View>
+                </View>
+                {!!x.message && <Text style={[styles.attentionSubtitle, { marginTop: 8 }]} numberOfLines={3}>{x.message}</Text>}
+                <View style={{ flexDirection: 'row', marginTop: 12 }}>
+                  {([['Visits', r.visits], ['Enquiries', r.enquiries], ['Orders', r.orders], ...(x.coupon_code ? [['Code uses', r.uses]] : [])] as [string, number][]).map(([l, n]) => (
+                    <View key={l} style={{ flex: 1, alignItems: 'center' }}>
+                      <Text style={{ fontSize: 18, fontWeight: '800', color: '#0B1220' }}>{n}</Text>
+                      <Text style={{ fontSize: 11.5, color: '#64748B' }}>{l}</Text>
+                    </View>
+                  ))}
+                </View>
+                {!!link && <Text selectable style={{ fontSize: 12, color: '#1E3A5F', marginTop: 10, backgroundColor: '#F2F8FD', padding: 8, borderRadius: 8 }} numberOfLines={1}>{link}</Text>}
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+                  {!campaignOver(x) && (
+                    <Pressable onPress={() => { publishCampaign(x).catch(() => {}); }} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, backgroundColor: '#1E56A0' }}><Text style={{ color: '#FFF', fontWeight: '700', fontSize: 13 }}>{x.published_at ? 'Post again' : 'Post it now'}</Text></Pressable>
+                  )}
+                  {x.status === 'draft' && <Pressable onPress={() => { supabase.from('campaigns').update({ status: x.starts_at && new Date(x.starts_at).getTime() > Date.now() ? 'scheduled' : 'active', updated_at: new Date().toISOString() }).eq('id', x.id).then(() => loadCampaigns()); }} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: '#5381BB' }}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>Launch</Text></Pressable>}
+                  <Pressable onPress={() => setCampaignForm(editCampaignForm(x))} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: '#5381BB' }}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>Edit</Text></Pressable>
+                  {!campaignOver(x) && x.status !== 'draft' && <Pressable onPress={() => { supabase.from('campaigns').update({ status: 'ended', updated_at: new Date().toISOString() }).eq('id', x.id).then(() => { loadCampaigns(); flash('Campaign ended. Its code no longer works.'); }); }} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: '#F5C2C2', backgroundColor: '#FDECEC' }}><Text style={{ color: '#B42318', fontWeight: '700', fontSize: 13 }}>End</Text></Pressable>}
+                  {(campaignOver(x) || x.status === 'draft') && <Pressable onPress={() => Alert.alert('Delete this campaign?', x.name, [{ text: 'Cancel', style: 'cancel' }, { text: 'Delete', style: 'destructive', onPress: () => { supabase.from('campaigns').delete().eq('id', x.id).then(() => loadCampaigns()); } }])} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12 }}><Text style={{ color: '#B42318', fontWeight: '700', fontSize: 13 }}>Delete</Text></Pressable>}
+                </View>
+              </View>
+            );
+          })}</View>)}
+          <Text style={[styles.attentionSubtitle, { marginTop: 14, fontSize: 12 }]}>Results cover the last 30 days. Orders count when a customer used the campaign link or its code; sales only count once you mark the order paid.</Text>
+        </ScrollView>
+
+        <Modal visible={!!f} transparent animationType="fade" onRequestClose={() => setCampaignForm(null)} statusBarTranslucent>
+          <View style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)', justifyContent: 'center', padding: 16 }}>
+            <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center' }} keyboardShouldPersistTaps="handled">
+              {f && (
+                <View style={{ width: '100%', maxWidth: 560, alignSelf: 'center', backgroundColor: '#FFF', borderRadius: 20, padding: 20 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <Text style={{ flex: 1, fontSize: 18, fontWeight: '700', color: '#0B1220' }}>{f.id ? 'Edit campaign' : 'New campaign'}</Text>
+                    <Pressable onPress={() => setCampaignForm(null)} hitSlop={8} accessibilityLabel="Close"><Ionicons name="close" size={22} color="#5C6B7A" /></Pressable>
+                  </View>
+                  <Text style={[styles.detailFieldLabel, { marginTop: 12 }]}>Name</Text>
+                  <TextInput value={f.name} onChangeText={v => setCampaignForm(x => x && { ...x, name: v })} placeholder="e.g. Black Friday sale" placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={120} />
+                  <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Where will you post it?</Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 }}>
+                    {CHANNELS.map(ch => (
+                      <Pressable key={ch} onPress={() => setCampaignForm(x => x && { ...x, channel: ch })} style={[styles.filterChip, { marginBottom: 0 }, f.channel === ch && styles.filterChipActive]}><Text style={[styles.filterChipText, f.channel === ch && styles.filterChipTextActive, { textTransform: 'capitalize' }]}>{ch}</Text></Pressable>
+                    ))}
+                  </View>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 10 }}>
+                    <Text style={[styles.detailFieldLabel, { flex: 1 }]}>Post or message</Text>
+                    <Pressable disabled={f.aiBusy} onPress={() => { writeWithAi().catch(() => {}); }}>{f.aiBusy ? <ActivityIndicator size="small" color="#1E56A0" /> : <Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>Write with AI</Text>}</Pressable>
+                  </View>
+                  <TextInput value={f.message} onChangeText={v => setCampaignForm(x => x && { ...x, message: v })} multiline placeholder="What you'll post. The tracked link and code are added when you post it." placeholderTextColor="#A5AFBB" maxLength={4000} style={[styles.editInput, { minHeight: 100, textAlignVertical: 'top', paddingTop: 10 }]} />
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 12 }}>
+                    <Text style={[styles.attentionTitle, { flex: 1, fontSize: 14 }]}>Add a discount code</Text>
+                    <Switch value={f.useCoupon} onValueChange={v => setCampaignForm(x => x && { ...x, useCoupon: v, code: x.code || x.name.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10) })} trackColor={{ true: '#5381BB', false: '#D5DEE8' }} thumbColor="#FFFFFF" />
+                  </View>
+                  {f.useCoupon && (
+                    <>
+                      <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                        <TextInput value={f.code} onChangeText={v => setCampaignForm(x => x && { ...x, code: v.toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 20) })} placeholder="CODE" placeholderTextColor="#A5AFBB" autoCapitalize="characters" style={[styles.editInput, { flex: 1 }]} />
+                        <TextInput value={f.dvalue} onChangeText={v => setCampaignForm(x => x && { ...x, dvalue: v })} keyboardType="decimal-pad" placeholder="10" placeholderTextColor="#A5AFBB" style={[styles.editInput, { width: 80 }]} />
+                        {(['percent', 'amount'] as const).map(t => (
+                          <Pressable key={t} onPress={() => setCampaignForm(x => x && { ...x, dtype: t })} style={[styles.filterChip, { marginBottom: 0, alignSelf: 'center' }, f.dtype === t && styles.filterChipActive]}><Text style={[styles.filterChipText, f.dtype === t && styles.filterChipTextActive]}>{t === 'percent' ? '% off' : 'amount off'}</Text></Pressable>
+                        ))}
+                      </View>
+                      <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                        <TextInput value={f.minOrder} onChangeText={v => setCampaignForm(x => x && { ...x, minOrder: v.replace(/[^\d.]/g, '') })} keyboardType="decimal-pad" placeholder="Minimum order (optional)" placeholderTextColor="#A5AFBB" style={[styles.editInput, { flex: 1 }]} />
+                        <TextInput value={f.maxUses} onChangeText={v => setCampaignForm(x => x && { ...x, maxUses: v.replace(/\D/g, '') })} keyboardType="number-pad" placeholder="Max uses (optional)" placeholderTextColor="#A5AFBB" style={[styles.editInput, { flex: 1 }]} />
+                      </View>
+                      <Text style={[styles.attentionSubtitle, { marginTop: 4, fontSize: 12 }]}>Customers enter the code at checkout on your shop link. Nexora checks it and applies the discount.</Text>
+                    </>
+                  )}
+                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.detailFieldLabel}>Starts</Text>
+                      <TextInput value={f.start} onChangeText={v => setCampaignForm(x => x && { ...x, start: v.replace(/[^\d-]/g, '').slice(0, 10) })} placeholder="YYYY-MM-DD" placeholderTextColor="#A5AFBB" style={styles.editInput} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.detailFieldLabel}>Ends (optional)</Text>
+                      <TextInput value={f.end} onChangeText={v => setCampaignForm(x => x && { ...x, end: v.replace(/[^\d-]/g, '').slice(0, 10) })} placeholder="YYYY-MM-DD" placeholderTextColor="#A5AFBB" style={styles.editInput} />
+                    </View>
+                  </View>
+                  {!!f.error && <Text style={{ color: '#B42318', fontSize: 13, marginTop: 8 }}>{f.error}</Text>}
+                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
+                    <Pressable disabled={f.busy} onPress={() => { saveCampaign(false).catch(() => {}); }} style={[styles.resetButton, { flex: 1, borderWidth: 1, borderColor: '#5381BB' }]}><Text style={[styles.resetButtonText, { color: '#1E56A0' }]}>{f.id ? 'Save' : 'Save draft'}</Text></Pressable>
+                    <Pressable disabled={f.busy} onPress={() => { saveCampaign(true).catch(() => {}); }} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1 }]}>
+                      {f.busy ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>{f.start && f.start > localIsoDate() ? 'Schedule' : 'Launch'}</Text>}
+                    </Pressable>
+                  </View>
+                </View>
+              )}
+            </ScrollView>
+          </View>
+        </Modal>
+      </View>
+    );
+  }
+
   if (screen === 'storefront') {
     const f = shopForm;
     const setF = (k: keyof MyShop) => (v: any) => setShopForm(prev => prev ? { ...prev, [k]: v } : prev);
-    const dirty = !!f && !!myShop && (['slug', 'headline', 'about', 'whatsapp', 'show_prices'] as (keyof MyShop)[]).some(k => f[k] !== myShop[k]);
+    const FIELDS: (keyof MyShop)[] = ['slug', 'headline', 'about', 'whatsapp', 'show_prices', 'logo_url', 'brand_color', 'contact_email', 'contact_phone', 'address', 'delivery_info', 'payment_info', 'accept_orders'];
+    const dirty = !!f && !!myShop && FIELDS.some(k => (f[k] ?? '') !== (myShop[k] ?? ''));
+    const slugNow = myShop?.slug || f?.slug || '';
+    const campaignLink = (srcKey: string) => `${shopUrl(slugNow)}&src=${srcKey}`;
+    const copyText = async (text: string, done = 'Copied') => {
+      if (IS_WEB) { try { await (globalThis as any).navigator?.clipboard?.writeText(text); flash(done); return; } catch { /* share instead */ } }
+      Share.share({ message: text }).catch(() => {});
+    };
+    const qrUrl = slugNow ? `https://api.qrserver.com/v1/create-qr-code/?size=480x480&margin=12&data=${encodeURIComponent(campaignLink('qr'))}` : '';
+    const priced = [...knowledgeData.products.items, ...knowledgeData.services.items].filter(i => i.status !== 'Draft' && /\d/.test(i.fields.find(x => /price|cost|fee|rate/i.test(x.label))?.value || i.subtitle || ''));
+    const checklist = f ? [
+      { done: !!f.logo_url, label: 'Add your logo', onPress: () => {} },
+      { done: (f.about || '').trim().length > 30, label: 'Say what you sell and where you deliver', onPress: () => {} },
+      { done: priced.length > 0, label: 'Add products or services with prices in Train AI', onPress: () => openFeature('operations') },
+      { done: !!(f.payment_info || '').trim() || f.accept_orders === false, label: 'Write how customers pay you', onPress: () => {} },
+      { done: !!myShop?.enabled, label: 'Switch your shop on and share the link', onPress: () => { if (!myShop?.enabled) saveShop({ enabled: true }); } },
+    ] : [];
+    const SWATCHES = ['#1E56A0', '#0F2942', '#0E7490', '#15803D', '#B45309', '#B42318', '#7C3AED', '#DB2777'];
+    const st = shopStats;
+    const money = (n: number, ccy: string) => `${({ NGN: '₦', USD: '$', EUR: '€', GBP: '£' } as Record<string, string>)[ccy] ?? (ccy ? `${ccy} ` : '')}${Math.round(n).toLocaleString()}`;
+    const pickLogo = async () => {
+      const uri = await pickLibraryImage();
+      if (!uri) return;
+      const url = await uploadKnowledgeImage(uri);
+      if (url) { setF('logo_url')(url); flash('Logo added. Tap Save changes.'); }
+    };
+    const runCaptions = async (platform: string) => {
+      setShopCaptions({ platform, busy: true, captions: [], error: '' });
+      try { const r = await callFn('nexora-shop', { action: 'caption', platform }, 45000); setShopCaptions({ platform, busy: false, captions: r.captions || [], error: '' }); }
+      catch (e: any) { setShopCaptions({ platform, busy: false, captions: [], error: e?.message || "Couldn't write captions." }); }
+    };
+    const label = (t: string, top = 10) => <Text style={[styles.detailFieldLabel, { marginTop: top }]}>{t}</Text>;
     return (
       <View style={styles.mainScreen}>
         <StatusBar style="dark" />
@@ -11763,63 +15701,193 @@ function HomeScreenInner(){
           <Text style={styles.knowledgeHeaderTitle}>AI shop link</Text>
           <Pressable onPress={() => { openStorefront().catch(() => {}); }} hitSlop={8} accessibilityLabel="Refresh"><Ionicons name="refresh-outline" size={22} color="#0B1220" /></Pressable>
         </View>
-        <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40 }]} keyboardShouldPersistTaps="handled">
+        <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40, width: '100%', maxWidth: 760, alignSelf: 'center' }]} keyboardShouldPersistTaps="handled">
           <View style={{ borderRadius: 18, padding: 16, backgroundColor: '#0B1220' }}>
-            <Text style={{ color: '#FFFFFF', fontSize: 17, fontWeight: '800' }}>Your business, open 24/7</Text>
-            <Text style={{ color: '#B6C3D4', fontSize: 13, marginTop: 4, lineHeight: 19 }}>Share one link in your Instagram bio, WhatsApp status or flyers. Customers see your products and chat with your Nexora any time. Anyone who leaves their details lands in your Leads.</Text>
+            <Text style={{ color: '#FFFFFF', fontSize: 17, fontWeight: '800' }}>Your shop, open 24/7</Text>
+            <Text style={{ color: '#B6C3D4', fontSize: 13, marginTop: 4, lineHeight: 19 }}>One link for your Instagram bio, WhatsApp status and flyers. Anyone can open it, no account needed: they see your products, chat with your Nexora, send enquiries and place orders. Orders land in Orders, enquiries in Leads.</Text>
           </View>
           {shopLoading && <ActivityIndicator color="#1E56A0" style={{ marginTop: 20 }} />}
           {!!shopError && <Text style={[styles.attentionSubtitle, { color: '#C2760C', marginTop: 12 }]}>{shopError}</Text>}
+          {!shopUpgraded && !shopLoading && (
+            <View style={{ marginTop: 12, padding: 12, borderRadius: 12, backgroundColor: '#FFF6E5' }}>
+              <Text style={{ color: '#92400E', fontWeight: '700' }}>Online orders need one setup step</Text>
+              <Text style={{ color: '#92400E', fontSize: 13, marginTop: 2, lineHeight: 18 }}>Run the "shop and orders" SQL script in Supabase. Until then your shop shows products and chat, and customers can send enquiries.</Text>
+            </View>
+          )}
           {f && !shopLoading && (
             <>
-              <View style={[styles.detailCard, { marginTop: 14 }]}>
+              <View style={[styles.detailCard, { marginTop: 14 }, !myShop?.enabled && { borderWidth: 2, borderColor: '#F5C46B', backgroundColor: '#FFFBF0' }]}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: myShop?.enabled ? '#1E9E6D' : '#E5484D' }} />
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.attentionTitle}>{myShop?.enabled ? 'Your shop is live' : 'Your shop is off'}</Text>
-                    <Text style={styles.attentionSubtitle}>{myShop?.enabled ? 'Anyone with the link can open it.' : 'Switch it on when you are ready to share it.'}</Text>
+                    <Text style={styles.attentionTitle}>{myShop?.enabled ? 'Your shop is live' : 'Your shop link is switched off'}</Text>
+                    <Text style={styles.attentionSubtitle}>{myShop?.enabled ? 'Anyone with the link can open it, chat with Nexora and order.' : 'People who open the link see "This shop link isn\'t active". Switch it on to start selling.'}</Text>
                   </View>
-                  <Switch value={!!myShop?.enabled} disabled={shopBusy} onValueChange={v => saveShop({ enabled: v })} trackColor={{ true: '#5381BB', false: '#D5DEE8' }} thumbColor="#FFFFFF" />
+                  {myShop?.enabled && <Switch value disabled={shopBusy} onValueChange={v => saveShop({ enabled: v })} trackColor={{ true: '#5381BB', false: '#D5DEE8' }} thumbColor="#FFFFFF" accessibilityLabel="Shop link on" />}
                 </View>
+                {!myShop?.enabled && (
+                  <Pressable onPress={() => saveShop({ enabled: true })} disabled={shopBusy} accessibilityRole="button" style={{ marginTop: 12, height: 50, borderRadius: 25, backgroundColor: '#1E9E6D', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                    {shopBusy ? <ActivityIndicator color="#FFFFFF" /> : <><Ionicons name="power" size={18} color="#FFFFFF" /><Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '700' }}>Switch on my shop</Text></>}
+                  </Pressable>
+                )}
                 <View style={{ marginTop: 12, padding: 12, borderRadius: 12, backgroundColor: '#F2F8FD' }}>
-                  <Text selectable style={{ fontSize: 13, color: '#1E3A5F' }} numberOfLines={2}>{shopUrl(myShop?.slug || f.slug)}</Text>
+                  <Text selectable style={{ fontSize: 13, color: '#1E3A5F' }} numberOfLines={2}>{shopUrl(slugNow)}</Text>
                 </View>
                 <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
-                  <Pressable onPress={() => copyShopLink(myShop?.slug || f.slug)} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1, minHeight: 40 }]}>
+                  <Pressable onPress={() => { copyShopLink(slugNow); if (!myShop?.enabled) setTimeout(() => flash('Switch your shop on so customers can open the link'), 1600); }} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1, minHeight: 40 }]}>
                     <Text style={styles.resetButtonText}>{IS_WEB ? 'Copy link' : 'Share link'}</Text>
                   </Pressable>
-                  <Pressable disabled={!myShop?.enabled} onPress={() => (IS_WEB ? Linking.openURL(shopUrl(myShop!.slug)) : openInApp(shopUrl(myShop!.slug), 'Your shop'))} style={[styles.resetButton, { flex: 1, minHeight: 40, borderWidth: 1, borderColor: '#5381BB', opacity: myShop?.enabled ? 1 : 0.5 }]}>
-                    <Text style={[styles.resetButtonText, { color: '#1E56A0' }]}>Preview</Text>
+                  <Pressable disabled={!myShop?.enabled && !IS_WEB} onPress={() => { const u = myShop?.enabled ? shopUrl(slugNow) : `${shopUrl(slugNow)}&preview=1`; if (IS_WEB) Linking.openURL(u); else openInApp(u, 'Your shop'); }} style={[styles.resetButton, { flex: 1, minHeight: 40, borderWidth: 1, borderColor: '#5381BB', opacity: myShop?.enabled || IS_WEB ? 1 : 0.5 }]}>
+                    <Text style={[styles.resetButtonText, { color: '#1E56A0' }]}>{myShop?.enabled ? 'Preview' : 'Preview (only you)'}</Text>
                   </Pressable>
-                </View>
-                <View style={{ flexDirection: 'row', marginTop: 14 }}>
-                  {([['Visits', myShop?.views ?? 0], ['Chats', myShop?.chats ?? 0], ['Leads', myShop?.leads ?? 0]] as const).map(([label, n]) => (
-                    <View key={label} style={{ flex: 1, alignItems: 'center' }}>
-                      <Text style={{ fontSize: 20, fontWeight: '800', color: '#0B1220' }}>{n}</Text>
-                      <Text style={{ fontSize: 12, color: '#64748B' }}>{label}</Text>
-                    </View>
-                  ))}
                 </View>
               </View>
 
-              <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>How it looks</Text>
+              {checklist.some(c => !c.done) && (
+                <View style={[styles.detailCard, { marginTop: 12 }]}>
+                  <Text style={styles.attentionTitle}>Get your shop ready ({checklist.filter(c => c.done).length}/{checklist.length})</Text>
+                  {checklist.map(c => (
+                    <Pressable key={c.label} onPress={c.onPress} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 10 }}>
+                      <Ionicons name={c.done ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={c.done ? '#1E9E6D' : '#A5AFBB'} />
+                      <Text style={{ flex: 1, fontSize: 14, color: c.done ? '#8A97A6' : '#0B1220', textDecorationLine: c.done ? 'line-through' : 'none' }}>{c.label}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              )}
+
+              <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>Last 30 days</Text>
               <View style={styles.detailCard}>
-                <Text style={styles.detailFieldLabel}>Link name</Text>
-                <TextInput value={f.slug} onChangeText={v => setF('slug')(v.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 40))} autoCapitalize="none" autoCorrect={false} style={styles.editInput} placeholder="e.g. mama-tee-foods" placeholderTextColor="#A5AFBB" />
-                <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Headline</Text>
-                <TextInput value={f.headline} onChangeText={setF('headline')} maxLength={120} style={styles.editInput} placeholder="e.g. Fresh gadgets, delivered same day in Lagos" placeholderTextColor="#A5AFBB" />
-                <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>About your business</Text>
-                <TextInput value={f.about} onChangeText={setF('about')} maxLength={600} multiline style={[styles.editInput, { minHeight: 90, textAlignVertical: 'top' }]} placeholder="What you sell, where you deliver, opening hours…" placeholderTextColor="#A5AFBB" />
-                <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>WhatsApp number (optional)</Text>
-                <TextInput value={f.whatsapp} onChangeText={setF('whatsapp')} maxLength={20} keyboardType="phone-pad" style={styles.editInput} placeholder="+2348012345678" placeholderTextColor="#A5AFBB" />
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', rowGap: 14 }}>
+                  {([
+                    ['Visits', String(st?.totals.visits ?? myShop?.views ?? 0)],
+                    ['Enquiries', String(st?.totals.enquiries ?? myShop?.leads ?? 0)],
+                    ['Orders', String(st?.totals.orders ?? myShop?.orders_count ?? 0)],
+                    ['Conversion', st?.conversion == null ? '—' : `${st.conversion}%`],
+                    ['Paid sales', st ? money(st.totals.sales, st.totals.currency) : '—'],
+                    ['Chats', String(st?.totals.chats ?? myShop?.chats ?? 0)],
+                  ] as const).map(([l, v]) => (
+                    <View key={l} style={{ width: '33.33%', alignItems: 'center' }}>
+                      <Text style={{ fontSize: 19, fontWeight: '800', color: '#0B1220' }}>{v}</Text>
+                      <Text style={{ fontSize: 12, color: '#64748B' }}>{l}</Text>
+                    </View>
+                  ))}
+                </View>
+                <Text style={[styles.attentionSubtitle, { marginTop: 12, fontSize: 12 }]}>Conversion = visitors who ordered or sent an enquiry. Paid sales only count orders you marked as paid.</Text>
+                {!!st?.sources.length && (
+                  <View style={{ marginTop: 12 }}>
+                    <Text style={{ fontSize: 13, fontWeight: '700', color: '#0B1220' }}>Where visitors came from</Text>
+                    {st.sources.slice(0, 8).map(r => (
+                      <View key={r.src} style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' }}>
+                        <Text style={{ flex: 1, fontSize: 13, color: '#0B1220', textTransform: 'capitalize' }}>{r.src === 'direct' ? 'Direct / unknown' : r.src}</Text>
+                        <Text style={{ width: 70, fontSize: 12, color: '#475569', textAlign: 'right' }}>{r.visits} visits</Text>
+                        <Text style={{ width: 80, fontSize: 12, color: '#475569', textAlign: 'right' }}>{r.enquiries} enquiries</Text>
+                        <Text style={{ width: 64, fontSize: 12, color: '#475569', textAlign: 'right' }}>{r.orders} orders</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+                <Pressable onPress={() => openOrders('All')} style={{ marginTop: 12 }}><Text style={{ color: '#1E56A0', fontWeight: '700' }}>See shop orders ›</Text></Pressable>
+              </View>
+
+              <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>Brand and description</Text>
+              <View style={styles.detailCard}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+                  {f.logo_url ? <ExpoImage source={{ uri: f.logo_url }} style={{ width: 64, height: 64, borderRadius: 16, backgroundColor: '#EEF2F7' }} contentFit="cover" /> : (
+                    <View style={{ width: 64, height: 64, borderRadius: 16, backgroundColor: f.brand_color || '#1E56A0', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#FFF', fontSize: 26, fontWeight: '800' }}>{(workspace?.name || businessName || 'S').charAt(0).toUpperCase()}</Text></View>
+                  )}
+                  <View style={{ flex: 1, gap: 8 }}>
+                    <Pressable onPress={() => { pickLogo().catch(() => {}); }} style={{ alignSelf: 'flex-start', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 14, backgroundColor: '#EAF1FB' }}><Text style={{ color: '#1E56A0', fontWeight: '700' }}>{f.logo_url ? 'Change logo' : 'Upload logo'}</Text></Pressable>
+                    {!!f.logo_url && <Pressable onPress={() => setF('logo_url')(null)}><Text style={{ color: '#B42318', fontSize: 13 }}>Remove logo</Text></Pressable>}
+                  </View>
+                </View>
+                {label('Brand colour', 14)}
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 8 }}>
+                  {SWATCHES.map(c => (
+                    <Pressable key={c} onPress={() => setF('brand_color')(c)} accessibilityLabel={`Colour ${c}`} style={{ width: 34, height: 34, borderRadius: 17, backgroundColor: c, borderWidth: 3, borderColor: (f.brand_color || '#1E56A0') === c ? '#0B1220' : '#FFFFFF' }} />
+                  ))}
+                </View>
+                {label('Link name', 14)}
+                <TextInput value={f.slug} onChangeText={v => setF('slug')(v.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 40))} autoCapitalize="none" autoCorrect={false} style={styles.editInput} placeholder="e.g. john-doe-store" placeholderTextColor="#A5AFBB" />
+                {label('Headline')}
+                <TextInput value={f.headline} onChangeText={setF('headline')} maxLength={120} style={styles.editInput} placeholder="e.g. Fresh gadgets, delivered same day" placeholderTextColor="#A5AFBB" />
+                {label('About your business')}
+                <TextInput value={f.about} onChangeText={setF('about')} maxLength={800} multiline style={[styles.editInput, { minHeight: 90, textAlignVertical: 'top', paddingTop: 10 }]} placeholder="What you sell, who it's for, opening hours…" placeholderTextColor="#A5AFBB" />
+              </View>
+
+              <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>Contact and delivery</Text>
+              <View style={styles.detailCard}>
+                {label('Phone', 0)}
+                <TextInput value={f.contact_phone || ''} onChangeText={setF('contact_phone')} maxLength={40} keyboardType="phone-pad" style={styles.editInput} placeholder="+1 555 123 4567" placeholderTextColor="#A5AFBB" />
+                {label('WhatsApp number')}
+                <TextInput value={f.whatsapp} onChangeText={setF('whatsapp')} maxLength={20} keyboardType="phone-pad" style={styles.editInput} placeholder="+15551234567" placeholderTextColor="#A5AFBB" />
+                {label('Email')}
+                <TextInput value={f.contact_email || ''} onChangeText={setF('contact_email')} maxLength={120} autoCapitalize="none" keyboardType="email-address" style={styles.editInput} placeholder="hello@yourshop.com" placeholderTextColor="#A5AFBB" />
+                {label('Address or pickup point (optional)')}
+                <TextInput value={f.address || ''} onChangeText={setF('address')} maxLength={240} style={styles.editInput} placeholder="e.g. 12 Market Road, City" placeholderTextColor="#A5AFBB" />
+                {label('Delivery information')}
+                <TextInput value={f.delivery_info || ''} onChangeText={setF('delivery_info')} maxLength={600} multiline style={[styles.editInput, { minHeight: 80, textAlignVertical: 'top', paddingTop: 10 }]} placeholder="Where you deliver, how long it takes and what it costs, e.g. Same day in the city, $5. Other areas 2-3 days." placeholderTextColor="#A5AFBB" />
+              </View>
+
+              <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>Orders and payment</Text>
+              <View style={styles.detailCard}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.attentionTitle, { fontSize: 14 }]}>Take orders on the shop</Text>
+                    <Text style={styles.attentionSubtitle}>Customers add priced items and place an order. Items without a fixed price get "Request a quote".</Text>
+                  </View>
+                  <Switch value={f.accept_orders !== false} onValueChange={setF('accept_orders')} trackColor={{ true: '#5381BB', false: '#D5DEE8' }} thumbColor="#FFFFFF" />
+                </View>
                 <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 12 }}>
                   <Text style={[styles.attentionTitle, { flex: 1, fontSize: 14 }]}>Show prices</Text>
                   <Switch value={f.show_prices} onValueChange={setF('show_prices')} trackColor={{ true: '#5381BB', false: '#D5DEE8' }} thumbColor="#FFFFFF" />
                 </View>
-                <Pressable disabled={shopBusy || !dirty} onPress={() => saveShop()} style={[styles.resetButton, dirty ? styles.resetButtonEnabled : { backgroundColor: '#C7D2DE' }, { marginTop: 14 }]}>
-                  {shopBusy ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>{dirty ? 'Save changes' : 'Saved'}</Text>}
-                </Pressable>
+                {label('How customers pay you', 14)}
+                <TextInput value={f.payment_info || ''} onChangeText={setF('payment_info')} maxLength={800} multiline style={[styles.editInput, { minHeight: 100, textAlignVertical: 'top', paddingTop: 10 }]} placeholder={'e.g. Bank transfer to: Your Bank, Account name, Account number.\nOr pay with this link: …\nOr pay cash on delivery.'} placeholderTextColor="#A5AFBB" />
+                <Text style={[styles.attentionSubtitle, { marginTop: 6, fontSize: 12 }]}>Shown to customers after they order. Money goes straight to you; Nexora never holds it. Mark each order as paid in Orders once you receive the money.</Text>
               </View>
-              <Text style={[styles.attentionSubtitle, { marginTop: 10 }]}>Your shop shows products and services from Train AI that are Verified or Need review, plus your FAQs and policies. Drafts stay private. Customers' chats are answered only from this information.</Text>
+
+              <Pressable disabled={shopBusy || !dirty} onPress={() => saveShop()} style={[styles.resetButton, dirty ? styles.resetButtonEnabled : { backgroundColor: '#C7D2DE' }, { marginTop: 14 }]}>
+                {shopBusy ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>{dirty ? 'Save changes' : 'Saved'}</Text>}
+              </Pressable>
+
+              <Text style={[styles.channelSectionLabel, { marginTop: 22 }]}>Promote your shop</Text>
+              <View style={styles.detailCard}>
+                <View style={{ flexDirection: 'row', gap: 14, alignItems: 'center' }}>
+                  {!!qrUrl && <ExpoImage source={{ uri: qrUrl }} style={{ width: 120, height: 120, borderRadius: 10, backgroundColor: '#FFF' }} contentFit="contain" />}
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.attentionTitle}>QR code</Text>
+                    <Text style={styles.attentionSubtitle}>Print it on flyers, packaging and your counter. Scans are counted as "qr" below.</Text>
+                    <Pressable onPress={() => (IS_WEB ? Linking.openURL(qrUrl) : openInApp(qrUrl, 'QR code'))} style={{ marginTop: 8 }}><Text style={{ color: '#1E56A0', fontWeight: '700' }}>Open to save or print ›</Text></Pressable>
+                  </View>
+                </View>
+                {label('Tracked link for each place you share it', 16)}
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                  {['instagram', 'whatsapp', 'facebook', 'tiktok', 'email', 'flyer'].map(k => (
+                    <Pressable key={k} onPress={() => setShopCampaign(k)} style={{ paddingHorizontal: 12, paddingVertical: 7, borderRadius: 14, borderWidth: 1, borderColor: shopCampaign === k ? '#1E56A0' : '#D8DCE1', backgroundColor: shopCampaign === k ? '#EAF1FB' : '#FFF' }}>
+                      <Text style={{ fontSize: 13, fontWeight: '600', color: shopCampaign === k ? '#1E56A0' : '#4B5563', textTransform: 'capitalize' }}>{k}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10, padding: 10, borderRadius: 12, backgroundColor: '#F2F8FD' }}>
+                  <Text selectable style={{ flex: 1, fontSize: 12.5, color: '#1E3A5F' }} numberOfLines={2}>{campaignLink(shopCampaign)}</Text>
+                  <Pressable onPress={() => { copyText(campaignLink(shopCampaign), 'Link copied').catch(() => {}); }} style={{ paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12, backgroundColor: '#1E56A0' }}><Text style={{ color: '#FFF', fontWeight: '700', fontSize: 13 }}>Copy</Text></Pressable>
+                </View>
+                <Pressable disabled={shopCaptions?.busy} onPress={() => { runCaptions(shopCampaign === 'flyer' || shopCampaign === 'email' ? 'Instagram' : shopCampaign.charAt(0).toUpperCase() + shopCampaign.slice(1)).catch(() => {}); }} style={[styles.resetButton, { marginTop: 12, borderWidth: 1, borderColor: '#5381BB' }]}>
+                  {shopCaptions?.busy ? <ActivityIndicator color="#1E56A0" /> : <Text style={[styles.resetButtonText, { color: '#1E56A0' }]}>Write posts with AI</Text>}
+                </Pressable>
+                {!!shopCaptions?.error && <Text style={{ color: '#B42318', fontSize: 13, marginTop: 8 }}>{shopCaptions.error}</Text>}
+                {(shopCaptions?.captions ?? []).map((c, i) => (
+                  <View key={i} style={{ marginTop: 10, padding: 12, borderRadius: 12, backgroundColor: '#F7F9FC', borderWidth: 1, borderColor: '#EEF2F7' }}>
+                    <Text selectable style={{ fontSize: 13.5, color: '#0B1220', lineHeight: 20 }}>{c}</Text>
+                    <View style={{ flexDirection: 'row', gap: 14, marginTop: 8 }}>
+                      <Pressable onPress={() => { copyText(c, 'Post copied').catch(() => {}); }}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>Copy</Text></Pressable>
+                      <Pressable onPress={() => Share.share({ message: c }).catch(() => {})}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>Share</Text></Pressable>
+                    </View>
+                  </View>
+                ))}
+              </View>
+
+              <Text style={[styles.attentionSubtitle, { marginTop: 12 }]}>Your shop shows products and services from Train AI that are Verified or Need review, with their photos, prices and stock, plus your FAQs and policies. Drafts stay private. Chats are answered only from this information.</Text>
               <Pressable onPress={() => openFeature('operations')} style={{ marginTop: 10 }}><Text style={{ color: '#1E56A0', fontWeight: '700' }}>Add or edit products in Train AI ›</Text></Pressable>
             </>
           )}
@@ -12000,7 +16068,7 @@ function HomeScreenInner(){
       <View style={styles.mainScreen}>
         <StatusBar style="dark" />
         <View style={[styles.knowledgeHeader, headerSafe]}>
-          <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); }} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Pressable onPress={() => { if (exploreBackRef.current) { exploreBackRef.current(); return; } setMainTab('brain'); setScreen('main'); }} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
           <Text style={styles.knowledgeHeaderTitle}>Community</Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
             <Pressable onPress={() => { loadCommunity().catch(() => {}); }} hitSlop={8} accessibilityLabel="Refresh"><Ionicons name="refresh-outline" size={22} color="#0B1220" /></Pressable>
@@ -12243,7 +16311,7 @@ function HomeScreenInner(){
     );
   }
 
-  if (screen === 'terms') return <LegalTermsPage onBack={closeTerms} />;
+  if (screen === 'terms') return <LegalTermsPage doc={legalDoc} onBack={closeTerms} />;
 
   if (screen === 'verifyEmail') {
     return (
@@ -12398,30 +16466,698 @@ function HomeScreenInner(){
     );
   }
 
-  if (screen === 'explore') {
-    const quick = ['Suppliers near me', 'Cheap delivery / logistics', 'Business registration (CAC)', 'Payment & POS options', 'Printing & packaging', 'Ad & marketing tools'];
+  if (screen === 'settings') {
+    const P = settingsPage;
+    const ai = ownerPrefs?.ai ?? AI_DEFAULTS;
+    const nt = ownerPrefs?.notifications ?? NOTIFY_DEFAULTS;
+    const isOwner = workspace?.role !== 'staff';
+    const TITLES: Record<SettingsPage, string> = { personal: 'Personal information', business: 'Business info', preferences: 'App preferences', notifications: 'Notifications', aiPerms: 'AI permissions', aiInteraction: 'AI business interaction', quietHours: 'Quiet hours & safety', apps: 'Connected Apps', team: 'Team & Access', security: 'Security & Privacy', accountSecurity: 'Account security', password: 'Change password', twoFactor: 'Two-Factor Authentication', loginActivity: 'Login Activity', dataPrivacy: 'Data & Privacy', transparency: 'AI transparency guide' };
+    const label = (t: string) => <Text key={`l-${t}`} style={{ fontSize: 15, color: '#6B7A8C', marginTop: 18, marginBottom: 8 }}>{t}</Text>;
+    const card = { borderRadius: 14, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#EEF1F4', paddingHorizontal: 16, paddingVertical: 13, marginBottom: 10, flexDirection: 'row' as const, alignItems: 'center' as const, gap: 14 };
+    const icon = (name: string, color = '#0B1220', lib?: 'mci') => lib === 'mci' ? <MaterialCommunityIcons name={name as any} size={21} color={color} /> : <Ionicons name={name as any} size={21} color={color} />;
+    const row = (o: { k?: string; icon: string; lib?: 'mci'; title: string; sub?: string; onPress?: () => void; right?: React.ReactNode; danger?: boolean; disabled?: boolean }) => (
+      <Pressable key={o.k || o.title} onPress={o.onPress} disabled={!o.onPress || o.disabled} accessibilityRole="button" style={[card, o.danger && { backgroundColor: '#FDECEC', borderColor: '#FADADA' }, o.disabled && { opacity: 0.55 }]}>
+        {icon(o.icon, o.danger ? '#E5484D' : '#0B1220', o.lib)}
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={{ fontSize: 15.5, color: o.danger ? '#E5484D' : '#0B1220', fontWeight: '500' }}>{o.title}</Text>
+          {!!o.sub && <Text style={{ fontSize: 13, color: '#6B7A8C', marginTop: 3 }}>{o.sub}</Text>}
+        </View>
+        {o.right ?? (o.onPress ? <Ionicons name="chevron-forward" size={18} color="#6B7A8C" /> : null)}
+      </Pressable>
+    );
+    const sw = (value: boolean, onChange: (v: boolean) => void, a11y: string) => <Switch value={value} onValueChange={onChange} accessibilityLabel={a11y} trackColor={{ true: '#1E56A0', false: '#C9D2DC' }} thumbColor="#FFFFFF" />;
+    const toggle = (o: { icon: string; lib?: 'mci'; title: string; sub: string; value: boolean; onChange: (v: boolean) => void }) => row({ icon: o.icon, lib: o.lib, title: o.title, sub: o.sub, right: sw(o.value, o.onChange, o.title) });
+    const hero = (o: { icon: React.ReactNode; title: string; sub: string; subColor?: string }) => (
+      <View style={{ borderRadius: 16, backgroundColor: '#0F2942', padding: 18, flexDirection: 'row', alignItems: 'center', gap: 16, marginTop: 4 }}>
+        {o.icon}
+        <View style={{ flex: 1 }}>
+          <Text style={{ color: '#FFFFFF', fontSize: 17, fontWeight: '500' }}>{o.title}</Text>
+          <Text style={{ color: o.subColor || '#7F93AD', fontSize: 14, marginTop: 6 }}>{o.sub}</Text>
+        </View>
+      </View>
+    );
+    const field = (lbl: string, value: string, onChange: (t: string) => void, extra: any = {}) => (
+      <View key={lbl} style={{ marginBottom: 12 }}>
+        <Text style={styles.detailFieldLabel}>{lbl}</Text>
+        <TextInput value={value} onChangeText={onChange} placeholderTextColor="#A5AFBB" style={[styles.editInput, { backgroundColor: '#FFFFFF', borderColor: '#D5DEE8' }]} {...extra} />
+      </View>
+    );
+    const primary = (text: string, onPress: () => void, busy = false, disabled = false) => (
+      <Pressable onPress={onPress} disabled={busy || disabled} accessibilityRole="button" style={{ marginTop: 14, height: 50, borderRadius: 25, backgroundColor: disabled ? '#8FB0D6' : '#1E56A0', alignItems: 'center', justifyContent: 'center' }}>
+        {busy ? <ActivityIndicator color="#FFFFFF" /> : <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600' }}>{text}</Text>}
+      </Pressable>
+    );
+    const tips = (
+      <Pressable onPress={() => openSettings('twoFactor')} style={{ borderRadius: 14, backgroundColor: '#E6F4ED', padding: 16, flexDirection: 'row', alignItems: 'center', gap: 14, marginTop: 6 }}>
+        <Ionicons name="bulb-outline" size={26} color="#1E9E6D" />
+        <View style={{ flex: 1 }}><Text style={{ fontSize: 15, fontWeight: '600', color: '#0B1220' }}>Security tips</Text><Text style={{ fontSize: 13, color: '#4B5B6E', marginTop: 3 }}>Keep your account safe with two-factor sign-in and a strong password you don't use anywhere else.</Text></View>
+        <Ionicons name="chevron-forward" size={18} color="#6B7A8C" />
+      </Pressable>
+    );
+    const ago = (iso: string) => { const d = new Date(iso); const today = localIsoDate(); const ds = localIsoDate(d); const t = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); return ds === today ? `Today, ${t}` : `${d.toLocaleDateString([], { day: 'numeric', month: 'short', year: d.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' })}, ${t}`; };
+    let body: React.ReactNode = null;
+    switch (P) {
+      case 'personal':
+        body = (
+          <>
+            <View style={{ alignItems: 'center', marginVertical: 12 }}>
+              <Pressable onPress={pickAvatar} accessibilityLabel="Change profile photo">
+                {avatarUrl ? <ExpoImage source={{ uri: avatarUrl }} style={{ width: 96, height: 96, borderRadius: 48 }} contentFit="cover" />
+                  : <View style={{ width: 96, height: 96, borderRadius: 48, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#FFF', fontSize: 34, fontWeight: '700' }}>{(fullName || userEmail || '?').charAt(0).toUpperCase()}</Text></View>}
+                <View style={{ position: 'absolute', right: -2, bottom: -2, width: 34, height: 34, borderRadius: 17, backgroundColor: '#0F2942', alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#F4F6F8' }}>
+                  {avatarBusy ? <ActivityIndicator size="small" color="#FFF" /> : <Ionicons name="camera-outline" size={17} color="#FFF" />}
+                </View>
+              </Pressable>
+            </View>
+            {field('Full name', personalName, setPersonalName, { maxLength: 80, autoCapitalize: 'words' })}
+            <View style={{ marginBottom: 12 }}>
+              <Text style={styles.detailFieldLabel}>Email</Text>
+              <Text style={[styles.editInput, { backgroundColor: '#EEF1F4', borderColor: '#E1E6EC', paddingTop: 13, color: '#4B5B6E' }]} numberOfLines={1}>{userEmail}</Text>
+            </View>
+            {field('Name customers see', businessName, setBusinessName, { maxLength: 120, placeholder: 'Used when Nexora replies to customers', onEndEditing: async () => { if (userId) await supabase.from('profiles').update({ business_name: businessName.trim() }).eq('id', userId); } })}
+            {primary('Save', () => { savePersonal(); if (userId) supabase.from('profiles').update({ business_name: businessName.trim() }).eq('id', userId).then(() => {}); })}
+          </>
+        );
+        break;
+      case 'business':
+        body = !isOwner ? (
+          <Text style={[styles.attentionSubtitle, { marginTop: 10 }]}>Only {workspace?.owner_name || 'the owner'} can change the business details.</Text>
+        ) : !bizEdit ? <ActivityIndicator color="#1E56A0" style={{ marginTop: 30 }} /> : (
+          <>
+            <Text style={[styles.attentionSubtitle, { marginBottom: 14 }]}>Nexora uses these to understand your market, find opportunities and reply to customers.</Text>
+            {field('Business name', bizEdit.name, t => setBizEdit(f => f && { ...f, name: t }), { maxLength: 120 })}
+            {field('Industry', bizEdit.industry, t => setBizEdit(f => f && { ...f, industry: t }), { maxLength: 80, placeholder: 'e.g. Phone accessories, Fashion, Food' })}
+            {field('Country', bizEdit.country, t => setBizEdit(f => f && { ...f, country: t }), { maxLength: 60, placeholder: 'e.g. United States' })}
+            {primary('Save', saveBizForm, bizEdit.saving)}
+            {label('More about your business')}
+            {row({ icon: 'school-outline', title: 'Train AI', sub: 'Products, services, policies and FAQs', onPress: () => openFeature('operations') })}
+            {row({ icon: 'qr-code-outline', title: 'AI shop link', sub: 'Your public page where customers chat with Nexora', onPress: () => { openStorefront().catch(() => {}); } })}
+          </>
+        );
+        break;
+      case 'preferences':
+        body = (
+          <>
+            {label('Appearance')}
+            {row({ icon: 'contrast-outline', title: 'Theme', sub: 'Light', right: <Text style={{ color: '#8A97A6', fontSize: 13 }}>Dark mode soon</Text> })}
+            {row({ icon: 'text-outline', title: 'Text size', sub: "Nexora follows your phone's text size setting" })}
+            {label('Language & region')}
+            {row({ icon: 'language-outline', title: 'Language', sub: 'English', right: <Text style={{ color: '#8A97A6', fontSize: 13 }}>More soon</Text> })}
+            {row({ icon: 'time-outline', title: 'Time zone', sub: (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone.replace(/_/g, ' '); } catch { return 'From your phone'; } })() })}
+            {label('Nexora')}
+            {row({ icon: 'bulb-outline', title: 'What Nexora learned', sub: 'Confirm facts picked up from your chats', onPress: openLearned })}
+            {row({ icon: 'git-branch-outline', title: 'What Nexora decides for you', sub: 'Decisions you taught Nexora', onPress: () => openRules(backToSettings('preferences')) })}
+          </>
+        );
+        break;
+      case 'notifications':
+        body = (
+          <>
+            {hero({ icon: <Ionicons name="notifications" size={28} color="#FFFFFF" />, title: 'You choose what Nexora tells you', sub: 'Saved to your account on every device' })}
+            {!IS_WEB && row({ icon: pushStatus === 'on' ? 'phone-portrait' : 'phone-portrait-outline', title: 'Notifications on this phone',
+              sub: pushStatus === 'on' ? 'On' : pushStatus === 'unsupported' ? 'Available in the installed Nexora app (not in Expo Go)' : pushStatus === 'denied' ? 'Blocked in your phone settings. Tap to open settings.' : 'Off. Tap to turn on.',
+              onPress: pushStatus === 'on' || pushStatus === 'unsupported' ? undefined : () => { if (pushStatus === 'denied') Linking.openSettings().catch(() => {}); else if (userId) registerPush(userId).catch(() => {}); } })}
+            {label('Communication')}
+            {toggle({ icon: 'chatbubble-ellipses-outline', title: 'New messages', sub: 'Customer chats Nexora needs you for', value: nt.new_messages, onChange: v => { saveOwnerPrefs({ notifications: { new_messages: v } }); } })}
+            {toggle({ icon: 'person-add-outline', title: 'Interested buyer alerts', sub: 'New people interested in what you sell', value: nt.leads, onChange: v => { saveOwnerPrefs({ notifications: { leads: v } }); } })}
+            {toggle({ icon: 'cube-outline', title: 'Order updates', sub: 'New, unpaid and late orders', value: nt.orders, onChange: v => { saveOwnerPrefs({ notifications: { orders: v } }); } })}
+            {toggle({ icon: 'lock-closed-outline', title: 'System notifications', sub: 'Things that need your approval', value: nt.system, onChange: v => { saveOwnerPrefs({ notifications: { system: v } }); } })}
+            {label('Marketing')}
+            {toggle({ icon: 'stats-chart-outline', title: 'Campaign results', sub: 'Post performance & engagement', value: nt.campaign_results, onChange: v => { saveOwnerPrefs({ notifications: { campaign_results: v } }); } })}
+            {toggle({ icon: 'sparkles-outline', title: 'Content suggestions', sub: 'AI recommended content', value: nt.content_suggestions, onChange: v => { saveOwnerPrefs({ notifications: { content_suggestions: v } }); } })}
+            {label('Security')}
+            {toggle({ icon: 'finger-print-outline', title: 'Login alerts', sub: 'New devices or locations', value: nt.login_alerts, onChange: v => { saveOwnerPrefs({ notifications: { login_alerts: v } }); } })}
+            {row({ icon: 'call-outline', title: 'When Nexora calls you', sub: 'Urgent customer issues by phone or email', onPress: () => openOwnerAlerts(backToSettings('notifications')) })}
+          </>
+        );
+        break;
+      case 'aiPerms':
+        body = (
+          <>
+            {hero({ icon: <Ionicons name="sparkles" size={28} color="#5EC8F2" />, title: 'AI actions follow your rules', sub: 'You are always in control' })}
+            {ai.paused && row({ icon: 'pause-circle', title: 'Nexora is paused', sub: 'Tap to resume replies and actions', danger: true, onPress: () => setEmergencyPause(false) })}
+            {label('Permission control')}
+            {toggle({ icon: 'shield-checkmark-outline', title: 'Autopilot mode', sub: 'Nexora replies to customers while you are away', value: awayMode, onChange: v => { if (v && ai.paused) { flash('Resume Nexora first (it is paused).'); return; } setAway(v); } })}
+            {toggle({ icon: 'head-lightbulb-outline', lib: 'mci', title: 'Access business knowledge', sub: 'Quote your products, prices and policies', value: ai.knowledge, onChange: v => { saveOwnerPrefs({ ai: { knowledge: v } }); } })}
+            {toggle({ icon: 'alert-circle-outline', title: 'Escalate low confidence', sub: 'Route complex issues to you for review', value: ai.escalate_low_confidence, onChange: v => { saveOwnerPrefs({ ai: { escalate_low_confidence: v } }); } })}
+            {row({ icon: 'shield-half-outline', title: 'AI business interaction', sub: ai.interaction === 'suggest' ? 'Suggest: ideas and drafts only' : ai.interaction === 'ask' ? 'Ask you first' : 'Act within your rules', onPress: () => openSettings('aiInteraction') })}
+            {row({ icon: 'time-outline', title: 'Quiet hours', sub: ai.quiet?.on ? `On · ${fmtClock(ai.quiet.start)} – ${fmtClock(ai.quiet.end)}` : 'Pause non-urgent activity during this time', onPress: () => openSettings('quietHours') })}
+            {label('Business operations')}
+            {toggle({ icon: 'account-group-outline', lib: 'mci', title: 'Process customer orders', sub: 'Let Nexora look up and update customers on their orders', value: ai.process_orders, onChange: v => { saveOwnerPrefs({ ai: { process_orders: v } }); } })}
+            {toggle({ icon: 'cube-outline', title: 'Manage inventory', sub: 'Confirm stock and availability from your knowledge', value: ai.manage_inventory, onChange: v => { saveOwnerPrefs({ ai: { manage_inventory: v } }); } })}
+            {toggle({ icon: 'receipt-outline', title: 'Handle refunds', sub: 'Within your refund policy and rules', value: ai.handle_refunds, onChange: v => { saveOwnerPrefs({ ai: { handle_refunds: v } }); } })}
+            {row({ icon: 'git-branch-outline', title: 'What Nexora decides for you', sub: 'Your rules for refunds, discounts and more', onPress: () => openRules(backToSettings('aiPerms')) })}
+            {row({ icon: 'link-outline', title: 'Per-channel permissions', sub: 'WhatsApp, Instagram and Facebook', onPress: openConnectChannels })}
+          </>
+        );
+        break;
+      case 'aiInteraction': {
+        const opts = [
+          { k: 'suggest', icon: 'bulb-outline', title: 'Suggest', sub: 'Ideas and drafts only', body: 'Nexora drafts replies and next steps. You approve before anything is sent.' },
+          { k: 'rules', icon: 'hardware-chip-outline', title: 'Act within your rules', sub: 'Routine tasks you have enabled', body: 'Nexora replies and acts on routine requests, and follows your rules and permissions for the rest.' },
+          { k: 'ask', icon: 'help-circle-outline', title: 'Ask you first', sub: 'Refunds, unusual discounts, sensitive and uncertain answers', body: 'Nexora answers simple questions and brings everything else to you.' },
+        ];
+        body = (
+          <>
+            <View style={{ flexDirection: 'row', gap: 14, alignItems: 'center', marginBottom: 14 }}>
+              <View style={{ width: 52, height: 52, borderRadius: 26, backgroundColor: '#E6F6FA', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#1A9CC4', fontWeight: '800' }}>AI</Text></View>
+              <View style={{ flex: 1 }}><Text style={{ fontSize: 15.5, fontWeight: '600', color: '#0B1220' }}>Understand. Recommend. Act</Text><Text style={{ fontSize: 13, color: '#6B7A8C', marginTop: 3 }}>How Nexora interacts with your business and your customers</Text></View>
+            </View>
+            {opts.map(o => {
+              const on = interactionDraft === o.k;
+              return (
+                <Pressable key={o.k} onPress={() => setInteractionDraft(o.k)} accessibilityRole="radio" accessibilityState={{ checked: on }}
+                  style={{ borderRadius: 14, borderWidth: 1, borderColor: on ? '#1E56A0' : '#EEF1F4', backgroundColor: on ? '#C9D8EC' : '#FFFFFF', padding: 16, marginBottom: 10, flexDirection: 'row', gap: 14 }}>
+                  <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: on ? '#5A7FB5' : '#F2F4F7', alignItems: 'center', justifyContent: 'center' }}><Ionicons name={o.icon as any} size={20} color={on ? '#FFFFFF' : '#0B1220'} /></View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 15.5, fontWeight: '600', color: '#0B1220' }}>{o.title}</Text>
+                    <Text style={{ fontSize: 13, color: '#4B5B6E', marginTop: 3 }}>{o.sub}</Text>
+                    <Text style={{ fontSize: 13, color: '#6B7A8C', marginTop: 8, lineHeight: 18 }}>{o.body}</Text>
+                  </View>
+                  <Ionicons name={on ? 'radio-button-on' : 'radio-button-off'} size={22} color={on ? '#1E56A0' : '#8A97A6'} />
+                </Pressable>
+              );
+            })}
+            {primary('Save', async () => { if (await saveOwnerPrefs({ ai: { interaction: interactionDraft } }, 'Saved. Nexora will work this way from now on.')) settingsBack(); }, false, interactionDraft === ai.interaction)}
+          </>
+        );
+        break;
+      }
+      case 'apps': {
+        const chans = [
+          { k: 'whatsapp', name: 'WhatsApp', icon: 'logo-whatsapp', color: '#25D366' },
+          { k: 'instagram', name: 'Instagram', icon: 'logo-instagram', color: '#C13584' },
+          { k: 'facebook', name: 'Facebook', icon: 'logo-facebook', color: '#1877F2' },
+        ];
+        const n = chans.filter(c => connectedChannels[c.k]).length;
+        const connectBtn = (onPress: () => void, txt = 'Connect', muted = false) => (
+          <Pressable onPress={onPress} style={{ paddingHorizontal: 16, height: 34, borderRadius: 17, backgroundColor: muted ? '#F2F4F7' : '#E3ECF7', justifyContent: 'center' }}><Text style={{ color: muted ? '#8A97A6' : '#1E56A0', fontWeight: '600', fontSize: 13.5 }}>{txt}</Text></Pressable>
+        );
+        body = (
+          <>
+            <Text style={[styles.attentionSubtitle, { fontSize: 14 }]}>Bring customer messages from your favourite platforms into Nexora.</Text>
+            {label('Messaging & social')}
+            {chans.map(c => row({ k: c.k, icon: c.icon, title: c.name, sub: connectedChannels[c.k] ? '✓ Connected' : 'Respond to messages', onPress: openConnectChannels,
+              right: connectedChannels[c.k] ? <Ionicons name="ellipsis-horizontal" size={20} color="#6B7A8C" /> : connectBtn(openConnectChannels) }))}
+            {label('Other channels')}
+            {row({ icon: 'mail-outline', title: 'Email', sub: 'Handle customer emails', right: connectBtn(() => flash('Email inbox is coming soon.'), 'Soon', true) })}
+            {row({ icon: 'chatbox-ellipses-outline', title: 'SMS', sub: 'Text message conversations', right: connectBtn(() => flash('SMS inbox is coming soon.'), 'Soon', true) })}
+            <View style={{ marginTop: 14, borderRadius: 14, backgroundColor: '#E3ECF7', height: 50, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
+              <Ionicons name="link" size={20} color="#1E56A0" /><Text style={{ color: '#1E56A0', fontSize: 15, fontWeight: '600' }}>{n} of 5 channels connected</Text>
+            </View>
+          </>
+        );
+        break;
+      }
+      case 'team': {
+        const ROLE: Record<string, [string, string]> = { owner: ['Owner', '#E3ECF7'], manager: ['Manager', '#FDEFE0'], staff: ['Staff', '#E3ECF7'] };
+        body = (
+          <>
+            <Text style={[styles.attentionSubtitle, { fontSize: 14 }]}>Manage your team members and what they can do.</Text>
+            {label(`Team members${team ? ` (${team.length})` : ''}`)}
+            {!team && <ActivityIndicator color="#1E56A0" />}
+            {team?.length === 0 && <Text style={styles.attentionSubtitle}>Only you so far.</Text>}
+            {team?.map(m => row({ k: m.member_id, icon: 'person-circle-outline', title: `${m.full_name}${m.is_me ? ' (you)' : ''}`, sub: `${m.role === 'owner' ? 'Full access' : 'Limited access'}${m.email ? ` · ${m.email}` : ''}${m.status !== 'active' ? ` · ${m.status}` : ''}`,
+              onPress: isOwner && m.role !== 'owner' ? () => removeMember(m) : undefined,
+              right: <Text style={{ fontSize: 12.5, color: m.role === 'manager' ? '#C2760C' : '#1E56A0', backgroundColor: (ROLE[m.role] || ROLE.staff)[1], paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12, overflow: 'hidden' }}>{(ROLE[m.role] || [m.role])[0]}</Text> }))}
+            {isOwner && (
+              <Pressable onPress={() => { inviteStaff().then(() => loadTeam()).catch(() => {}); }} disabled={billingBusy === 'invite'} style={{ marginTop: 6, height: 46, borderRadius: 12, borderWidth: 1, borderColor: '#1E56A0', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                {billingBusy === 'invite' ? <ActivityIndicator color="#1E56A0" /> : <><Ionicons name="add" size={20} color="#1E56A0" /><Text style={{ color: '#1E56A0', fontSize: 15, fontWeight: '600' }}>Invite teammates</Text></>}
+              </Pressable>
+            )}
+            {!!staffInviteCode && isOwner && <Text style={[styles.attentionSubtitle, { marginTop: 8, textAlign: 'center' }]}>Latest invite code: <Text style={{ fontWeight: '700', color: '#0B1220' }}>{staffInviteCode}</Text></Text>}
+            {isOwner && !!team?.some(m => m.role !== 'owner') && (
+              <>
+                {label('What each team member can see and do')}
+                {team!.filter(m => m.role !== 'owner').map(m => {
+                  const p = memberPerms[m.member_id] || {};
+                  const sw = (key: keyof MemberPerms, title: string) => (
+                    <View key={key} style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 6 }}>
+                      <Text style={{ flex: 1, fontSize: 14, color: '#0B1220' }}>{title}</Text>
+                      <Switch value={!!p[key]} onValueChange={v => { toggleMemberPerm(m.member_id, key, v).catch(() => {}); }} trackColor={{ true: '#5381BB', false: '#D5DEE8' }} thumbColor="#FFFFFF" />
+                    </View>
+                  );
+                  return (
+                    <View key={`perm-${m.member_id}`} style={[card, { flexDirection: 'column', alignItems: 'stretch' }]}>
+                      <Text style={{ fontSize: 15, fontWeight: '700', color: '#0B1220', marginBottom: 4 }}>{m.full_name}</Text>
+                      {sw('orders_view', 'See orders')}
+                      {sw('orders_manage', 'Update orders (ship, mark paid)')}
+                      {sw('customers_view', 'See customers and leads')}
+                      {sw('customers_manage', 'Update customers, notes and follow-ups')}
+                    </View>
+                  );
+                })}
+                <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}>Every team member can ask Nexora about your products, services and policies. Revenue, billing, refunds, cancelling orders and settings stay with you. Access is checked by the server, not just hidden in the app.</Text>
+              </>
+            )}
+            {!isOwner && row({ icon: 'school-outline', title: 'What you can do', sub: `Ask Nexora about products and policies${Object.values(memberPerms)[0]?.orders_view ? ', see orders' : ''}${Object.values(memberPerms)[0]?.customers_view ? ', see customers' : ''}. Ask the owner for more access.` })}
+            {label(`Team tasks${teamTasks ? ` (${teamTasks.filter(t => t.status === 'open').length} open)` : ''}`)}
+            {teamTasks === null && <Text style={styles.attentionSubtitle}>Run the automation, team and referrals SQL script in Supabase to use team tasks.</Text>}
+            {(teamTasks ?? []).map(t => {
+              const who = team?.find(m => m.user_id === t.assigned_to)?.full_name;
+              const overdue = t.status === 'open' && !!t.due_date && t.due_date < localIsoDate();
+              return (
+                <View key={t.id} style={[card, { gap: 10 }]}>
+                  <Pressable onPress={() => { supabase.from('team_tasks').update({ status: t.status === 'open' ? 'done' : 'open', done_at: t.status === 'open' ? new Date().toISOString() : null }).eq('id', t.id).then(({ error }) => { if (error) flash("Only the owner or the person assigned can change this task."); loadTeamTasks().catch(() => {}); }); }} hitSlop={8} accessibilityLabel={t.status === 'open' ? 'Mark done' : 'Reopen'}>
+                    <Ionicons name={t.status === 'done' ? 'checkmark-circle' : 'ellipse-outline'} size={22} color={t.status === 'done' ? '#1E9E6D' : '#8A97A6'} />
+                  </Pressable>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 15, color: t.status === 'done' ? '#8A97A6' : '#0B1220', textDecorationLine: t.status === 'done' ? 'line-through' : 'none' }}>{t.title}</Text>
+                    <Text style={{ fontSize: 12.5, color: overdue ? '#B42318' : '#6B7A8C', marginTop: 2 }}>{who ? `For ${who}` : 'Not assigned'}{t.due_date ? ` · due ${new Date(`${t.due_date}T12:00:00`).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}${overdue ? ' (overdue)' : ''}` : ''}</Text>
+                  </View>
+                  {(isOwner || t.created_by === userId) && <Pressable onPress={() => { supabase.from('team_tasks').delete().eq('id', t.id).then(() => loadTeamTasks()); }} hitSlop={8} accessibilityLabel="Delete task"><Ionicons name="trash-outline" size={18} color="#B42318" /></Pressable>}
+                </View>
+              );
+            })}
+            {teamTasks !== null && (taskForm ? (
+              <View style={[card, { flexDirection: 'column', alignItems: 'stretch', gap: 8 }]}>
+                <TextInput value={taskForm.title} onChangeText={v => setTaskForm(x => x && { ...x, title: v })} placeholder="What needs doing?" placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={200} />
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                  {[{ id: '', name: 'Anyone' }, ...(team ?? []).map(m => ({ id: m.user_id, name: m.is_me ? 'Me' : m.full_name }))].map(o => (
+                    <Pressable key={o.id || 'none'} onPress={() => setTaskForm(x => x && { ...x, assigned_to: o.id })} style={[styles.filterChip, { marginBottom: 0 }, taskForm.assigned_to === o.id && styles.filterChipActive]}><Text style={[styles.filterChipText, taskForm.assigned_to === o.id && styles.filterChipTextActive]}>{o.name}</Text></Pressable>
+                  ))}
+                </View>
+                <TextInput value={taskForm.due} onChangeText={v => setTaskForm(x => x && { ...x, due: v.replace(/[^\d-]/g, '').slice(0, 10) })} placeholder="Due date (optional) YYYY-MM-DD" placeholderTextColor="#A5AFBB" style={styles.editInput} />
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <Pressable onPress={() => setTaskForm(null)} style={[styles.resetButton, { flex: 1, borderWidth: 1, borderColor: '#D5DEE8' }]}><Text style={[styles.resetButtonText, { color: '#5C6B7A' }]}>Cancel</Text></Pressable>
+                  <Pressable disabled={taskForm.busy || !taskForm.title.trim()} onPress={() => { saveTask().catch(() => {}); }} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1 }]}>{taskForm.busy ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>Add task</Text>}</Pressable>
+                </View>
+              </View>
+            ) : (
+              <Pressable onPress={() => setTaskForm({ title: '', assigned_to: '', due: '', busy: false })} style={{ marginTop: 6, height: 46, borderRadius: 12, borderWidth: 1, borderColor: '#5381BB', borderStyle: 'dashed', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                <Ionicons name="add" size={20} color="#1E56A0" /><Text style={{ color: '#1E56A0', fontSize: 15, fontWeight: '600' }}>Add a task</Text>
+              </Pressable>
+            ))}
+            {isOwner && row({ icon: 'remove-circle-outline', title: 'Remove someone', sub: 'Tap a staff member above to remove them' })}
+          </>
+        );
+        break;
+      }
+      case 'security':
+        body = (
+          <>
+            <View style={{ alignItems: 'center', marginVertical: 8 }}><MaterialCommunityIcons name="shield-lock" size={110} color="#2F6DB5" /></View>
+            {hero({ icon: <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: mfa?.enabled ? '#1E5A47' : '#5A4A1E', alignItems: 'center', justifyContent: 'center' }}><Ionicons name={mfa?.enabled ? 'checkmark' : 'alert'} size={24} color="#FFFFFF" /></View>,
+              title: mfa?.enabled ? 'Your account is protected' : 'Add two-factor sign-in', sub: mfa?.enabled ? 'Two-factor sign-in is on' : 'Your password is the only lock right now' })}
+            <View style={{ height: 14 }} />
+            {row({ icon: 'shield-checkmark-outline', title: 'Account security', sub: 'Password, two-factor and login activity', onPress: () => openSettings('accountSecurity') })}
+            {row({ icon: 'options-outline', title: 'Active sessions', sub: 'Sign out every other device', onPress: signOutOthers })}
+            {row({ icon: 'lock-closed-outline', title: 'Data & Privacy', sub: 'Export, retention and deletion', onPress: () => openSettings('dataPrivacy') })}
+            {row({ icon: 'head-cog-outline', lib: 'mci', title: 'AI permissions', sub: 'Control what Nexora can do', onPress: () => openSettings('aiPerms') })}
+            {row({ icon: 'head-lightbulb-outline', lib: 'mci', title: 'AI transparency guide', sub: 'Learn how Nexora makes decisions', onPress: () => openSettings('transparency') })}
+            {row({ icon: ai.paused ? 'play-circle' : 'pause-circle', title: ai.paused ? 'Resume Nexora' : 'Emergency AI pause', sub: ai.paused ? 'Nexora is paused: no replies or actions' : 'Social platforms and external apps', danger: true, onPress: () => setEmergencyPause(!ai.paused),
+              right: <View style={{ borderWidth: 1, borderColor: '#E5484D', borderRadius: 12, paddingHorizontal: 10, paddingVertical: 3, backgroundColor: '#FFFFFF' }}><Text style={{ color: '#E5484D', fontSize: 12, fontWeight: '600' }}>{ai.paused ? 'Resume' : 'Pause AI'}</Text></View> })}
+            {row({ icon: 'trash-outline', title: 'Delete account', sub: 'Permanently remove your account and data', danger: true, onPress: deleteMyAccount })}
+          </>
+        );
+        break;
+      case 'accountSecurity':
+        body = (
+          <>
+            {hero({ icon: <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: '#1E4F5A', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="shield-checkmark-outline" size={28} color="#FFFFFF" /></View>,
+              title: 'Account security', sub: mfa?.enabled ? 'Strong · password and two-factor sign-in' : 'Good · turn on two-factor to make it strong', subColor: mfa?.enabled ? '#4ADE80' : '#FFD27A' })}
+            <View style={{ height: 14 }} />
+            {row({ icon: 'key-outline', title: 'Password', sub: 'Change your password', onPress: () => openSettings('password') })}
+            {row({ icon: 'options-outline', title: 'Two-Factor Authentication', sub: mfa?.loading ? 'Checking…' : mfa?.enabled ? 'Enabled' : 'Off', onPress: () => openSettings('twoFactor') })}
+            {row({ icon: 'shield-outline', title: 'Login activity', sub: 'View recent sign-ins', onPress: () => openSettings('loginActivity') })}
+            {!IS_WEB && toggle({ icon: 'finger-print-outline', title: 'Biometric login', sub: 'Use Face ID or fingerprint to open Nexora on this phone', value: bioEnabled, onChange: v => { toggleBio(v); } })}
+            {tips}
+          </>
+        );
+        break;
+      case 'password':
+        body = (
+          <>
+            <Text style={[styles.attentionSubtitle, { marginBottom: 14, fontSize: 14 }]}>Use at least 8 characters. A long phrase you don't use anywhere else is best.</Text>
+            {field('New password', pwForm.pw, t => setPwForm(f => ({ ...f, pw: t, error: '' })), { secureTextEntry: true, autoCapitalize: 'none', autoComplete: 'new-password' })}
+            {field('Confirm new password', pwForm.pw2, t => setPwForm(f => ({ ...f, pw2: t, error: '' })), { secureTextEntry: true, autoCapitalize: 'none', autoComplete: 'new-password', onSubmitEditing: changePassword })}
+            {!!pwForm.error && <Text style={{ color: '#E5484D', fontSize: 13 }}>{pwForm.error}</Text>}
+            {primary('Change password', changePassword, pwForm.saving, !pwForm.pw || !pwForm.pw2)}
+          </>
+        );
+        break;
+      case 'twoFactor': {
+        const qrXml = mfaEnroll?.qr ? decodeURIComponent(mfaEnroll.qr.replace(/^data:image\/svg\+xml;(utf-?8|charset=utf-?8)?,?/i, '')) : '';
+        body = (
+          <>
+            <View style={{ alignItems: 'center', marginVertical: 10 }}>
+              <View style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: '#0F2942', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="shield-checkmark-outline" size={38} color="#FFFFFF" /></View>
+              <Text style={{ fontSize: 17, fontWeight: '600', color: '#0B1220', marginTop: 12 }}>Two-Factor Authentication</Text>
+              <Text style={{ fontSize: 14, color: '#6B7A8C', marginTop: 6, textAlign: 'center' }}>Add an extra layer of security to your account.</Text>
+            </View>
+            {row({ icon: 'lock-closed-outline', title: 'Enable 2FA', sub: mfa?.enabled ? 'On: sign-in needs a code from your app' : 'Off', right: mfa?.loading ? <ActivityIndicator color="#1E56A0" /> : sw(!!mfa?.enabled || !!mfaEnroll, v => { if (v) { if (!mfa?.enabled && !mfaEnroll) startMfaEnroll(); } else if (mfaEnroll) setMfaEnroll(null); else disableMfa(); }, 'Enable two-factor') })}
+            {!mfa?.enabled && !mfaEnroll && (
+              <>
+                {label('Choose method')}
+                {row({ icon: 'radio-button-on', title: 'Authentication app (recommended)', sub: 'Google Authenticator, Microsoft Authenticator or Authy', onPress: startMfaEnroll })}
+                {row({ icon: 'radio-button-off', title: 'SMS code', sub: 'Not available yet', disabled: true })}
+                {row({ icon: 'radio-button-off', title: 'Email code', sub: 'Not available yet', disabled: true })}
+                {primary('Continue', startMfaEnroll)}
+              </>
+            )}
+            {!!mfaEnroll && (
+              <View style={[card, { flexDirection: 'column', alignItems: 'stretch', paddingVertical: 18 }]}>
+                <Text style={{ fontSize: 15, fontWeight: '600', color: '#0B1220' }}>1. Add Nexora to your authenticator app</Text>
+                {!!qrXml && <View style={{ alignSelf: 'center', marginVertical: 14, padding: 8, backgroundColor: '#FFFFFF' }}><SvgXml xml={qrXml} width={180} height={180} /></View>}
+                {!IS_WEB && !!mfaEnroll.uri && <Pressable onPress={() => Linking.openURL(mfaEnroll.uri).catch(() => flash('Install an authenticator app first.'))} style={{ alignSelf: 'center', padding: 6 }}><Text style={{ color: '#1E56A0', fontWeight: '600' }}>Open my authenticator app</Text></Pressable>}
+                <Text style={{ fontSize: 13, color: '#6B7A8C', marginTop: 6 }}>Or type this key:</Text>
+                <Text selectable style={{ fontSize: 14, color: '#0B1220', fontWeight: '600', letterSpacing: 1, marginTop: 4 }}>{mfaEnroll.secret}</Text>
+                <Text style={{ fontSize: 15, fontWeight: '600', color: '#0B1220', marginTop: 18 }}>2. Enter the 6-digit code</Text>
+                <TextInput value={mfaEnroll.code} onChangeText={t => setMfaEnroll(m => m && { ...m, code: t.replace(/\D/g, '').slice(0, 6), error: '' })} keyboardType="number-pad" maxLength={6} placeholder="123456" placeholderTextColor="#A5AFBB" onSubmitEditing={verifyMfaEnroll}
+                  style={[styles.editInput, { fontSize: 22, letterSpacing: 6, textAlign: 'center', borderColor: '#D5DEE8' }]} />
+                {!!mfaEnroll.error && <Text style={{ color: '#E5484D', fontSize: 13, marginTop: 6 }}>{mfaEnroll.error}</Text>}
+                {primary('Turn on two-factor', verifyMfaEnroll, mfaEnroll.busy, mfaEnroll.code.length !== 6)}
+              </View>
+            )}
+            {mfa?.enabled && <Text style={[styles.attentionSubtitle, { marginTop: 6 }]}>Each time you sign in on a new device, Nexora asks for the code from your authenticator app.</Text>}
+          </>
+        );
+        break;
+      }
+      case 'loginActivity': {
+        const mine = deviceKeyRef.current;
+        let currentShown = false;
+        body = (
+          <>
+            <View style={{ borderRadius: 16, backgroundColor: '#E6F6FA', padding: 16, flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+              <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: '#0F2942', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="shield-checkmark-outline" size={22} color="#FFFFFF" /></View>
+              <View style={{ flex: 1 }}><Text style={{ fontSize: 15.5, fontWeight: '600', color: '#0B1220' }}>Recent sign-ins</Text><Text style={{ fontSize: 13, color: '#4B5B6E', marginTop: 3 }}>Devices that have opened your account. Don't recognise one? Change your password and sign out other devices.</Text></View>
+            </View>
+            <View style={{ height: 12 }} />
+            {!logins && <ActivityIndicator color="#1E56A0" />}
+            {logins?.length === 0 && <Text style={styles.attentionSubtitle}>No sign-ins recorded yet.</Text>}
+            {logins?.map(l => {
+              const cur = !currentShown && l.device_key === mine;
+              if (cur) currentShown = true;
+              return row({ k: l.id, icon: 'location-outline', title: l.place || 'Unknown place', sub: `${l.device}  •  ${l.platform}\n${ago(l.created_at)}`,
+                right: cur ? <Text style={{ fontSize: 12.5, color: '#1E9E6D', borderWidth: 1, borderColor: '#1E9E6D', paddingHorizontal: 10, paddingVertical: 3, borderRadius: 12 }}>Current</Text> : <View /> });
+            })}
+            {!!logins?.length && (
+              <Pressable onPress={signOutOthers} style={{ alignSelf: 'center', padding: 10 }}><Text style={{ color: '#E5484D', fontWeight: '600' }}>Sign out all other devices</Text></Pressable>
+            )}
+          </>
+        );
+        break;
+      }
+      case 'dataPrivacy':
+        body = (
+          <>
+            <Text style={[styles.attentionSubtitle, { fontSize: 14, marginBottom: 12 }]}>We follow the Nigeria Data Protection Act (NDPA), GDPR and CCPA principles to keep your information safe.</Text>
+            {row({ icon: 'download-outline', title: 'Data export', sub: exportBusy ? 'Preparing your file…' : 'Download everything Nexora holds about your business', onPress: exportMyData, right: exportBusy ? <ActivityIndicator color="#1E56A0" /> : undefined })}
+            {row({ icon: 'document-text-outline', title: 'Data retention', sub: 'Your data stays until you delete it. Online research Nexora saves expires after 7 days. Deleting your account removes everything.' })}
+            {row({ icon: 'person-remove-outline', title: 'Delete account', sub: 'Permanently remove your data', danger: true, onPress: deleteMyAccount })}
+            {row({ icon: 'shield-checkmark-outline', title: 'Privacy policy', sub: 'Read our full policy', onPress: openPrivacy })}
+            {row({ icon: 'reader-outline', title: 'Terms of use', onPress: openTerms })}
+          </>
+        );
+        break;
+      case 'quietHours': {
+        const q: QuietPrefs = quietDraft ?? { ...QUIET_DEFAULTS, ...(ai.quiet ?? {}) };
+        const set = (patch: Partial<QuietPrefs>) => setQuietDraft({ ...q, ...patch });
+        const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        const TIMES = Array.from({ length: 48 }, (_, i) => `${String(Math.floor(i / 2)).padStart(2, '0')}:${i % 2 ? '30' : '00'}`);
+        const timePill = (which: 'start' | 'end') => (
+          <Pressable key={which} onPress={() => setQuietPick(quietPick === which ? null : which)} disabled={!q.on} accessibilityRole="button" accessibilityLabel={which === 'start' ? 'Quiet hours start' : 'Quiet hours end'}
+            style={{ flex: 1, height: 40, borderRadius: 10, borderWidth: 1, borderColor: quietPick === which ? '#1E56A0' : '#D5DEE8', backgroundColor: '#FFFFFF', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, opacity: q.on ? 1 : 0.5 }}>
+            <Text style={{ fontSize: 14, color: '#0B1220' }}>{fmtClock(q[which])}</Text>
+            <Ionicons name="time-outline" size={17} color="#0B1220" />
+          </Pressable>
+        );
+        const behaviour: [keyof QuietPrefs, string, string, string][] = [
+          ['pause_replies', 'chatbox-ellipses-outline', 'Pause customers replies', 'NEXORA won’t send new replies to customers. It drafts them for you to send.'],
+          ['urgent_alerts', 'alarm-outline', 'Urgent orders can still alert me', 'Critical orders and stock issues will notify you'],
+          ['allow_posts', 'calendar-outline', 'Allow scheduled posts', 'Scheduled content will still be published'],
+          ['escalate_urgent', 'notifications-outline', 'Escalate urgent issues to me', 'Complaints and major issues will notify you'],
+        ];
+        const save = async () => {
+          // Changing when Nexora answers customers is protected by the phone's fingerprint / face unlock when it is set up.
+          if (!IS_WEB && bioEnabled && (await bioAvailable())) {
+            const r = await LocalAuthentication.authenticateAsync({ promptMessage: 'Confirm it’s you to save quiet hours' }).catch(() => null);
+            if (!r?.success) return;
+          }
+          setQuietSaving(true);
+          const ok = await saveOwnerPrefs({ ai: { quiet: { ...q, tz_offset_min: -new Date().getTimezoneOffset() } } }, q.on ? `Quiet hours saved: ${fmtClock(q.start)} – ${fmtClock(q.end)}` : 'Quiet hours are off');
+          setQuietSaving(false);
+          if (ok) { setQuietDraft(null); settingsBack(); }
+        };
+        body = (
+          <>
+            <Text style={[styles.attentionSubtitle, { fontSize: 14, marginBottom: 12 }]}>Set when NEXORA should rest and how to handle messages and important events.</Text>
+            <View style={{ borderRadius: 14, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#EEF1F4', padding: 16, marginBottom: 6 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+                <MaterialCommunityIcons name="clock-time-four-outline" size={22} color="#0B1220" />
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={{ fontSize: 15.5, color: '#0B1220', fontWeight: '500' }}>Quiet hours</Text>
+                  <Text style={{ fontSize: 13, color: '#6B7A8C', marginTop: 3 }}>Pause non urgent activity during this time</Text>
+                </View>
+                {sw(q.on, v => { set({ on: v }); if (!v) setQuietPick(null); }, 'Quiet hours')}
+              </View>
+              <View style={{ flexDirection: 'row', gap: 12, marginTop: 14 }}>{timePill('start')}{timePill('end')}</View>
+              {!!quietPick && q.on && (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 10 }} contentContainerStyle={{ gap: 6 }}>
+                  {TIMES.map(t => {
+                    const on = q[quietPick] === t;
+                    return (
+                      <Pressable key={t} onPress={() => { set({ [quietPick]: t } as any); setQuietPick(null); }} style={{ paddingHorizontal: 12, height: 32, borderRadius: 8, justifyContent: 'center', backgroundColor: on ? '#0F2942' : '#F2F4F7' }}>
+                        <Text style={{ fontSize: 13, color: on ? '#FFFFFF' : '#0B1220' }}>{fmtClock(t)}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              )}
+              <Text style={{ fontSize: 15, color: '#0B1220', marginTop: 16 }}>Days</Text>
+              <Text style={{ fontSize: 13, color: '#6B7A8C', marginTop: 2 }}>Select days for the quiet hours</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10, opacity: q.on ? 1 : 0.5 }}>
+                {DAYS.map((d, i) => {
+                  const on = q.days.includes(i);
+                  return (
+                    <Pressable key={d} disabled={!q.on} onPress={() => set({ days: on ? q.days.filter(x => x !== i) : [...q.days, i].sort() })} accessibilityRole="checkbox" accessibilityState={{ checked: on }} accessibilityLabel={d}
+                      style={{ minWidth: 40, paddingHorizontal: 8, height: 30, borderRadius: 6, alignItems: 'center', justifyContent: 'center', backgroundColor: on ? '#0F2942' : '#FFFFFF', borderWidth: 1, borderColor: on ? '#0F2942' : '#C9D2DC' }}>
+                      <Text style={{ fontSize: 13, color: on ? '#FFFFFF' : '#0B1220' }}>{d}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+            {label('AI behaviour during resting hour')}
+            {behaviour.map(([k, ic, t, sub]) => toggle({ icon: ic, title: t, sub, value: q[k] as boolean, onChange: v => set({ [k]: v } as any) }))}
+            {primary('Save settings', () => { save().catch(() => setQuietSaving(false)); }, quietSaving, !quietDraft || (q.on && q.days.length === 0) || (q.on && q.start === q.end))}
+            {q.on && q.days.length === 0 && <Text style={{ color: '#E5484D', fontSize: 13, marginTop: 8, textAlign: 'center' }}>Pick at least one day.</Text>}
+          </>
+        );
+        break;
+      }
+      case 'transparency': {
+        const items: [string, string, string][] = [
+          ['library-outline', 'It answers from your knowledge', 'Replies use the products, prices, policies and documents you added in Train AI. Each answer in Brain shows the sources it used.'],
+          ['git-branch-outline', 'It follows your rules', 'Refunds, discounts and special requests are only handled when one of your rules allows it, and only within its limits.'],
+          ['hand-left-outline', 'It asks you when unsure', 'Complaints, legal or safety issues and anything it can’t answer confidently go to "Needs your decision", and Nexora can call you.'],
+          ['globe-outline', 'It labels what comes from the web', 'Market research and trends come from live web searches and always link to their sources.'],
+          ['eye-off-outline', 'It never invents facts', 'Nexora is told never to make up prices, stock or policies. If something is missing it says so.'],
+          ['pause-circle-outline', 'You can stop it at any time', 'Turn off Autopilot, change permissions, or use Emergency AI pause in Security & Privacy.'],
+        ];
+        body = <>{items.map(([ic, t, s]) => row({ k: t, icon: ic, title: t, sub: s }))}</>;
+        break;
+      }
+    }
+    return (
+      <View style={[styles.mainScreen, { backgroundColor: '#F4F6F8' }]}>
+        <StatusBar style="dark" />
+        <View style={[styles.knowledgeHeader, headerSafe, { backgroundColor: '#F4F6F8' }]}>
+          <Pressable onPress={settingsBack} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={[styles.knowledgeHeaderTitle, { flex: 1, marginLeft: 16, fontSize: 19 }]} numberOfLines={1}>{TITLES[P]}</Text>
+        </View>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 48, width: '100%', maxWidth: 720, alignSelf: 'center' }} keyboardShouldPersistTaps="handled">
+          {ownerPrefs?.missing && ['aiPerms', 'aiInteraction', 'notifications'].includes(P) && (
+            <Text style={{ fontSize: 12.5, color: '#C2760C', backgroundColor: '#FFF4E5', padding: 10, borderRadius: 10, marginBottom: 10 }}>These settings will save once the latest Nexora database update is installed.</Text>
+          )}
+          {body}
+        </ScrollView>
+      </View>
+    );
+  }
+
+  if (screen === 'opportunities') {
+    const allItems = market.all?.items ?? [];
+    const cur = market[marketCat];
+    const list = cur?.items?.length ? cur.items : marketCat === 'all' ? allItems : allItems.filter(o => o.category === marketCat);
+    const loading = !!cur?.loading;
+    const count = (k: MarketCat) => k === 'all' ? allItems.length : (market[k]?.items.length ?? allItems.filter(o => o.category === k).length);
+    const tabs: { k: MarketCat; label: string }[] = [{ k: 'all', label: 'All' }, ...MARKET_CATS.map(c => ({ k: c.k, label: c.label }))];
     return (
       <View style={styles.mainScreen}>
         <StatusBar style="dark" />
         <View style={[styles.knowledgeHeader, headerSafe]}>
-          <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); }} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
-          <Text style={styles.knowledgeHeaderTitle}>Find online</Text>
+          <Pressable onPress={() => marketBackRef.current()} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={[styles.knowledgeHeaderTitle, { flex: 1, marginLeft: 16, fontSize: 18 }]}>AI Opportunities</Text>
+          <Pressable onPress={() => loadMarket(marketCat, true, true)} disabled={loading} hitSlop={8} accessibilityLabel="Search again">
+            {loading ? <ActivityIndicator size="small" color="#1E56A0" /> : <Ionicons name="refresh" size={21} color="#0B1220" />}
+          </Pressable>
+        </View>
+        <View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, gap: 10, paddingBottom: 12 }}>
+            {tabs.map(t => {
+              const on = marketCat === t.k;
+              const n = count(t.k);
+              return (
+                <Pressable key={t.k} onPress={() => { setMarketCat(t.k); loadMarket(t.k, false, true).catch(() => {}); }} accessibilityRole="tab" accessibilityState={{ selected: on }}
+                  style={{ paddingHorizontal: 18, height: 34, borderRadius: 12, justifyContent: 'center', backgroundColor: on ? '#0F2942' : '#FFFFFF', borderWidth: 1, borderColor: on ? '#0F2942' : '#E6EAF0' }}>
+                  <Text style={{ color: on ? '#FFFFFF' : '#4B5B6E', fontSize: 14 }}>{t.label}{n ? ` (${n})` : ''}</Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </View>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 40, width: '100%', maxWidth: 720, alignSelf: 'center' }}>
+          {loading && !list.length && (
+            <View style={[styles.detailCard, { alignItems: 'center', gap: 8 }]}>
+              <ActivityIndicator color="#1E56A0" />
+              <Text style={[styles.attentionSubtitle, { textAlign: 'center' }]}>Nexora is searching online for {marketCat === 'all' ? 'suppliers, deals and grants' : (MARKET_CATS.find(c => c.k === marketCat)?.label || '').toLowerCase()} that fit your business. This can take up to a minute.</Text>
+            </View>
+          )}
+          {!!cur?.error && !loading && (
+            <View style={[styles.detailCard, { marginBottom: 10 }]}>
+              <Text style={styles.attentionTitle}>Search didn't finish</Text>
+              <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}>{cur.error}</Text>
+              <Pressable onPress={() => loadMarket(marketCat, true, true)} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 10, minHeight: 40 }]}><Text style={styles.resetButtonText}>Try again</Text></Pressable>
+            </View>
+          )}
+          {!loading && !cur?.error && !list.length && (
+            <View style={[styles.detailCard, { alignItems: 'center' }]}>
+              <Ionicons name="search-outline" size={26} color="#8A97A6" />
+              <Text style={[styles.attentionSubtitle, { textAlign: 'center', marginTop: 6 }]}>Nothing current turned up here. Try another category, or search for something specific in Find Online.</Text>
+              <Pressable onPress={() => openFindOnline(() => setScreen('opportunities'))} style={{ marginTop: 10, padding: 8 }}><Text style={{ color: '#1E56A0', fontWeight: '600' }}>Open Find Online</Text></Pressable>
+            </View>
+          )}
+          {list.map(o => renderOppCard(o, true))}
+          {!!list.length && <Text style={{ fontSize: 12, color: '#8A97A6', textAlign: 'center', marginTop: 6 }}>Found online by Nexora. Always check details with the seller before you pay.</Text>}
+        </ScrollView>
+      </View>
+    );
+  }
+
+  if (screen === 'opportunityDetail' && marketOpp) {
+    const o = marketOpp;
+    const facts = [o.savings, o.moq && (/moq|minimum/i.test(o.moq) ? o.moq : `MOQ: ${o.moq}`), o.location, o.valid_until && `Valid until: ${o.valid_until}`].filter(Boolean) as string[];
+    const initials = (o.supplier || o.source || 'S').replace(/[^A-Za-z0-9 ]/g, '').trim().split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase() || 'S';
+    const q = marketQuote;
+    return (
+      <View style={styles.mainScreen}>
+        <StatusBar style="dark" />
+        <View style={[styles.knowledgeHeader, headerSafe]}>
+          <Pressable onPress={() => setScreen('opportunities')} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={[styles.knowledgeHeaderTitle, { flex: 1, marginLeft: 16, fontSize: 18 }]}>AI Opportunities</Text>
+          <Pressable onPress={() => setShareBox({ title: o.title, text: `${o.title}${o.supplier ? ` · ${o.supplier}` : ''}\n${o.url}`, url: o.url })} hitSlop={8} accessibilityLabel="Share"><Ionicons name="share-outline" size={21} color="#0B1220" /></Pressable>
+        </View>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 40, width: '100%', maxWidth: 720, alignSelf: 'center' }} keyboardShouldPersistTaps="handled">
+          <View>
+            {renderOppImage(o, '100%', 200, 14)}
+            <Text style={{ position: 'absolute', top: 12, right: 12, color: '#FFFFFF', backgroundColor: 'rgba(15,41,66,0.75)', fontSize: 11, fontWeight: '600', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, overflow: 'hidden' }}>{o.match === 'High' ? 'High Match' : 'Good Match'}</Text>
+          </View>
+          <Text style={{ fontSize: 20, fontWeight: '600', color: '#0B1220', marginTop: 16 }}>{o.title}</Text>
+          <Text style={{ fontSize: 13, color: '#6B7A8C', marginTop: 4 }}>{o.category_label}{o.supplier ? ` · ${o.supplier}` : ''}</Text>
+          {facts.map(f => (
+            <View key={f} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 }}>
+              <Ionicons name="arrow-up-circle-outline" size={15} color="#1E9E6D" style={{ transform: [{ rotate: '45deg' }] }} />
+              <Text style={{ fontSize: 13.5, color: '#1E56A0', flex: 1 }}>{f}</Text>
+            </View>
+          ))}
+          {!!o.summary && <Text style={{ fontSize: 14, lineHeight: 20, color: '#4B5B6E', marginTop: 12 }}>{o.summary}</Text>}
+
+          {!!o.why && (
+            <View style={{ marginTop: 16, borderRadius: 14, borderWidth: 1, borderColor: '#EEF1F4', padding: 14 }}>
+              <Text style={{ fontSize: 15, fontWeight: '600', color: '#0B1220' }}>Why NEXORA recommends this</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 10, borderRadius: 12, backgroundColor: '#E9F1F5', padding: 12 }}>
+                <Ionicons name="sparkles" size={20} color="#4FA3E0" />
+                <Text style={{ flex: 1, fontSize: 13, lineHeight: 18, color: '#1A9CC4' }}>{o.why}</Text>
+              </View>
+            </View>
+          )}
+
+          <Text style={{ fontSize: 15, fontWeight: '600', color: '#0B1220', marginTop: 20, marginBottom: 8 }}>Supplier Overview</Text>
+          <Pressable onPress={() => openInApp(o.url, o.supplier || o.title)} accessibilityRole="link" style={{ flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 14, borderWidth: 1, borderColor: '#EEF1F4', padding: 14 }}>
+            <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: '#2A1E4A', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#FFFFFF', fontWeight: '700' }}>{initials}</Text></View>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={{ fontSize: 15, fontWeight: '600', color: '#0B1220' }} numberOfLines={1}>{o.supplier || hostOf(o.url)}</Text>
+              <Text style={{ fontSize: 12.5, color: '#8A97A6', marginTop: 2 }} numberOfLines={1}>{o.source || hostOf(o.url)} · tap to open their page</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color="#6B7A8C" />
+          </Pressable>
+
+          <View style={{ marginTop: 16, borderRadius: 14, borderWidth: 1, borderColor: '#EEF1F4', padding: 14 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+              <Ionicons name="lock-closed-outline" size={18} color="#0B1220" />
+              <Text style={{ flex: 1, fontSize: 14, color: '#0B1220' }}>Ask NEXORA to contact the supplier and request a quote.</Text>
+            </View>
+            {!q && (
+              <>
+                <Text style={{ fontSize: 12.5, color: '#8A97A6', marginTop: 6 }}>Nexora writes the request for you. Nothing is sent until you send it.</Text>
+                <Pressable onPress={requestQuote} accessibilityRole="button" style={{ marginTop: 12, height: 48, borderRadius: 24, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}>
+                  <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '600' }}>Continue</Text>
+                </Pressable>
+              </>
+            )}
+            {q?.loading && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 }}><ActivityIndicator color="#1E56A0" /><Text style={styles.attentionSubtitle}>Nexora is writing your request…</Text></View>}
+            {!!q?.error && (
+              <>
+                <Text style={{ color: '#C0392B', fontSize: 13, marginTop: 10 }}>{q.error}</Text>
+                <Pressable onPress={requestQuote} style={{ marginTop: 8, padding: 6, alignSelf: 'flex-start' }}><Text style={{ color: '#1E56A0', fontWeight: '600' }}>Try again</Text></Pressable>
+              </>
+            )}
+            {q && !q.loading && !q.error && (
+              <>
+                <Text style={[styles.detailFieldLabel, { marginTop: 12 }]}>Subject</Text>
+                <TextInput value={q.subject} onChangeText={t => setMarketQuote(v => v && { ...v, subject: t })} style={styles.editInput} maxLength={150} />
+                <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Message</Text>
+                <TextInput value={q.message} onChangeText={t => setMarketQuote(v => v && { ...v, message: t })} multiline style={[styles.editInput, { height: 160, textAlignVertical: 'top', paddingTop: 10 }]} maxLength={2000} />
+                <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                  <Pressable onPress={() => openMailBox({ subject: q.subject, message: q.message, pageUrl: o.url })} style={{ flex: 1, height: 46, borderRadius: 23, backgroundColor: '#1E56A0', flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'center' }}>
+                    <Ionicons name="mail-outline" size={18} color="#FFFFFF" /><Text style={{ color: '#FFFFFF', fontWeight: '600' }}>Email</Text>
+                  </Pressable>
+                  <Pressable onPress={() => setShareBox({ title: q.subject, text: `${q.subject}\n\n${q.message}`, url: o.url })} style={{ flex: 1, height: 46, borderRadius: 23, backgroundColor: '#EAF1FB', flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'center' }}>
+                    <Ionicons name="share-social-outline" size={18} color="#1E56A0" /><Text style={{ color: '#1E56A0', fontWeight: '600' }}>Share</Text>
+                  </Pressable>
+                </View>
+                <Pressable onPress={() => openInApp(o.url, o.supplier || o.title)} style={{ alignSelf: 'center', marginTop: 10, padding: 6 }}><Text style={{ color: '#1E56A0', fontWeight: '600' }}>Find the supplier's contact on their page</Text></Pressable>
+              </>
+            )}
+          </View>
+          <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); sendChatMessage(`Is this a good opportunity for my business? ${o.title} from ${o.supplier || o.source} (${o.url}). ${o.summary}`); }} style={{ alignSelf: 'flex-end', marginTop: 16, flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#0F2942', borderRadius: 20, paddingHorizontal: 16, height: 40 }}>
+            <Ionicons name="sparkles" size={15} color="#E7B6FF" /><Text style={{ color: '#FFFFFF', fontWeight: '600' }}>Ask NEXORA</Text>
+          </Pressable>
+        </ScrollView>
+        {renderMailShare()}
+      </View>
+    );
+  }
+
+  if (screen === 'explore') {
+    const exploreBack = () => { if (exploreBackRef.current) { exploreBackRef.current(); return; } setMainTab('brain'); setScreen('main'); };
+    return (
+      <View style={styles.mainScreen}>
+        <StatusBar style="dark" />
+        <View style={[styles.knowledgeHeader, headerSafe]}>
+          <Pressable onPress={exploreBack} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Text style={[styles.knowledgeHeaderTitle, { flex: 1, marginLeft: 16, fontSize: 18 }]}>Find Online</Text>
           <Pressable onPress={openTrends} hitSlop={8} accessibilityLabel="Trending for you"><Ionicons name="trending-up-outline" size={22} color="#0B1220" /></Pressable>
         </View>
-        <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40 }]} keyboardShouldPersistTaps="handled">
-          <Text style={[styles.attentionSubtitle, { marginBottom: 12 }]}>Tell Nexora what you need — a supplier, a service, a tool, an official form. It searches the web and opens what it finds right here.</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderColor: '#D5DEE8', borderRadius: 14, paddingHorizontal: 12, backgroundColor: '#FFFFFF' }}>
-            <Ionicons name="search" size={18} color="#6B7A8C" />
-            <TextInput value={exploreQuery} onChangeText={setExploreQuery} onSubmitEditing={() => runExplore()} returnKeyType="search" placeholder="e.g. wholesale phone accessories in Lagos" placeholderTextColor="#9AA6B4" style={{ flex: 1, paddingVertical: 12, fontSize: 15, color: '#0B1220' }} />
+        <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40, width: '100%', maxWidth: 720, alignSelf: 'center' }]} keyboardShouldPersistTaps="handled">
+          <Text style={{ fontSize: 22, fontWeight: '700', color: '#0B1220' }}>What do you want to find?</Text>
+          <Text style={[styles.attentionSubtitle, { marginTop: 6, marginBottom: 16, fontSize: 14, lineHeight: 20 }]}>Let Nexora help you find the right service, tool or supplier for your business.</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderColor: '#D5DEE8', borderRadius: 26, paddingHorizontal: 16, backgroundColor: '#FFFFFF', minHeight: 48 }}>
+            <Ionicons name="search" size={19} color="#6B7A8C" />
+            <TextInput value={exploreQuery} onChangeText={setExploreQuery} onSubmitEditing={() => runExplore()} returnKeyType="search" placeholder="e.g. phone accessories near me" placeholderTextColor="#9AA6B4" style={{ flex: 1, paddingVertical: 12, fontSize: 15, color: '#0B1220' }} />
             {!!exploreQuery && <Pressable onPress={() => setExploreQuery('')} hitSlop={8} accessibilityLabel="Clear"><Ionicons name="close-circle" size={18} color="#9AA6B4" /></Pressable>}
           </View>
-          <Pressable disabled={!exploreQuery.trim() || exploreLoading} onPress={() => runExplore()} style={[styles.resetButton, exploreQuery.trim() ? styles.resetButtonEnabled : null, { marginTop: 10, minHeight: 44 }]}>
-            {exploreLoading ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.resetButtonText}>Search with Nexora</Text>}
+          <Pressable disabled={!exploreQuery.trim() || exploreLoading} onPress={() => runExplore()} style={{ marginTop: 14, minHeight: 50, borderRadius: 26, backgroundColor: exploreQuery.trim() ? '#1E56A0' : '#8FB0D6', alignItems: 'center', justifyContent: 'center' }} accessibilityRole="button">
+            {exploreLoading ? <ActivityIndicator color="#FFFFFF" /> : <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600' }}>Search with Nexora</Text>}
           </Pressable>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14 }}>
-            {quick.map(q => (
-              <Pressable key={q} onPress={() => { setExploreQuery(q); runExplore(q); }} style={{ paddingHorizontal: 12, paddingVertical: 7, borderRadius: 16, backgroundColor: '#EAF1FB' }}>
-                <Text style={{ color: '#1E56A0', fontSize: 13, fontWeight: '600' }}>{q}</Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 10, marginTop: 18 }}>
+            {MARKET_CATS.map(c => (
+              <Pressable key={c.k} onPress={() => openOpportunities(c.k, () => setScreen('explore'))} accessibilityRole="button" accessibilityLabel={c.label}
+                style={{ width: '31.5%', height: 86, borderRadius: 16, backgroundColor: '#E8EEF6', alignItems: 'center', justifyContent: 'center', gap: 8, paddingHorizontal: 6, overflow: 'hidden' }}>
+                <Ionicons name={c.icon as any} size={22} color="#0F2942" />
+                <Text style={{ fontSize: 13.5, color: '#0B1220', fontWeight: '500', textAlign: 'center', maxWidth: '100%' }} numberOfLines={2}>{c.label}</Text>
               </Pressable>
             ))}
           </View>
@@ -12490,13 +17226,13 @@ function HomeScreenInner(){
       <View style={styles.mainScreen}>
         <StatusBar style="dark" />
         <View style={[styles.knowledgeHeader, headerSafe]}>
-          <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); }} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
+          <Pressable onPress={() => { if (exploreBackRef.current) { exploreBackRef.current(); return; } setMainTab('brain'); setScreen('main'); }} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
           <Text style={styles.knowledgeHeaderTitle}>Trending for you</Text>
           <Pressable disabled={trendsLoading} onPress={() => loadTrends({ force: true })} hitSlop={8} accessibilityLabel="Check again"><Ionicons name="refresh-outline" size={22} color={trendsLoading ? '#C3CCD6' : '#0B1220'} /></Pressable>
         </View>
         <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40 }]}>
           <Text style={[styles.attentionSubtitle, { marginBottom: 10 }]}>
-            {trendsData ? `What's moving online for ${trendsData.business || 'your business'}${trendsData.country ? ` in ${trendsData.country}` : ''}${updated ? ` · updated ${updated}` : ''}. Refreshes automatically every 6 hours.` : 'Nexora reads the web for your industry every 6 hours and tells you what to do about it.'}
+            {trendsData ? `What's moving online for ${trendsData.business || 'your business'}${trendsData.country ? ` in ${trendsData.country}` : ''}${updated ? ` · updated ${updated}` : ''}. Refreshes automatically every hour on paid plans (every 3 hours on Free).` : 'Nexora reads the web for your industry every hour and tells you what to do about it.'}
           </Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 6 }}>
             {focuses.map(f => {
@@ -12654,8 +17390,105 @@ function HomeScreenInner(){
               </View>
             );
           })}
+          {/* Your website: the chat button (copy-paste), or our team adds it for you within 2 hours */}
+          <View style={[styles.detailCard, { paddingVertical: 14 }]}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+              <View style={{ width: 42, height: 42, borderRadius: 12, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="globe-outline" size={24} color="#1E56A0" /></View>
+              <View style={styles.attentionTextWrap}>
+                <Text style={styles.attentionTitle}>Your website</Text>
+                <Text style={styles.attentionSubtitle}>Add a chat button so visitors can talk to Nexora 24/7</Text>
+              </View>
+            </View>
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+              <Pressable disabled={!isOwner} onPress={() => { openSiteBox('code').catch(() => {}); }} style={[styles.resetButton, { flex: 1, minHeight: 38, borderWidth: 1, borderColor: '#5381BB', opacity: isOwner ? 1 : 0.5 }]} accessibilityRole="button">
+                <Text style={[styles.resetButtonText, { color: '#1E56A0', fontSize: 13 }]}>I'll add it myself</Text>
+              </Pressable>
+              <Pressable disabled={!isOwner} onPress={() => { openSiteBox('help').catch(() => {}); }} style={[styles.resetButton, { flex: 1, minHeight: 38, backgroundColor: isOwner ? '#1E56A0' : '#A5AFBB' }]} accessibilityRole="button">
+                <Text style={[styles.resetButtonText, { color: '#FFF', fontSize: 13, fontWeight: '700' }]}>Set it up for me</Text>
+              </Pressable>
+            </View>
+            <Text style={[styles.attentionSubtitle, { marginTop: 8, fontSize: 12 }]}>Busy? Our team adds it to your website for you within 2 hours of your request, at no extra cost.</Text>
+          </View>
+          {([['logo-tiktok', 'TikTok', '#0B1220'], ['logo-snapchat', 'Snapchat', '#E6C800']] as const).map(([ic, nm, c]) => (
+            <View key={nm} style={[styles.detailCard, { paddingVertical: 14, flexDirection: 'row', alignItems: 'center', gap: 12, opacity: 0.75 }]}>
+              <View style={{ width: 42, height: 42, borderRadius: 12, backgroundColor: c, alignItems: 'center', justifyContent: 'center' }}><Ionicons name={ic} size={24} color={nm === 'Snapchat' ? '#0B1220' : '#FFF'} /></View>
+              <View style={styles.attentionTextWrap}>
+                <Text style={styles.attentionTitle}>{nm}</Text>
+                <Text style={styles.attentionSubtitle}>Coming soon</Text>
+              </View>
+              <View style={{ backgroundColor: '#EEF2F7', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 4 }}><Text style={{ fontSize: 11, fontWeight: '700', color: '#5C6B7A' }}>SOON</Text></View>
+            </View>
+          ))}
           <Text style={[styles.attentionSubtitle, { marginTop: 8 }]}>Facebook and Instagram open Facebook's own login so you approve access there; Nexora never sees your password. Instagram must be a Business or Creator account linked to your Facebook Page.</Text>
         </ScrollView>
+        <Modal visible={!!siteBox} transparent animationType="fade" onRequestClose={() => setSiteBox(null)} statusBarTranslucent>
+          <View style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)', justifyContent: 'center', padding: 16 }}>
+            <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center' }} keyboardShouldPersistTaps="handled">
+              <View style={{ width: '100%', maxWidth: 560, alignSelf: 'center', backgroundColor: '#FFF', borderRadius: 20, padding: 20 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <Ionicons name="globe-outline" size={24} color="#1E56A0" />
+                  <Text style={{ flex: 1, fontSize: 18, fontWeight: '700', color: '#0B1220' }}>{siteBox?.mode === 'help' ? 'We’ll set it up for you' : 'Add the chat button yourself'}</Text>
+                  <Pressable onPress={() => setSiteBox(null)} hitSlop={8} accessibilityLabel="Close"><Ionicons name="close" size={22} color="#5C6B7A" /></Pressable>
+                </View>
+                {siteBox?.mode === 'code' ? (
+                  siteBox.loading ? <ActivityIndicator style={{ marginVertical: 24 }} color="#1E56A0" /> : !siteBox.slug ? (
+                    <Text style={[styles.attentionSubtitle, { marginTop: 12 }]}>{siteBox.error || 'Set up your AI shop link first: it’s the chat page the button opens.'}</Text>
+                  ) : (
+                    <>
+                      {!siteBox.enabled && (
+                        <Pressable onPress={() => { setSiteBox(null); openStorefront().catch(() => {}); }} style={{ marginTop: 12, padding: 12, borderRadius: 12, backgroundColor: '#FFF6E5' }}>
+                          <Text style={{ color: '#92400E', fontSize: 13, lineHeight: 18 }}>Your AI shop link is switched off, so the button won’t open yet. Tap here to switch it on.</Text>
+                        </Pressable>
+                      )}
+                      <Text style={[styles.attentionSubtitle, { marginTop: 12 }]}>1. Copy the code below.{'\n'}2. In your website editor, paste it just before the closing {'</body>'} tag (WordPress: a “Custom HTML” block or footer plugin; Shopify: theme.liquid; Wix/Squarespace: “Embed code” in the footer).{'\n'}3. Save. A “Chat with us” button appears at the bottom right of every page.</Text>
+                      <View style={{ marginTop: 12, backgroundColor: '#0B1220', borderRadius: 12, padding: 12 }}>
+                        <Text selectable style={{ color: '#CFE0F5', fontSize: 11.5, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' }}>{siteSnippet(siteBox.slug)}</Text>
+                      </View>
+                      <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                        <Pressable onPress={async () => { const t = siteSnippet(siteBox.slug); try { if (IS_WEB) { await (globalThis as any).navigator?.clipboard?.writeText(t); flash('Code copied'); } else { await Share.share({ message: t }); } } catch { flash('Couldn’t copy on this device'); } }} style={[styles.resetButton, styles.resetButtonEnabled, { flex: 1 }]}>
+                          <Text style={styles.resetButtonText}>{IS_WEB ? 'Copy code' : 'Share code'}</Text>
+                        </Pressable>
+                        <Pressable onPress={() => setSiteBox(b => b && { ...b, mode: 'help', error: '' })} style={[styles.resetButton, { flex: 1, borderWidth: 1, borderColor: '#5381BB' }]}>
+                          <Text style={[styles.resetButtonText, { color: '#1E56A0' }]}>Do it for me</Text>
+                        </Pressable>
+                      </View>
+                    </>
+                  )
+                ) : siteBox?.sent ? (
+                  <View style={{ alignItems: 'center', paddingVertical: 18 }}>
+                    <Ionicons name="checkmark-circle" size={44} color="#1E9E6D" />
+                    <Text style={[styles.attentionTitle, { marginTop: 8, textAlign: 'center' }]}>Request sent</Text>
+                    <Text style={[styles.attentionSubtitle, { textAlign: 'center', marginTop: 4 }]}>Our team will contact you and add the chat button within 2 hours. Replies come to your email.</Text>
+                    <Pressable onPress={() => setSiteBox(null)} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 14, alignSelf: 'stretch' }]}><Text style={styles.resetButtonText}>Done</Text></Pressable>
+                  </View>
+                ) : siteBox ? (
+                  <>
+                    <Text style={[styles.attentionSubtitle, { marginTop: 10 }]}>Tell us where your website is. Our team will add the Nexora chat button within 2 hours and let you know when it’s live.</Text>
+                    <Text style={[styles.detailFieldLabel, { marginTop: 12 }]}>Website address</Text>
+                    <TextInput value={siteBox.website} onChangeText={t => setSiteBox(b => b && { ...b, website: t, error: '' })} placeholder="e.g. www.yourshop.com" placeholderTextColor="#A5AFBB" autoCapitalize="none" autoCorrect={false} keyboardType="url" style={styles.editInput} maxLength={200} />
+                    <Text style={[styles.detailFieldLabel, { marginTop: 12 }]}>What is it built with?</Text>
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 }}>
+                      {SITE_PLATFORMS.map(pf => (
+                        <Pressable key={pf} onPress={() => setSiteBox(b => b && { ...b, platform: pf })} style={{ paddingHorizontal: 12, paddingVertical: 7, borderRadius: 16, borderWidth: 1, borderColor: siteBox.platform === pf ? '#1E56A0' : '#D8DCE1', backgroundColor: siteBox.platform === pf ? '#EAF1FB' : '#FFF' }}>
+                          <Text style={{ fontSize: 13, color: siteBox.platform === pf ? '#1E56A0' : '#4B5563', fontWeight: '600' }}>{pf}</Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                    <Text style={[styles.detailFieldLabel, { marginTop: 12 }]}>Phone or WhatsApp (optional)</Text>
+                    <TextInput value={siteBox.phone} onChangeText={t => setSiteBox(b => b && { ...b, phone: t })} placeholder="+1 555 123 4567" placeholderTextColor="#A5AFBB" keyboardType="phone-pad" style={styles.editInput} maxLength={40} />
+                    <Text style={[styles.detailFieldLabel, { marginTop: 12 }]}>Anything we should know? (optional)</Text>
+                    <TextInput value={siteBox.note} onChangeText={t => setSiteBox(b => b && { ...b, note: t })} placeholder="e.g. who manages the website, best time to reach you" placeholderTextColor="#A5AFBB" multiline style={[styles.editInput, { height: 80, paddingTop: 10, textAlignVertical: 'top' }]} maxLength={1500} />
+                    <Text style={[styles.attentionSubtitle, { marginTop: 8, fontSize: 12 }]}>Never send passwords here. If we need access to your website, we’ll ask you to add us safely as a helper.</Text>
+                    {!!siteBox.error && <Text style={{ color: '#B42318', fontSize: 13, marginTop: 8 }}>{siteBox.error}</Text>}
+                    <Pressable disabled={siteBox.sending} onPress={() => { sendSiteRequest().catch(() => {}); }} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 14 }]}>
+                      {siteBox.sending ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>Send request</Text>}
+                    </Pressable>
+                  </>
+                ) : null}
+              </View>
+            </ScrollView>
+          </View>
+        </Modal>
         <Modal visible={!!waForm} transparent animationType="slide" onRequestClose={() => setWaForm(null)} statusBarTranslucent>
           <Pressable style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)' }} onPress={() => setWaForm(null)} accessibilityLabel="Close" />
           <View style={{ backgroundColor: '#FFF', borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 20, paddingBottom: 20 + insets.bottom }}>
@@ -12706,8 +17539,8 @@ function HomeScreenInner(){
                 <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Industry</Text>
                 <TextInput value={bizForm.industry} onChangeText={t => setBizForm(f => ({ ...f, industry: t }))} placeholder="e.g. Electronics retail" placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={80} />
                 <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Country</Text>
-                <TextInput value={bizForm.country} onChangeText={t => setBizForm(f => ({ ...f, country: t }))} placeholder="e.g. Nigeria" placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={60} />
-                <Pressable disabled={billingBusy === 'create'} onPress={() => { createBusiness().catch(() => {}); }} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 14 }]}>
+                <TextInput value={bizForm.country} onChangeText={t => setBizForm(f => ({ ...f, country: t }))} placeholder="e.g. United States" placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={60} />
+                <Pressable disabled={billingBusy === 'create'} onPress={() => { createBusiness().then(ok => { if (ok) billingAfterCreateRef.current(); }).catch(() => {}); }} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 14 }]}>
                   {billingBusy === 'create' ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>Create my company for free</Text>}
                 </Pressable>
               </View>
@@ -12738,15 +17571,16 @@ function HomeScreenInner(){
                     {([['ai_tasks', 'AI tasks this month'], ['connected_accounts', 'Connected accounts'], ['customer_records', 'Customer records'], ['active_workflows', 'Active automations'], ['knowledge_sources', 'Knowledge documents']] as const).map(([k, label]) => {
                       const u = planUsage[k];
                       if (!u) return null;
-                      const full = u.limit !== null && u.used >= u.limit;
+                      const notIncluded = u.limit === 0;   // e.g. automations on Free: not part of the plan, not "used up"
+                      const full = u.limit !== null && u.limit > 0 && u.used >= u.limit;
                       const pct = u.limit ? Math.min(1, u.used / u.limit) : 0;
                       return (
                         <View key={k}>
                           <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
                             <Text style={{ fontSize: 12.5, color: '#4B5563' }}>{label}</Text>
-                            <Text style={{ fontSize: 12.5, fontWeight: '700', color: full ? '#D64545' : '#0B1220' }}>{u.used.toLocaleString()}{u.limit !== null ? ` / ${u.limit.toLocaleString()}` : ' · no limit'}</Text>
+                            <Text style={{ fontSize: 12.5, fontWeight: notIncluded ? '600' : '700', color: full ? '#D64545' : notIncluded ? '#8A97A6' : '#0B1220' }}>{notIncluded ? 'Not on this plan' : `${u.used.toLocaleString()}${u.limit !== null ? ` / ${u.limit.toLocaleString()}` : ' · no limit'}`}</Text>
                           </View>
-                          {u.limit !== null && (
+                          {u.limit !== null && !notIncluded && (
                             <View style={{ height: 6, borderRadius: 3, backgroundColor: '#EEF2F7', marginTop: 4, overflow: 'hidden' }}>
                               <View style={{ width: `${Math.round(pct * 100)}%`, height: 6, backgroundColor: full ? '#D64545' : pct >= 0.8 ? '#C2760C' : '#1E56A0' }} />
                             </View>
@@ -12754,7 +17588,7 @@ function HomeScreenInner(){
                         </View>
                       );
                     })}
-                    {Object.values(planUsage).some(u => u.limit !== null && u.used >= u.limit) && (
+                    {Object.values(planUsage).some(u => !!u && u.limit !== null && u.limit > 0 && u.used >= u.limit) && (
                       <Text style={{ fontSize: 12.5, color: '#B42318', lineHeight: 18 }}>{isOwner ? 'You have reached a limit on your plan. Upgrade below to keep growing.' : 'Your business has reached a limit on its plan. Ask the owner to upgrade.'}</Text>
                     )}
                   </View>
@@ -12775,10 +17609,8 @@ function HomeScreenInner(){
                   )}
                   {IN_APP_SUBSCRIBE_ENABLED && payConfig && !payConfig.ready && (
                     <View style={{ marginTop: 12, padding: 12, borderRadius: 14, backgroundColor: '#FFF6E5' }}>
-                      <Text style={{ color: '#92400E', fontWeight: '700' }}>Online payments aren't switched on yet</Text>
-                      <Text style={{ color: '#92400E', fontSize: 13, marginTop: 2, lineHeight: 18 }}>{payConfig.reason === 'no_rate'
-                        ? "Nexora couldn't get today's exchange rate. Add PAYSTACK_USD_RATE in Supabase function secrets."
-                        : 'Add your Paystack secret key in Supabase: Edge Functions › Secrets › PAYSTACK_SECRET_KEY. The Free plan keeps working meanwhile.'}</Text>
+                      <Text style={{ color: '#92400E', fontWeight: '700' }}>Online upgrades are coming soon</Text>
+                      <Text style={{ color: '#92400E', fontSize: 13, marginTop: 2, lineHeight: 18 }}>You can't pay for a plan in the app just yet. Your Free plan keeps working, and you can email {SUPPORT_EMAIL} to upgrade today.</Text>
                     </View>
                   )}
                   {IN_APP_SUBSCRIBE_ENABLED && payConfig?.ready && payConfig.test_mode && (
@@ -12812,12 +17644,12 @@ function HomeScreenInner(){
                     const paidCurrent = current && !isFree && ws.subscription_status === 'active';
                     const yearly = billingInterval === 'year';
                     // Naira prices are fixed per plan; other currencies show the USD price (converted at checkout if needed).
-                    const showNgn = (payConfig?.currency ?? (/nigeria/i.test(ws.country || '') ? 'NGN' : 'USD')) === 'NGN';
+                    const showNgn = (payConfig?.currency ?? (/nigeria/i.test(ws.country || '') || (!ws.country && LOCAL_NGN) ? 'NGN' : 'USD')) === 'NGN';
                     const ngn = yearly ? p.price_ngn_year : p.price_ngn;
                     const usd = yearly ? p.price_usd_year : p.price_usd;
                     const per = isFree ? '' : yearly ? '/year' : '/month';
-                    const mainPrice = isFree ? 'Free' : p.contact_sales ? `From $${p.price_usd.toLocaleString()}` : showNgn && ngn != null ? `₦${ngn.toLocaleString()}` : usd != null ? `$${usd.toLocaleString()}` : '';
-                    const otherPrice = isFree ? '₦0 / $0, no card needed' : p.contact_sales ? 'Custom quote' : showNgn && usd != null ? `$${usd.toLocaleString()}${per}` : !showNgn && ngn != null ? `₦${ngn.toLocaleString()}${per}` : '';
+                    const mainPrice = isFree ? 'Free' : p.contact_sales ? `From $${p.price_usd.toLocaleString()}` : showNgn && ngn != null ? `₦${ngn.toLocaleString()}` : usd != null ? `$${fmtUsd(usd)}` : '';
+                    const otherPrice = isFree ? 'No card needed' : p.contact_sales ? 'Custom quote' : showNgn && usd != null ? `About $${fmtUsd(usd)}${per}` : '';
                     const checkoutPrice = (yearly ? payConfig?.prices_year : payConfig?.prices)?.[p.key];
                     const msgs = (n: number | null) => (n === null ? 'Custom' : n.toLocaleString());
                     // Older databases without a feature list fall back to the plan limits.
@@ -12844,7 +17676,7 @@ function HomeScreenInner(){
                           {included.map(f => (
                             <View key={f} style={{ flexDirection: 'row', gap: 6, marginTop: 4 }}>
                               <Ionicons name="checkmark-circle" size={14} color="#1E56A0" style={{ marginTop: 1 }} />
-                              <Text style={{ flex: 1, fontSize: 13, color: '#4B5563' }}>{f}</Text>
+                              <Text style={{ flex: 1, fontSize: 13, color: '#4B5563' }}>{explainPlanFeature(f)}</Text>
                             </View>
                           ))}
                         </View>
@@ -13393,6 +18225,9 @@ function HomeScreenInner(){
         <StatusBar style={resetStep==='success'?'light':'dark'}/>
 
         <View style={styles.resetHeaderBar}>
+          <Pressable onPress={()=>{setAuthError('');setInfoMessage('');if(resetStep==='otp')setResetStep('email');else if(resetStep==='password')setResetStep('otp');else setScreen('login');}} hitSlop={12} accessibilityRole="button" accessibilityLabel="Back" style={{position:'absolute',left:16,bottom:0,top:0,justifyContent:'center',zIndex:5}}>
+            <Ionicons name="chevron-back" size={26} color="#FFFFFF"/>
+          </Pressable>
           <Text style={styles.resetHeaderLogo}>NEXORA.AI</Text>
         </View>
 
@@ -13581,13 +18416,17 @@ function HomeScreenInner(){
   if(loginIndex===0){
       return(
         <View style={[styles.fullScreen,{backgroundColor:'#FFF'}]} onLayout={onRootLayout} {...loginPanResponder.panHandlers}>
-          <StatusBar hidden/>
+          {realStatusBar(LOGIN_STRIP[0])}
           <ScrollView contentContainerStyle={{flexGrow:1}} showsVerticalScrollIndicator={false}>
           <View style={[styles.svgFrame,{width,height:scaledHeight}]}>
             <View pointerEvents="none" style={StyleSheet.absoluteFill}>
               <LogInSVG width={width} height={scaledHeight} viewBox={SVG_VIEWBOX} preserveAspectRatio="xMidYMid meet"/>
             </View>
             <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
+              <Pressable onPress={()=>{setAuthError('');setInfoMessage('');setScreen('onboarding');}} hitSlop={10} accessibilityRole="button" accessibilityLabel="Back"
+                style={{position:'absolute',left:10*scale,top:73*scale,width:40*scale,height:40*scale,alignItems:'center',justifyContent:'center',zIndex:95}}>
+                <Ionicons name="chevron-back" size={26*scale} color="#FFFFFF"/>
+              </Pressable>
               {loginEmail.length>0&&(
                 <View pointerEvents="none" style={{
                   position:'absolute',
@@ -13701,8 +18540,8 @@ function HomeScreenInner(){
 
     return(
       <View style={[styles.fullScreen,{backgroundColor:'#FFF'}]} onLayout={onRootLayout} {...loginPanResponder.panHandlers}>
-        <StatusBar hidden/>
         <View style={[styles.svgFrame,{width,height:scaledHeight}]}>{renderLoginSVG()}</View>
+        {realStatusBar(LOGIN_STRIP[loginIndex] ?? '#0F2942')}
       </View>
     );
   }
@@ -13711,7 +18550,7 @@ function HomeScreenInner(){
     if(signupIndex===6||signupIndex===7){
       return(
         <View style={[styles.fullScreen,{backgroundColor:'#FFF'}]} onLayout={onRootLayout} {...signupPanResponder.panHandlers}>
-          <StatusBar style="dark"/>
+          {realStatusBar('#FFFFFF')}
           <View style={[styles.svgFrame,{width,height:scaledHeight}]}>
             <View pointerEvents="none" style={StyleSheet.absoluteFill}>{renderSignupSVG()}</View>
           </View>
@@ -13721,7 +18560,7 @@ function HomeScreenInner(){
     if(signupIndex===0){
       return(
         <View style={[styles.fullScreen,{backgroundColor:'#FFF'}]} onLayout={onRootLayout} {...signupPanResponder.panHandlers}>
-          <StatusBar hidden/>
+          {realStatusBar(SIGNUP_STRIP[0])}
           <ScrollView contentContainerStyle={{flexGrow:1}} showsVerticalScrollIndicator={false}>
           <View style={[styles.svgFrame,{width,height:scaledHeight}]}>
             <View pointerEvents="none" style={StyleSheet.absoluteFill}>
@@ -13729,6 +18568,10 @@ function HomeScreenInner(){
             </View>
 
             <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
+              <Pressable onPress={()=>{setAuthError('');setInfoMessage('');setScreen('onboarding');}} hitSlop={10} accessibilityRole="button" accessibilityLabel="Back"
+                style={{position:'absolute',left:10*scale,top:73*scale,width:40*scale,height:40*scale,alignItems:'center',justifyContent:'center',zIndex:95}}>
+                <Ionicons name="chevron-back" size={26*scale} color="#FFFFFF"/>
+              </Pressable>
               {fullName.length>0&&(
                 <View pointerEvents="none" style={{
                   position:'absolute',
@@ -13920,16 +18763,16 @@ function HomeScreenInner(){
     if(signupIndex===3){
       return(
         <Pressable style={styles.fullScreen} onLayout={onRootLayout} onPress={()=>{if(!navigatingRef.current)setSignupIndex(0)}}>
-          <StatusBar hidden/>
           <View style={[styles.svgFrame,{width,height:scaledHeight}]}>{renderSignupSVG()}</View>
+          {realStatusBar(SIGNUP_STRIP[3])}
         </Pressable>
       );
     }
 
     return(
       <View style={[styles.fullScreen,{backgroundColor:signupIndex===4||signupIndex===5?'#0F2942':'#FFF'}]} onLayout={onRootLayout} {...signupPanResponder.panHandlers}>
-        <StatusBar hidden={signupIndex===4||signupIndex===5}/>
         <View style={[styles.svgFrame,{width,height:scaledHeight}]}>{renderSignupSVG()}</View>
+        {realStatusBar(SIGNUP_STRIP[signupIndex] ?? '#0F2942')}
       </View>
     );
   }
@@ -13938,11 +18781,11 @@ function HomeScreenInner(){
 
   return(
     <View style={styles.fullScreen} onLayout={onRootLayout} {...panResponder.panHandlers}>
-      <StatusBar hidden/>
+      {realStatusBar(ONBOARDING_STRIP[onboardingIndex] ?? '#FFFFFF')}
       <View style={[styles.svgFrame,{width,height:scaledHeight}]}>
         {renderOnboardingSVG()}
         <Pressable onPress={skip} hitSlop={10} style={[styles.skipTouchArea,{left:SKIP_X*scale,top:SKIP_Y*scale,width:SKIP_WIDTH*scale,height:SKIP_HEIGHT*scale}]}/>
-        {onboardingIndex===3&&INTEREST_TILES.map(t=>{
+        {onboardingIndex===3&&INTEREST_TILES.filter(t=>t.x>=0).map(t=>{
           const on=interestPicks.includes(t.key);
           return(
             <Pressable key={t.key} accessibilityRole="checkbox" accessibilityState={{checked:on}} accessibilityLabel={t.label}
@@ -14193,7 +19036,7 @@ stopButton:{width:24,height:24,borderRadius:6,backgroundColor:'#0B1220',alignIte
   listCountSubtitle:{fontSize:12,color:'#1E9E6D',marginBottom:12},
   listFilterButton:{flexDirection:'row',alignItems:'center',gap:4,backgroundColor:'#F5F6F8',borderRadius:14,paddingHorizontal:10,paddingVertical:6},
   listFilterButtonText:{fontSize:12,color:'#5C6B7A',fontWeight:'600'},
-  searchBarPlain:{flexDirection:'row',alignItems:'center',gap:8,backgroundColor:'#FFF',borderRadius:12,paddingHorizontal:14,height:44,marginBottom:12},
+  searchBarPlain:{flexDirection:'row',alignItems:'center',gap:8,backgroundColor:'#FFF',borderRadius:12,borderWidth:1,borderColor:'#DCE2EA',paddingHorizontal:14,height:44,marginBottom:12},
   filterRow:{flexDirection:'row',gap:8,marginBottom:16},
   filterChip:{paddingHorizontal:12,paddingVertical:7,borderRadius:14,backgroundColor:'#FFF'},
   filterChipActive:{backgroundColor:'#0B1220'},
@@ -14255,7 +19098,7 @@ stopButton:{width:24,height:24,borderRadius:6,backgroundColor:'#0B1220',alignIte
 
   // Inbox list
   inboxSubtitle:{fontSize:12,color:'#8A97A6',paddingHorizontal:16,marginBottom:12},
-  platformChipRow:{flexDirection:'row',justifyContent:'space-between',paddingHorizontal:16,marginTop:12},
+  platformChipRow:{flexDirection:'row',justifyContent:'space-between',paddingHorizontal:16,marginTop:12,paddingBottom:14},
   platformChipItem:{alignItems:'center',gap:4,width:56},
   platformChipCircle:{width:40,height:40,borderRadius:20,backgroundColor:'#F5F6F8',alignItems:'center',justifyContent:'center'},
   platformChipCircleSelected:{borderWidth:2,borderColor:'#0B1220'},
