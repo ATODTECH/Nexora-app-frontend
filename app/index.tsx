@@ -10930,7 +10930,8 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
             ) : (
               chatMessages.map((m, mi) => (
                 <React.Fragment key={m.id}>
-                {(mi === 0 || new Date(msgTime(chatMessages[mi - 1])).toDateString() !== new Date(msgTime(m)).toDateString()) && (
+                {/* Day divider only for chats from earlier days (design shows none for today's chat). */}
+                {new Date(msgTime(m)).toDateString() !== new Date().toDateString() && (mi === 0 || new Date(msgTime(chatMessages[mi - 1])).toDateString() !== new Date(msgTime(m)).toDateString()) && (
                   <View style={{ alignSelf: 'center', backgroundColor: 'rgba(255,255,255,0.10)', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 4, marginVertical: 8 }}>
                     <Text style={{ color: '#B8C7DA', fontSize: 12, fontWeight: '700' }}>{dayLabel(msgTime(m))}</Text>
                   </View>
@@ -10941,13 +10942,13 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                       <Image source={NEXORA_MARK} style={{ width: 34, height: 34 }} resizeMode="contain" />
                       <View>
                         <Text style={{ fontSize: 15, fontWeight: '500', color: '#FFFFFF' }}>NEXORA AI</Text>
-                        <Text style={{ fontSize: 12.5, color: '#7D8FA8', marginTop: 1 }}>{Date.now() - msgTime(m) < 60_000 ? 'Just now' : clockLabel(msgTime(m))}</Text>
+                        <Text style={{ fontSize: 12.5, color: '#7D8FA8', marginTop: 1 }}>{Date.now() - msgTime(m) < 60_000 ? 'Just now' : new Date(msgTime(m)).toDateString() === new Date().toDateString() ? clockLabel(msgTime(m)) : `${dayLabel(msgTime(m))}, ${clockLabel(msgTime(m))}`}</Text>
                       </View>
                     </View>
                   )}
                   <View style={[styles.bubble, m.role === 'user' ? [styles.bubbleUser, { maxWidth: IS_WEB ? '78%' : '86%', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12 }] : { backgroundColor: 'transparent', maxWidth: '100%', width: '100%', paddingHorizontal: 0, paddingVertical: 0 }]}>
                     {m.role === 'user' && (
-                      <Text style={{ fontSize: 13, color: '#FFFFFF', marginBottom: 4 }}>You  <Text style={{ color: '#8FB3E3' }}>{clockLabel(msgTime(m))}</Text></Text>
+                      <Text style={{ fontSize: 12.5, color: '#8FB3E3', marginBottom: 4 }}>{new Date(msgTime(m)).toDateString() === new Date().toDateString() ? clockLabel(msgTime(m)) : `${dayLabel(msgTime(m))}, ${clockLabel(msgTime(m))}`}</Text>
                     )}
                     {m.imageUri && (
                       <ExpoImage
