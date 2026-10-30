@@ -11422,20 +11422,19 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
             )}
 
             {shopOff && myShop && (
-              <View style={[panel, { flexDirection: 'column', alignItems: 'stretch', gap: 12, borderColor: '#F5C46B', backgroundColor: '#FFFBF0', paddingVertical: 14 }, !narrow && { width: '50%', alignSelf: 'flex-start' }]}>
-                <View style={{ flexDirection: 'row', gap: 12, flex: 1, alignItems: 'center' }}>
-                  <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#FFF1D6', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="storefront-outline" size={18} color="#B45309" /></View>
-                  <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text style={{ fontSize: 14.5, fontWeight: '700', color: '#0B1220' }}>Your AI shop link is switched off</Text>
-                    <Text style={{ fontSize: 13, color: '#5C6B7A', marginTop: 1 }} numberOfLines={2}>Customers who open {shopUrl(myShop.slug).replace(/^https?:\/\//, '')} can't see your products or order yet.</Text>
-                  </View>
-                </View>
-                <View style={{ flexDirection: 'row', gap: 8 }}>
-                  <Pressable onPress={() => { openStorefront().catch(() => {}); }} style={{ height: 38, paddingHorizontal: 14, borderRadius: 19, borderWidth: 1, borderColor: '#D5DEE8', backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', flexGrow: narrow ? 1 : 0 }}><Text style={{ color: '#0B1220', fontWeight: '700', fontSize: 13.5 }}>Review shop</Text></Pressable>
-                  <Pressable onPress={() => { saveShop({ enabled: true }).catch(() => {}); }} disabled={shopBusy} accessibilityRole="button" style={{ height: 38, paddingHorizontal: 16, borderRadius: 19, backgroundColor: '#1E9E6D', flexDirection: 'row', gap: 6, alignItems: 'center', justifyContent: 'center', flexGrow: narrow ? 1 : 0 }}>
-                    {shopBusy ? <ActivityIndicator color="#FFFFFF" /> : <><Ionicons name="power" size={15} color="#FFFFFF" /><Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 13.5 }}>Switch on</Text></>}
-                  </Pressable>
-                </View>
+              // A slim one-line strip, full width (company feedback 30 Oct 2026: half the height of the old banner).
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 40, paddingVertical: 5, paddingLeft: 14, paddingRight: 6, borderRadius: 12, borderWidth: 1, borderColor: '#F5C46B', backgroundColor: '#FFFBF0' }}>
+                <Ionicons name="storefront-outline" size={16} color="#B45309" />
+                <Text style={{ flex: 1, minWidth: 0, fontSize: 13.5, color: '#5C6B7A' }} numberOfLines={1}>
+                  <Text style={{ fontWeight: '700', color: '#0B1220' }}>Your AI shop link is switched off</Text>
+                  {narrow ? '' : ` · Customers who open ${shopUrl(myShop.slug).replace(/^https?:\/\//, '')} can't see your products or order yet.`}
+                </Text>
+                {!narrow && (
+                  <Pressable onPress={() => { openStorefront().catch(() => {}); }} accessibilityRole="button" style={{ height: 30, paddingHorizontal: 12, borderRadius: 15, borderWidth: 1, borderColor: '#D5DEE8', backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#0B1220', fontWeight: '700', fontSize: 12.5 }}>Review shop</Text></Pressable>
+                )}
+                <Pressable onPress={() => { saveShop({ enabled: true }).catch(() => {}); }} disabled={shopBusy} accessibilityRole="button" style={{ height: 30, paddingHorizontal: 12, borderRadius: 15, backgroundColor: '#1E9E6D', flexDirection: 'row', gap: 5, alignItems: 'center', justifyContent: 'center' }}>
+                  {shopBusy ? <ActivityIndicator color="#FFFFFF" size="small" /> : <><Ionicons name="power" size={13} color="#FFFFFF" /><Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 12.5 }}>Switch on</Text></>}
+                </Pressable>
               </View>
             )}
 
