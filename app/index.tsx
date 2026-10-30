@@ -3582,6 +3582,11 @@ function HomeScreenInner(){
   const [chatInput, setChatInput] = useState('');
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  // Brain (Figma "Brain General Interface" 0-5 + "AI chat side nav", 30 Oct 2026)
+  const [brainAsk, setBrainAsk] = useState(false);                  // the "What would you like to do today?" ask view (floating Nexora button)
+  const [brainMode, setBrainMode] = useState<'ask' | 'analyze' | 'summarize'>('ask');
+  const [brainNav, setBrainNav] = useState(false);                  // AI chat side nav
+  const voiceRef = useRef<any>(null);
   const [aiThinking, setAiThinking] = useState(false);
   const chatScrollRef = useRef<ScrollView>(null);
 
@@ -3957,8 +3962,9 @@ function HomeScreenInner(){
   const popularQuestions = [
     'How are my sales doing?',
     'Which products are top sellers?',
-    'Show unpaid invoices?',
-    'Schedule a meeting with Sarah',
+    'Show unpaid invoices',
+    'Create a quote for a customer',
+    'Schedule a meeting',
   ];
   const navigatingRef=useRef(false),onboardingIndexRef=useRef(0),signupIndexRef=useRef(0),loginIndexRef=useRef(0);
   const otpRefs=useRef<Array<TextInput|null>>([null,null,null,null]);
@@ -4552,16 +4558,7 @@ function HomeScreenInner(){
 
     try {
       if (option === 'Camera' || option === 'Photo Library') {
-        if (Platform.OS === 'web') {
-          setChatMessages(prev => [...prev, {
-            id: Date.now().toString(),
-            role: 'ai',
-            text: `${option} isn\u2019t available on web — try this on your phone.`,
-          }]);
-          return;
-        }
-
-        const permission = option === 'Camera'
+        const permission = Platform.OS === 'web' ? { status: 'granted' } : option === 'Camera'
           ? await ImagePicker.requestCameraPermissionsAsync()
           : await ImagePicker.requestMediaLibraryPermissionsAsync();
 
@@ -4760,6 +4757,20 @@ function HomeScreenInner(){
       byDay.get(key)!.msgs.push({ id: r.id, role: r.role as 'user' | 'ai', text: r.text, imageUri: r.image_url ?? undefined, at: t });
     }
     setChatHist(h => h && { ...h, loading: false, days: [...byDay.values()].reverse() });
+  };
+  // Recent chats for the Brain side nav: one entry per day of chatting, newest first.
+  const [recentChats, setRecentChats] = useState<ChatDay[] | null>(null);
+  const loadRecentChats = async () => {
+    const { data, error } = await supabase.from('chat_messages').select('id,role,text,image_url,created_at').order('created_at', { ascending: false }).limit(400);
+    if (error) { setRecentChats(r => r ?? []); return; }
+    const byDay = new Map<string, ChatDay>();
+    for (const r of [...(data ?? [])].reverse()) {
+      const t = Date.parse(r.created_at) || Date.now();
+      const key = new Date(t).toDateString();
+      if (!byDay.has(key)) byDay.set(key, { key, label: dayLabel(t), msgs: [] });
+      byDay.get(key)!.msgs.push({ id: r.id, role: r.role as 'user' | 'ai', text: r.text, imageUri: r.image_url ?? undefined, at: t });
+    }
+    setRecentChats([...byDay.values()].reverse().slice(0, 8));
   };
   // ---- Brain AI tools and saved work library ----
   const [aiTool, setAiTool] = useState<{ tool: AiTool | null; topic: string; extra: string } | null>(null);
@@ -10552,64 +10563,87 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
     }
 
     if (mainTab === 'brain') {
-      // The ask box: under the greeting on the empty state (design), docked at the bottom once a chat is going.
-      const renderComposer = (inline: boolean) => (
-        <View style={inline ? { width: '100%', maxWidth: 680, alignSelf: 'center' } : undefined}>
-            {showAttachMenu && (
-              <View style={[styles.attachMenu, inline && { marginHorizontal: 0 }]}>
-                {[
-                  { icon: 'camera-outline', label: 'Camera' },
-                  { icon: 'image-outline', label: 'Photo Library' },
-                  { icon: 'document-attach-outline', label: 'Add Files' },
-                  { icon: 'extension-puzzle-outline', label: 'Connect Apps' },
-                  { icon: 'hardware-chip-outline', label: 'Train Your AI' },
-                ].map(opt => (
-                  <Pressable key={opt.label} onPress={() => handleAttachOption(opt.label)} style={styles.attachOption}>
-                    <Ionicons name={opt.icon as any} size={18} color="#FFF" />
-                    <Text style={styles.attachOptionText}>{opt.label}</Text>
-                  </Pressable>
-                ))}
+      // Voice typing: the browser's speech recognition fills the ask box (web, Chrome / Edge / Safari).
+      const stopVoice = () => { try { voiceRef.current?.stop(); } catch { /* already stopped */ } voiceRef.current = null; setIsRecording(false); };
+      const startVoice = () => {
+        const SR = IS_WEB ? ((globalThis as any).SpeechRecognition || (globalThis as any).webkitSpeechRecognition) : null;
+        if (!SR) { flash(IS_WEB ? 'Voice typing works in Chrome, Edge and Safari.' : 'Tap the microphone on your keyboard to speak. Voice in the app is coming soon.'); return; }
+        try {
+          const r = new SR();
+          r.lang = (globalThis as any).navigator?.language || 'en-US';
+          r.interimResults = true; r.continuous = true;
+          const base = chatInput.trim() ? `${chatInput.trim()} ` : '';
+          r.onresult = (e: any) => { let t = ''; for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript; setChatInput(base + t); };
+          r.onerror = (e: any) => { if (e?.error === 'not-allowed' || e?.error === 'service-not-allowed') flash('Allow the microphone for this site to talk to Nexora.'); else if (e?.error && e.error !== 'aborted' && e.error !== 'no-speech') flash("Couldn't hear that. Try again."); };
+          r.onend = () => { voiceRef.current = null; setIsRecording(false); };
+          voiceRef.current = r; r.start(); setIsRecording(true); setShowAttachMenu(false);
+        } catch { setIsRecording(false); flash("Couldn't start the microphone."); }
+      };
+      const sendFromBrain = () => {
+        if (isRecording) stopVoice();
+        const t = chatInput.trim();
+        if (!t) return;
+        const wrapped = brainMode === 'analyze' ? `Analyze this using my real business data (orders, products, customers) and give me the numbers and clear next steps: ${t}`
+          : brainMode === 'summarize' ? `Summarise this in clear bullet points, then list any actions I need to take:\n\n${t}` : t;
+        setBrainAsk(false); setBrainMode('ask');
+        sendChatMessage(wrapped).catch(() => {});
+      };
+      // "+" menu (design 3): Camera, Add Files, Connect Apps, Train Your AI.
+      const renderAttachPopover = (dock: 'top' | 'bottom') => showAttachMenu && (
+        <View style={{ position: 'absolute', left: 0, ...(dock === 'top' ? { top: 0 } : { bottom: 66 }), width: 280, maxWidth: '86%' as any, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 22, backgroundColor: '#243247', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', zIndex: 60, elevation: 12, shadowColor: '#000', shadowOpacity: 0.35, shadowRadius: 16, shadowOffset: { width: 0, height: 8 } }}>
+          {[
+            { icon: 'camera-outline', label: 'Camera', mci: false },
+            { icon: 'document-outline', label: 'Add Files', mci: false },
+            { icon: 'extension-puzzle-outline', label: 'Connect Apps', mci: false },
+            { icon: 'brain', label: 'Train Your AI', mci: true },
+          ].map(opt => (
+            <Pressable key={opt.label} onPress={() => handleAttachOption(opt.label)} accessibilityRole="button" style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 16, paddingVertical: 7, opacity: pressed ? 0.6 : 1 })}>
+              <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: '#3A475C', alignItems: 'center', justifyContent: 'center' }}>
+                {opt.mci ? <MaterialCommunityIcons name={opt.icon as any} size={20} color="#FFFFFF" /> : <Ionicons name={opt.icon as any} size={19} color="#FFFFFF" />}
               </View>
+              <Text style={{ color: '#FFFFFF', fontSize: 15.5 }}>{opt.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+      );
+      const sendBtn = (
+        <Pressable disabled={!chatInput.trim() && !isRecording} onPress={sendFromBrain} accessibilityRole="button" accessibilityLabel="Send"
+          style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: chatInput.trim() || isRecording ? '#0F2942' : '#94A3BB', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <Ionicons name="arrow-up" size={21} color="#FFF" />
+        </Pressable>
+      );
+      const micBtn = (
+        <Pressable onPress={startVoice} hitSlop={8} accessibilityRole="button" accessibilityLabel="Talk to Nexora" style={{ width: 34, height: 34, alignItems: 'center', justifyContent: 'center' }}>
+          <MaterialCommunityIcons name="microphone-plus" size={23} color="#0B1220" />
+        </Pressable>
+      );
+      // The pill ask box (designs 1-5): under the greeting on the empty state, docked at the bottom during a chat.
+      const renderComposer = (inline: boolean) => (
+        <View style={[{ zIndex: 50 }, inline ? { width: '100%', maxWidth: 680, alignSelf: 'center' } : { marginHorizontal: 16, marginBottom: 10 }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 60, borderRadius: 30, backgroundColor: '#FFFFFF', paddingLeft: 16, paddingRight: 10, paddingVertical: 8 }}>
+            <Pressable onPress={() => setShowAttachMenu(v => !v)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Add a photo, file or app">
+              <Ionicons name={showAttachMenu ? 'close' : 'add'} size={26} color="#0B1220" />
+            </Pressable>
+            {isRecording ? (
+              <>
+                <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 2.5, overflow: 'hidden', height: 28 }} accessibilityLabel="Listening">
+                  {Array.from({ length: 44 }, (_, i) => <View key={i} style={{ width: 2, borderRadius: 1, height: [8, 14, 20, 11, 24, 9, 17, 22, 12, 6][i % 10], backgroundColor: '#1E56A0' }} />)}
+                </View>
+                <Pressable onPress={stopVoice} hitSlop={6} accessibilityRole="button" accessibilityLabel="Stop listening" style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: '#0F2942', alignItems: 'center', justifyContent: 'center' }}>
+                  <View style={{ width: 14, height: 14, borderRadius: 2, backgroundColor: '#FFFFFF' }} />
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <TextInput value={chatInput} onChangeText={setChatInput} onSubmitEditing={sendFromBrain} returnKeyType="send" blurOnSubmit={false} multiline={!inline} maxLength={4000}
+                  placeholder="Ask Nexora about your business..." placeholderTextColor="#8A97A6"
+                  style={{ flex: 1, minWidth: 0, fontSize: 15, color: '#0B1220', maxHeight: 120, paddingVertical: 6, ...(IS_WEB ? { outlineStyle: 'none' } as any : null) }} />
+                {micBtn}
+              </>
             )}
-
-            <View style={[styles.chatInputBar, inline && { marginHorizontal: 0, marginBottom: 0, paddingVertical: 10 }]}>
-              <Pressable onPress={() => setShowAttachMenu(v => !v)} hitSlop={8}>
-                <Ionicons name="add" size={22} color="#0B1220" />
-              </Pressable>
-
-              {isRecording ? (
-                <>
-                  <View style={styles.waveformRow}>
-                    {[6, 14, 9, 18, 7, 15, 10].map((h, i) => (
-                      <View key={i} style={[styles.waveformBar, { height: h }]} />
-                    ))}
-                  </View>
-                  <Pressable onPress={() => setIsRecording(false)} hitSlop={8} style={styles.stopButton}>
-                    <Ionicons name="stop" size={14} color="#FFF" />
-                  </Pressable>
-                </>
-              ) : (
-                <>
-                  <TextInput
-                    value={chatInput}
-                    onChangeText={setChatInput}
-                    placeholder="Ask Nexora about your business…"
-                    placeholderTextColor="#8A97A6"
-                    style={styles.chatTextInput}
-                  />
-                  <Pressable onPress={() => flash('Voice input is coming soon.')} hitSlop={8} accessibilityLabel="Voice input">
-                    <Ionicons name="mic-outline" size={20} color="#5C6B7A" />
-                  </Pressable>
-                </>
-              )}
-
-              <Pressable
-                disabled={!chatInput.trim()}
-                onPress={() => sendChatMessage()}
-                style={[styles.chatSendButton, { backgroundColor: chatInput.trim() ? '#1E56A0' : '#94A3BB' }]}>
-                <Ionicons name="arrow-up" size={16} color="#FFF" />
-              </Pressable>
-            </View>
+            {sendBtn}
+          </View>
+          {renderAttachPopover(inline ? 'top' : 'bottom')}
         </View>
       );
       return (
@@ -10618,11 +10652,9 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
           {/* Brain header (Figma "Brain General Interface", Oct 2026): menu, centred logo, chat history. */}
           <View style={[styles.topBar, headerSafe, styles.topBarDark, { borderBottomWidth: 0 }]}>
             <View style={{ width: 44, alignItems: 'flex-start' }}>
-              {!(IS_WEB && userId && hookWidth >= 1000) && (
-                <Pressable onPress={() => drawerOpenFn()} hitSlop={10} accessibilityRole="button" accessibilityLabel="Open menu">
-                  <Ionicons name="menu-outline" size={26} color="#FFF" />
-                </Pressable>
-              )}
+              <Pressable onPress={() => { setBrainNav(true); loadRecentChats().catch(() => {}); }} hitSlop={10} accessibilityRole="button" accessibilityLabel="AI tools and recent chats">
+                <Ionicons name="menu-outline" size={28} color="#FFF" />
+              </Pressable>
             </View>
             <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
               <NexoraLockup letter={13} light />
@@ -10630,25 +10662,10 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
             <View style={{ width: 44, alignItems: 'flex-end' }}>
               <Pressable onPress={() => { openChatHistory().catch(() => {}); }} hitSlop={6} accessibilityRole="button" accessibilityLabel="Chat history" style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' }}>
                 <Ionicons name="chatbubble-ellipses-outline" size={19} color="#0B1220" />
+                {chatMessages.length > 0 && <View style={{ position: 'absolute', top: 6, right: 6, width: 8, height: 8, borderRadius: 4, backgroundColor: '#EF4444' }} />}
               </Pressable>
             </View>
           </View>
-          {chatMessages.length > 0 && (
-            <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8, paddingHorizontal: 16, paddingTop: 6 }}>
-              <Pressable onPress={() => setChatMessages([])} accessibilityRole="button" accessibilityLabel="Start a new chat" style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' }}>
-                <Ionicons name="add" size={14} color="#9CC3FF" /><Text style={{ color: '#CFE0F5', fontSize: 12.5, fontWeight: '600' }}>New chat</Text>
-              </Pressable>
-              <Pressable onPress={() => setAiTool({ tool: null, topic: '', extra: '' })} accessibilityRole="button" accessibilityLabel="AI tools" style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' }}>
-                <Ionicons name="apps-outline" size={14} color="#9CC3FF" /><Text style={{ color: '#CFE0F5', fontSize: 12.5, fontWeight: '600' }}>AI tools</Text>
-              </Pressable>
-              <Pressable onPress={() => { openSavedLib().catch(() => {}); }} accessibilityRole="button" accessibilityLabel="Saved work" style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' }}>
-                <Ionicons name="bookmark-outline" size={14} color="#9CC3FF" /><Text style={{ color: '#CFE0F5', fontSize: 12.5, fontWeight: '600' }}>Saved</Text>
-              </Pressable>
-              <Pressable onPress={() => openQuickActions('brain')} accessibilityRole="button" accessibilityLabel="Quick actions" style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' }}>
-                <Ionicons name="grid-outline" size={14} color="#9CC3FF" /><Text style={{ color: '#CFE0F5', fontSize: 12.5, fontWeight: '600' }}>More</Text>
-              </Pressable>
-            </View>
-          )}
           <Modal visible={!!chatHist} transparent animationType="slide" onRequestClose={() => setChatHist(null)} statusBarTranslucent>
             <View style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.55)', justifyContent: IS_WEB ? 'center' : 'flex-end', padding: IS_WEB ? 16 : 0 }}>
               <View style={{ width: '100%', maxWidth: 640, alignSelf: 'center', maxHeight: '88%' as any, backgroundColor: '#FFFFFF', borderRadius: 20, borderBottomLeftRadius: IS_WEB ? 20 : 0, borderBottomRightRadius: IS_WEB ? 20 : 0, paddingTop: 16, paddingBottom: 16 + (IS_WEB ? 0 : insets.bottom) }}>
@@ -10820,37 +10837,95 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
           <ScrollView ref={chatScrollRef} style={styles.chatScroll} contentContainerStyle={styles.chatScrollContent}>
             {chatMessages.length === 0 ? (
               <>
-                <View style={styles.brainHero}>
-                  <View style={styles.brainHeroIconWrap}>
-                    {brainImageFailed ? (
-                      <Ionicons name="hardware-chip-outline" size={64} color="#EAF1FB" />
-                    ) : (
-                      <ExpoImage
-                        source={{ uri: BRAIN_ILLUSTRATION_URL }}
-                        style={styles.brainHeroImage}
-                        contentFit="contain"
-                        cachePolicy="memory-disk"
-                        onError={() => {
-                          // Falls back to the old chip icon rather than a
-                          // blank gap if 'brain-illustration.png' hasn't
-                          // been uploaded to the 'brain-gallery' bucket yet.
-                          console.warn('[brainHero] failed to load', BRAIN_ILLUSTRATION_URL);
-                          setBrainImageFailed(true);
-                        }}
-                      />
-                    )}
+                {brainAsk ? (
+                  <View style={{ width: '100%', maxWidth: 680, alignSelf: 'center', paddingTop: 36 }}>
+                    <Text style={{ color: '#FFFFFF', fontSize: 34, lineHeight: 42, fontWeight: '500' }}>What would you like to do today?</Text>
+                    <Text style={{ color: '#7D8FA8', fontSize: 15, marginTop: 10, marginBottom: 18 }}>Speak, upload and text. I will handle the next.</Text>
+                    <View style={{ borderRadius: 18, backgroundColor: '#FFFFFF', padding: 14, zIndex: 50 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                        <Ionicons name="search" size={20} color="#5C6B7A" />
+                        {isRecording ? (
+                          <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 2.5, overflow: 'hidden', height: 26 }}>
+                            {Array.from({ length: 40 }, (_, i) => <View key={i} style={{ width: 2, borderRadius: 1, height: [8, 14, 20, 11, 24, 9, 17, 22, 12, 6][i % 10], backgroundColor: '#1E56A0' }} />)}
+                          </View>
+                        ) : (
+                          <TextInput value={chatInput} onChangeText={setChatInput} onSubmitEditing={sendFromBrain} returnKeyType="send" autoFocus maxLength={4000}
+                            placeholder={brainMode === 'summarize' ? 'Paste the text to summarise...' : brainMode === 'analyze' ? 'What should Nexora analyse?' : 'Ask Nexora anything...'} placeholderTextColor="#5C6B7A"
+                            style={{ flex: 1, minWidth: 0, fontSize: 15, color: '#0B1220', paddingVertical: 6, ...(IS_WEB ? { outlineStyle: 'none' } as any : null) }} />
+                        )}
+                      </View>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 10 }}>
+                        <Pressable onPress={() => setShowAttachMenu(v => !v)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Add a photo, file or app">
+                          <Ionicons name={showAttachMenu ? 'close' : 'add'} size={26} color="#0B1220" />
+                        </Pressable>
+                        <View style={{ flex: 1 }} />
+                        {isRecording ? (
+                          <Pressable onPress={stopVoice} accessibilityRole="button" accessibilityLabel="Stop listening" style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: '#0F2942', alignItems: 'center', justifyContent: 'center', marginRight: 8 }}>
+                            <View style={{ width: 14, height: 14, borderRadius: 2, backgroundColor: '#FFFFFF' }} />
+                          </Pressable>
+                        ) : micBtn}
+                        <View style={{ width: 8 }} />
+                        {sendBtn}
+                      </View>
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginTop: 12 }}>
+                        {([
+                          { k: 'ask', label: 'Ask AI', icon: 'sparkles-outline', color: '#1E9BD7' },
+                          { k: 'analyze', label: 'Analyze', icon: 'bar-chart-outline', color: '#1E9E6D' },
+                          { k: 'summarize', label: 'Summarize', icon: 'document-text-outline', color: '#1E56A0' },
+                        ] as const).map(c => {
+                          const on = brainMode === c.k;
+                          return (
+                            <Pressable key={c.k} onPress={() => setBrainMode(c.k)} accessibilityRole="button" accessibilityState={{ selected: on }}
+                              style={{ flexDirection: 'row', alignItems: 'center', gap: 6, height: 34, paddingHorizontal: 12, borderRadius: 17, borderWidth: 1, borderColor: on ? c.color : '#E1E8F0', backgroundColor: on ? `${c.color}12` : '#FFFFFF' }}>
+                              <Ionicons name={c.icon as any} size={16} color={c.color} />
+                              <Text style={{ fontSize: 13, color: '#0B1220', fontWeight: on ? '700' : '500' }}>{c.label}</Text>
+                            </Pressable>
+                          );
+                        })}
+                        <View style={{ flex: 1 }} />
+                        <Pressable onPress={() => setAiTool({ tool: null, topic: '', extra: '' })} accessibilityRole="button" accessibilityLabel="All AI tools" style={{ width: 44, height: 34, borderRadius: 17, borderWidth: 1, borderColor: '#E1E8F0', alignItems: 'center', justifyContent: 'center' }}>
+                          <Ionicons name="options-outline" size={18} color="#0B1220" />
+                        </Pressable>
+                      </View>
+                      {renderAttachPopover('top')}
+                    </View>
+                    <Text style={[styles.popularLabel, { fontSize: 16, fontWeight: '500', marginTop: 26, marginBottom: 12 }]}>Popular Questions</Text>
+                    {popularQuestions.map(q => (
+                      <Pressable key={q} onPress={() => { setBrainAsk(false); sendChatMessage(q); }} accessibilityRole="button" style={[styles.popularItem, { borderWidth: 1, borderColor: 'rgba(255,255,255,0.10)', backgroundColor: 'rgba(255,255,255,0.03)', paddingVertical: 14, paddingHorizontal: 14, gap: 14 }]}>
+                        <Ionicons name="search-outline" size={18} color="#8FA3BC" />
+                        <Text style={[styles.popularItemText, { fontSize: 14, color: '#9FB0C6' }]}>{q}</Text>
+                        <Ionicons name="chevron-forward" size={17} color="#8FA3BC" />
+                      </Pressable>
+                    ))}
                   </View>
-                  <Text style={styles.brainHeroTitle}>Hi, {fullName || 'there'}</Text>
-                  <Text style={styles.brainHeroSubtitle}>What would you like to do today?</Text>
-                </View>
-                {renderComposer(true)}
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 8, marginTop: 16, width: '100%', maxWidth: 680, alignSelf: 'center' }}>
-                  {popularQuestions.slice(0, 3).map(q => (
-                    <Pressable key={q} onPress={() => sendChatMessage(q)} accessibilityRole="button" style={{ paddingHorizontal: 12, paddingVertical: 7, borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)' }}>
-                      <Text style={{ color: '#B8C7DA', fontSize: 12.5 }} numberOfLines={1}>{q}</Text>
-                    </Pressable>
-                  ))}
-                </View>
+                ) : (
+                  <>
+                    <View style={styles.brainHero}>
+                      <View style={styles.brainHeroIconWrap}>
+                        {brainImageFailed ? (
+                          <Ionicons name="hardware-chip-outline" size={64} color="#EAF1FB" />
+                        ) : (
+                          <ExpoImage
+                            source={{ uri: BRAIN_ILLUSTRATION_URL }}
+                            style={styles.brainHeroImage}
+                            contentFit="contain"
+                            cachePolicy="memory-disk"
+                            onError={() => {
+                              // Falls back to the old chip icon rather than a
+                              // blank gap if 'brain-illustration.png' hasn't
+                              // been uploaded to the 'brain-gallery' bucket yet.
+                              console.warn('[brainHero] failed to load', BRAIN_ILLUSTRATION_URL);
+                              setBrainImageFailed(true);
+                            }}
+                          />
+                        )}
+                      </View>
+                      <Text style={styles.brainHeroTitle}>Hi, {fullName || 'there'}</Text>
+                      <Text style={styles.brainHeroSubtitle}>What would you like to do today?</Text>
+                    </View>
+                    {renderComposer(true)}
+                  </>
+                )}
               </>
             ) : (
               chatMessages.map((m, mi) => (
@@ -10860,13 +10935,19 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                     <Text style={{ color: '#B8C7DA', fontSize: 12, fontWeight: '700' }}>{dayLabel(msgTime(m))}</Text>
                   </View>
                 )}
-                <View style={[styles.bubbleRow, m.role === 'user' ? styles.bubbleRowUser : [styles.bubbleRowAi, { flexDirection: 'column', alignItems: 'flex-start' }]]}>
-                  <View style={[styles.bubble, m.role === 'user' ? styles.bubbleUser : [styles.bubbleAi, { maxWidth: IS_WEB ? '94%' : '90%', paddingHorizontal: 16, paddingVertical: 14, borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' }]]}>
-                    {m.role === 'ai' && !!m.text && (
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 }}>
-                        <View style={{ width: 20, height: 20, borderRadius: 6, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="sparkles" size={11} color="#FFFFFF" /></View>
-                        <Text style={{ fontSize: 12, fontWeight: '800', color: '#9CC3FF', letterSpacing: 0.3 }}>Nexora</Text>
+                <View style={[styles.bubbleRow, m.role === 'user' ? [styles.bubbleRowUser, { flexDirection: 'column', alignItems: 'flex-end' }] : [styles.bubbleRowAi, { flexDirection: 'column', alignItems: 'flex-start' }], { marginBottom: 18 }]}>
+                  {m.role === 'ai' && (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+                      <Image source={NEXORA_MARK} style={{ width: 34, height: 34 }} resizeMode="contain" />
+                      <View>
+                        <Text style={{ fontSize: 15, fontWeight: '500', color: '#FFFFFF' }}>NEXORA AI</Text>
+                        <Text style={{ fontSize: 12.5, color: '#7D8FA8', marginTop: 1 }}>{Date.now() - msgTime(m) < 60_000 ? 'Just now' : clockLabel(msgTime(m))}</Text>
                       </View>
+                    </View>
+                  )}
+                  <View style={[styles.bubble, m.role === 'user' ? [styles.bubbleUser, { maxWidth: IS_WEB ? '78%' : '86%', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12 }] : { backgroundColor: 'transparent', maxWidth: '100%', width: '100%', paddingHorizontal: 0, paddingVertical: 0 }]}>
+                    {m.role === 'user' && (
+                      <Text style={{ fontSize: 13, color: '#FFFFFF', marginBottom: 4 }}>You  <Text style={{ color: '#8FB3E3' }}>{clockLabel(msgTime(m))}</Text></Text>
                     )}
                     {m.imageUri && (
                       <ExpoImage
@@ -10889,7 +10970,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                     {!!m.text && (
                       m.role === 'ai'
                         ? renderFormattedAiText(m.text)
-                        : <Text style={[styles.bubbleText, styles.bubbleTextUser, m.imageUri ? { marginTop: 8 } : null]}>{m.text}</Text>
+                        : <Text selectable style={[styles.bubbleText, styles.bubbleTextUser, { fontSize: 15, lineHeight: 21 }, m.imageUri ? { marginTop: 8 } : null]}>{m.text}</Text>
                     )}
                   </View>
                   {m.role === 'ai' && renderSources(m.sources)}
@@ -10919,7 +11000,13 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                       </View>
                     );
                   })()}
-                  <Text style={{ fontSize: 10.5, color: '#7D8FA8', marginTop: 3, marginHorizontal: 4, alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start' }}>{clockLabel(msgTime(m))}</Text>
+                  {m.role === 'user' && !!m.text && (
+                    <View style={{ flexDirection: 'row', gap: 16, marginTop: 8, marginRight: 4 }}>
+                      <Pressable onPress={() => { (async () => { try { if (IS_WEB) { await (globalThis as any).navigator?.clipboard?.writeText(m.text); flash('Copied'); } else Share.share({ message: m.text }).catch(() => {}); } catch { flash("Couldn't copy."); } })(); }} hitSlop={8} accessibilityRole="button" accessibilityLabel="Copy your message"><Ionicons name="copy-outline" size={17} color="#B8C7DA" /></Pressable>
+                      <Pressable disabled={aiThinking} onPress={() => { sendChatMessage(m.text).catch(() => {}); }} hitSlop={8} accessibilityRole="button" accessibilityLabel="Ask again"><Ionicons name="refresh" size={17} color="#B8C7DA" /></Pressable>
+                      <Pressable onPress={() => { (async () => { const nav = (globalThis as any).navigator; if (IS_WEB && nav?.share) { try { await nav.share({ text: m.text }); } catch { /* cancelled */ } } else if (IS_WEB) { try { await nav?.clipboard?.writeText(m.text); flash('Copied. Paste it anywhere to share.'); } catch { flash("Couldn't share."); } } else Share.share({ message: m.text }).catch(() => {}); })(); }} hitSlop={8} accessibilityRole="button" accessibilityLabel="Share your message"><Ionicons name="share-social-outline" size={17} color="#B8C7DA" /></Pressable>
+                    </View>
+                  )}
                 </View>
                 </React.Fragment>
               ))
@@ -10941,14 +11028,85 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
               was no way to reach these screens from the Brain tab. */}
 
           {chatMessages.length > 0 && renderComposer(false)}
-          {/* Floating Nexora button (design): opens Quick Actions with every tool. */}
+          {/* Floating Nexora button (designs 0-3): switches between the greeting and the "What would you like to do today?" ask view. */}
           {chatMessages.length === 0 && (
-            <Pressable onPress={() => openQuickActions('brain')} accessibilityRole="button" accessibilityLabel="Quick actions"
+            <Pressable onPress={() => { setShowAttachMenu(false); setBrainAsk(v => !v); }} accessibilityRole="button" accessibilityLabel={brainAsk ? 'Back to the greeting' : 'Ask Nexora'}
               style={{ position: 'absolute', right: 18, bottom: (IS_WEB && userId && hookWidth >= 1000 ? 24 : 92 + insets.bottom), width: 58, height: 58, borderRadius: 29, backgroundColor: '#1B3A5C', borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)', alignItems: 'center', justifyContent: 'center', zIndex: 30, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 6 }}>
               <MaterialCommunityIcons name="robot-happy-outline" size={28} color="#9CC3FF" />
               <View style={{ position: 'absolute', top: 12, right: 13, width: 8, height: 8, borderRadius: 4, backgroundColor: '#EF4444' }} />
             </Pressable>
           )}
+
+          {/* AI chat side nav (Figma "AI chat side nav", 30 Oct 2026): AI tools, new chat, recent chats, account. */}
+          <Modal visible={brainNav} transparent animationType="fade" onRequestClose={() => setBrainNav(false)} statusBarTranslucent>
+            <View style={{ flex: 1, flexDirection: 'row' }}>
+              <View style={{ width: Math.min(340, Math.round(width * 0.84)), backgroundColor: '#0F2942', shadowColor: '#000', shadowOpacity: 0.35, shadowRadius: 18, shadowOffset: { width: 4, height: 0 }, elevation: 16 }}>
+                <View style={[{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 18, paddingBottom: 18 }, headerSafe]}>
+                  <View style={{ flex: 1, minWidth: 0 }}><NexoraLockup letter={15} light /></View>
+                  <Pressable onPress={() => { setBrainNav(false); openChatHistory().catch(() => {}); }} accessibilityRole="button" accessibilityLabel="Search your chats" style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: '#16324F', alignItems: 'center', justifyContent: 'center' }}>
+                    <Ionicons name="search" size={21} color="#FFFFFF" />
+                  </Pressable>
+                </View>
+                <View style={{ flex: 1, backgroundColor: '#FFFFFF', borderTopRightRadius: 72, overflow: 'hidden' }}>
+                  <ScrollView contentContainerStyle={{ paddingHorizontal: 18, paddingTop: 24, paddingBottom: 16 }}>
+                    <Text style={{ fontSize: 15, color: '#0B1220', marginBottom: 6 }}>AI Tools</Text>
+                    {([
+                      { label: 'AI Images', icon: 'image-outline', onPress: () => { setBrainNav(false); openTruth('createPostHome'); } },
+                      { label: 'Business Assistant', icon: 'briefcase-outline', onPress: () => { setBrainNav(false); setAiTool({ tool: null, topic: '', extra: '' }); } },
+                      { label: 'Launch plan', icon: 'rocket-outline', onPress: () => { setBrainNav(false); setAiTool({ tool: AI_TOOL_GROUPS.flatMap(g => g.tools).find(t => t.key === 'launch') ?? null, topic: '', extra: '' }); } },
+                      { label: 'Brainstorm ideas', icon: 'bulb-outline', onPress: () => { setBrainNav(false); setAiTool({ tool: AI_TOOL_GROUPS.flatMap(g => g.tools).find(t => t.key === 'brainstorm') ?? null, topic: '', extra: '' }); } },
+                      { label: 'Content studio', icon: 'cube-outline', onPress: () => { setBrainNav(false); setAiTool({ tool: AI_TOOL_GROUPS.flatMap(g => g.tools).find(t => t.key === 'social') ?? null, topic: '', extra: '' }); } },
+                      { label: 'Saved work', icon: 'bookmark-outline', onPress: () => { setBrainNav(false); openSavedLib().catch(() => {}); } },
+                    ]).map(it => (
+                      <Pressable key={it.label} onPress={it.onPress} accessibilityRole="button" style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 16, paddingVertical: 12, opacity: pressed ? 0.55 : 1 })}>
+                        <Ionicons name={it.icon as any} size={22} color="#0F2942" />
+                        <Text style={{ fontSize: 16, color: '#0F2942' }}>{it.label}</Text>
+                      </Pressable>
+                    ))}
+                    <Pressable onPress={() => { setBrainNav(false); setChatMessages([]); setBrainAsk(false); setChatInput(''); }} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 14, height: 56, borderRadius: 14, backgroundColor: '#0F2942', paddingHorizontal: 18, marginTop: 10 }}>
+                      <Ionicons name="create-outline" size={21} color="#FFFFFF" />
+                      <Text style={{ flex: 1, fontSize: 16, color: '#FFFFFF' }}>New chat</Text>
+                      <Ionicons name="chevron-forward" size={18} color="#9FB0C6" />
+                    </Pressable>
+                    <Text style={{ fontSize: 15, color: '#8A97A6', marginTop: 24, marginBottom: 6 }}>Recent Chats</Text>
+                    {recentChats === null ? <ActivityIndicator color="#1E56A0" style={{ marginVertical: 16 }} />
+                      : !recentChats.length ? <Text style={{ fontSize: 13.5, color: '#8A97A6', paddingVertical: 10 }}>Your chats with Nexora will show up here.</Text>
+                      : recentChats.map(d => {
+                        const first = d.msgs.find(x => x.role === 'user' && x.text)?.text || d.msgs[0]?.text || d.label;
+                        const last = d.msgs[d.msgs.length - 1]?.at ?? Date.now();
+                        return (
+                          <Pressable key={d.key} onPress={() => { setBrainNav(false); setBrainAsk(false); setChatMessages(d.msgs); setTimeout(() => chatScrollRef.current?.scrollToEnd?.({ animated: false }), 150); }} accessibilityRole="button"
+                            style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 11, opacity: pressed ? 0.55 : 1 })}>
+                            <Ionicons name="chatbubble-outline" size={20} color="#0F2942" />
+                            <Text style={{ flex: 1, fontSize: 15, color: '#0F2942' }} numberOfLines={1}>{first.replace(/\s+/g, ' ')}</Text>
+                            <Text style={{ fontSize: 12.5, color: '#8A97A6' }}>{timeAgo(new Date(last).toISOString())}</Text>
+                            <Ionicons name="chevron-forward" size={16} color="#5C6B7A" />
+                          </Pressable>
+                        );
+                      })}
+                    {!!recentChats?.length && (
+                      <Pressable onPress={() => { setBrainNav(false); openChatHistory().catch(() => {}); }} hitSlop={6} style={{ paddingVertical: 8 }}>
+                        <Text style={{ fontSize: 13.5, fontWeight: '700', color: '#1E56A0' }}>All chats ›</Text>
+                      </Pressable>
+                    )}
+                  </ScrollView>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 18, paddingTop: 14, paddingBottom: 14 + insets.bottom, borderTopWidth: 1, borderTopColor: '#E6ECF3' }}>
+                    <View style={{ width: 44, height: 44, borderRadius: 22, overflow: 'hidden', backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}>
+                      {avatarUrl ? <ExpoImage source={{ uri: avatarUrl }} style={{ width: '100%', height: '100%' }} contentFit="cover" /> : <Text style={{ color: '#FFF', fontWeight: '700' }}>{(fullName || userEmail || '?').trim().split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase()}</Text>}
+                    </View>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={{ fontSize: 16, fontWeight: '500', color: '#0B1220' }} numberOfLines={1}>{fullName || businessName || 'Your account'}</Text>
+                      <Text style={{ fontSize: 12.5, color: '#5C6B7A' }}>{workspace?.role === 'staff' ? 'Team member' : 'Business Owner'}</Text>
+                    </View>
+                    <Pressable onPress={() => { setBrainNav(false); goTab('profile'); }} hitSlop={8} accessibilityRole="button" accessibilityLabel="Settings">
+                      <Ionicons name="settings" size={24} color="#0F2942" />
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+              <Pressable onPress={() => setBrainNav(false)} accessibilityLabel="Close" style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)' }} />
+            </View>
+          </Modal>
 
           {renderReportModal()}
           {renderSourceSheet()}
@@ -11264,7 +11422,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
             )}
 
             {shopOff && myShop && (
-              <View style={[panel, { flexDirection: narrow ? 'column' : 'row', alignItems: narrow ? 'stretch' : 'center', gap: 12, borderColor: '#F5C46B', backgroundColor: '#FFFBF0', paddingVertical: 14 }]}>
+              <View style={[panel, { flexDirection: 'column', alignItems: 'stretch', gap: 12, borderColor: '#F5C46B', backgroundColor: '#FFFBF0', paddingVertical: 14 }, !narrow && { width: '50%', alignSelf: 'flex-start' }]}>
                 <View style={{ flexDirection: 'row', gap: 12, flex: 1, alignItems: 'center' }}>
                   <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#FFF1D6', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="storefront-outline" size={18} color="#B45309" /></View>
                   <View style={{ flex: 1, minWidth: 0 }}>
