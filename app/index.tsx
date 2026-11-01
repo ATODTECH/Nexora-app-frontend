@@ -1,5 +1,5 @@
 import React,{useEffect,useRef,useState}from'react';
-import{ActivityIndicator,Alert,Animated,LogBox,AppState,BackHandler,Image,KeyboardAvoidingView,Linking,Modal,PanResponder,Platform,Pressable,ScrollView,Share,StyleSheet,Switch,Text,TextInput,View,useWindowDimensions}from'react-native';
+import{ActivityIndicator,Alert,Animated,LogBox,AppState,BackHandler,Image,KeyboardAvoidingView,Linking,Modal,PanResponder,Platform,Pressable,ScrollView,Share,StyleSheet,Switch,View,useWindowDimensions}from'react-native';
 import { Image as ExpoImage } from 'expo-image';
 // Dev-only notices raised inside third-party libraries (not by this file); they don't affect the app.
 LogBox.ignoreLogs(['[Reanimated] Reduced motion setting', "It looks like you might be using shared value's .value inside reanimated inline style"]);
@@ -11,6 +11,11 @@ const WebView: any = Platform.OS === 'web' ? null : require('react-native-webvie
 import{StatusBar}from'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import{supabase}from'../lib/supabase';
+// Inter on every screen (Figma font): drop-in Text and TextInput that turn fontWeight into the matching Inter file.
+import { Text, TextInput, interFamily, useInterFonts } from '../lib/inter';
+import { LEVEL_COLORS, STOCK_ALERT_LABEL, STOCK_LABEL, currentStockField, stockInfo, stockOf } from '../lib/products';
+import { StockCard } from '../components/StockCard';
+import { AddOrderSheet, type ManualOrder } from '../components/AddOrderSheet';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
@@ -1147,7 +1152,6 @@ function BrandIcon({ platform, size = 36, ring = false }: { platform: Conversati
 type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'campaigns'|'automations'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules'|'opportunities'|'opportunityDetail'|'settings'|'quickActions';
 type KnowledgeCategory='products'|'services'|'operations'|'policies'|'faqs';
 type KnowledgeField={label:string;value:string};
-// Stock: products can carry "Stock" (how many you have) and "Remind me at" (warn when stock reaches this; default 5).
 // ---- Brain AI tools (company guide, 29 Oct 2026): organised tools instead of one crowded screen ----
 type AiToolKey = 'description' | 'advert' | 'social' | 'email' | 'blog' | 'video' | 'plan' | 'proposal' | 'persona' | 'pricing' | 'salesScript' | 'launch' | 'summary' | 'brainstorm';
 type AiTool = { key: AiToolKey; label: string; icon: string; kind: 'content' | 'business' | 'note'; hint: string; extra?: string; build: (topic: string, extra: string) => string };
@@ -1175,13 +1179,6 @@ const AI_TOOL_GROUPS: { title: string; sub: string; icon: string; tools: AiTool[
   ] },
 ];
 const AI_SAVED_KIND_LABEL: Record<string, string> = { note: 'Notes', content: 'Content', business: 'Business', listing: 'Listings', caption: 'Captions', email: 'Emails', plan: 'Plans', script: 'Scripts', other: 'Other' };
-const STOCK_LABEL = 'Stock', STOCK_ALERT_LABEL = 'Remind me at';
-const stockOf = (fields: { label: string; value: string }[]) => {
-  const n = (l: string) => { const v = fields.find(f => f.label === l)?.value; const m = v ? /-?\d+/.exec(v.replace(/,/g, '')) : null; return m ? Number(m[0]) : null; };
-  const stock = n(STOCK_LABEL);
-  const at = n(STOCK_ALERT_LABEL) ?? 5;
-  return { stock, at, low: stock !== null && stock <= at };
-};
 type KnowledgeItem={id:string;name:string;subtitle:string;status:'Verified'|'Need review'|'Draft';icon:string;iconBg:string;iconColor:string;overview:string;fields:KnowledgeField[];features?:string[];image?:string;viewOnlyFields?:KnowledgeField[]};
 
 // A couple of items don't have a good match in Ionicons or
@@ -3107,6 +3104,7 @@ function useAccountEpoch() {
   return epoch;
 }
 export default function HomeScreen() {
+  useInterFonts(); // re-draws the screens in Inter once the font has loaded
   const { width: viewW, height: viewH } = useWindowDimensions();
   const shell = useWebShell();
   const epoch = useAccountEpoch();
@@ -3160,7 +3158,7 @@ const IN_C = ['#1E56A0', '#E8973A', '#2A9D8F', '#9B5DE5', '#C9A227', '#8A97A6'];
 const IN_INK = '#0B1220', IN_MUTED = '#5C6B7A', IN_FAINT = '#8A97A6', IN_GRID = '#E6ECF3';
 const IN_STATUS_COLOR: Record<string, string> = { pending: '#E8973A', processing: '#C9A227', shipped: '#1E56A0', delivered: '#2A9D8F', cancelled: '#8A97A6' };
 const IN_GOOD = '#15803D', IN_WARN = '#B45309', IN_BAD = '#B42318';
-const IN_FONT = Platform.OS === 'web' ? 'system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif' : undefined;
+const IN_FONT = interFamily('400');
 function inCompact(v: number): string {
   const a = Math.abs(v);
   if (a >= 1e9) return `${(v / 1e9).toFixed(a >= 1e10 ? 0 : 1)}B`;
@@ -3897,7 +3895,7 @@ function HomeScreenInner(){
   }, [socialMediaIndex]);
   const [activeCategory, setActiveCategory] = useState<KnowledgeCategory>('products');
   const [activeItemId, setActiveItemId] = useState<string | null>(null);
-  const [listStatusFilter, setListStatusFilter] = useState<'All' | 'Verified' | 'Drafts' | 'Need review'>('All');
+  const [listStatusFilter, setListStatusFilter] = useState<'All' | 'Verified' | 'Drafts' | 'Need review' | 'Low stock'>('All');
   const [editDraft, setEditDraft] = useState<KnowledgeField[]>([]);
   // NEW: 'uploadImage' — the "Upload your own image" choice on the
   // addImage step used to just call setAddKnowledgeStep('review')
@@ -3926,7 +3924,7 @@ function HomeScreenInner(){
   const [orderOpenId, setOrderOpenId] = useState<string | null>(null);
   const [orderForm, setOrderForm] = useState<{ tracking: string; delivery_fee: string; discount: string; refund: string; cancel_reason: string; note: string } | null>(null);
   const [ordersUpgraded, setOrdersUpgraded] = useState(true);
-  const [newOrder, setNewOrder] = useState<{ name: string; phone: string; items: string; total: string; paid: boolean; busy: boolean; error: string } | null>(null);
+  const [addingOrder, setAddingOrder] = useState(false);
   const [agendaEvents, setAgendaEvents] = useState<AgendaEvent[]>([]);
   const [escalations, setEscalations] = useState<EscalationRow[]>([]);
   const [escAlerts, setEscAlerts] = useState<Record<string, any>>({});
@@ -6270,6 +6268,7 @@ function HomeScreenInner(){
         case 'leads': openLeads(); break;
         case 'inbox': goTab('inbox'); loadConversations().catch(() => {}); break;
         case 'loginActivity': openSettings('loginActivity'); break;
+        case 'products': openKnowledgeList('products'); break;   // "Running low" / "Sold out"
       }
     });
     return () => sub.remove();
@@ -7835,8 +7834,13 @@ function HomeScreenInner(){
     const subtitle = isCommerce && get('Category') ? [get('Category'), get('Price')].filter(Boolean).join(' \u00b7 ') : item.subtitle;
     const overview = isCommerce && editDraft.some(f => f.label === 'Description') ? get('Description') : item.overview;
     setSavingKnowledge(true);
+    // Stock changes only through orders and the stock card (each recorded), so saving keeps the stock as it is now,
+    // even if an order came in while this screen was open.
+    const liveStock = activeCategory === 'products' ? await currentStockField(item.id).catch(() => null) : null;
+    const savedFields = liveStock === null ? fields
+      : [...fields.filter(f => f.label !== STOCK_LABEL), ...(liveStock ? [{ label: STOCK_LABEL, value: liveStock }] : [])];
     const { error } = await supabase.from('knowledge_items')
-      .update({ name, subtitle, status, overview, fields, features: features ?? item.features ?? [] }).eq('id', item.id);
+      .update({ name, subtitle, status, overview, fields: savedFields, features: features ?? item.features ?? [] }).eq('id', item.id);
     setSavingKnowledge(false);
     if (error) { flash("Couldn't save your changes. Please try again."); return; }
     await refreshKnowledge().catch(() => {});
@@ -8288,23 +8292,13 @@ function HomeScreenInner(){
     flash(done);
     return true;
   };
-  // Stock goes back up when an order with tracked products is cancelled.
-  const restockOrder = async (o: OrderRow) => {
-    for (const l of o.line_items ?? []) {
-      const it = knowledgeData.products.items.find(i => i.id === l.id);
-      const st = it ? stockOf(it.fields) : null;
-      if (!it || !st || st.stock === null) continue;
-      const fields = it.fields.map(f => (f.label === STOCK_LABEL ? { ...f, value: String(st.stock! + l.qty) } : f));
-      await supabase.from('knowledge_items').update({ fields }).eq('id', it.id);
-    }
-    refreshKnowledge().catch(() => {});
-  };
   const setOrderStatus = async (o: OrderRow, status: OrderRow['status'], extra: Partial<OrderRow> = {}) => {
     const now = new Date().toISOString();
     const stamp: Partial<OrderRow> = status === 'shipped' ? { shipped_at: now } : status === 'delivered' ? { delivered_at: now } : status === 'completed' ? { completed_at: now } : status === 'cancelled' ? { cancelled_at: now } : {};
     const text = status === 'processing' ? 'Order confirmed' : status === 'shipped' ? `Order shipped${extra.tracking ? ` (tracking: ${extra.tracking})` : ''}` : status === 'delivered' ? 'Order delivered' : status === 'completed' ? 'Order completed' : status === 'cancelled' ? `Order cancelled${extra.cancel_reason ? `: ${extra.cancel_reason}` : ''}` : 'Order reopened';
     const ok = await updateOrder(o, { status, ...stamp, ...extra }, text, true, status === 'shipped' ? `${orderLabel(o)} marked as shipped` : status === 'delivered' ? 'Marked as delivered' : status === 'cancelled' ? 'Order cancelled' : 'Order updated');
-    if (ok && status === 'cancelled' && o.status !== 'cancelled') restockOrder(o).catch(() => {});
+    // The database gives back (or takes again) the stock of a cancelled (or reopened) order; show the new counts.
+    if (ok && (status === 'cancelled') !== (o.status === 'cancelled')) refreshKnowledge().catch(() => {});
     return ok;
   };
   const setPayment = async (o: OrderRow, payment_status: PaymentStatus, amount?: number) => {
@@ -8376,20 +8370,23 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
     }
     Share.share({ message: csv }).catch(() => {});
   };
-  const createManualOrder = async () => {
-    const f = newOrder;
-    if (!f || !userId) return;
-    const total = Number(f.total.replace(/[^\d.]/g, ''));
-    if (f.name.trim().length < 2 || !f.items.trim() || !(total > 0)) { setNewOrder({ ...f, error: 'Add the customer, what they bought and the total.' }); return; }
-    setNewOrder({ ...f, busy: true, error: '' });
+  // A walk-in, phone or chat sale. Picked products carry their id, so the database takes their stock (same as the website).
+  const createManualOrder = async (o: ManualOrder) => {
+    if (!userId) return;
     const now = new Date().toISOString();
-    const base = { user_id: userId, customer_name: f.name.trim(), items: f.items.trim().slice(0, 500), total, status: 'pending' as const, tracking: '' };
-    const number = `NX-${1001 + orders.length}`;
-    let { error } = await supabase.from('orders').insert(ordersUpgraded ? { ...base, order_number: number, source: 'manual', customer_phone: f.phone.trim(), payment_status: f.paid ? 'paid' : 'unpaid', paid_at: f.paid ? now : null, amount_paid: f.paid ? total : 0, subtotal: total, currency: LOCAL_NGN ? 'NGN' : 'USD', history: [{ at: now, text: 'Order added in Nexora', by: fullName || 'Owner', customer: false }] } : base);
-    if (error && /order_number|duplicate/i.test(error.message)) ({ error } = await supabase.from('orders').insert({ ...base, order_number: `NX-${Date.now().toString().slice(-6)}`, source: 'manual', customer_phone: f.phone.trim(), payment_status: f.paid ? 'paid' : 'unpaid', subtotal: total }));
-    if (error) { setNewOrder(x => x && { ...x, busy: false, error: "Couldn't save the order." }); return; }
-    setNewOrder(null);
+    const items = [...o.lines.map(l => `${l.name} x${l.qty}`), o.other.trim()].filter(Boolean).join(', ').slice(0, 500);
+    const base = { user_id: userId, customer_name: o.name.trim(), items, total: o.total, status: 'pending' as const, tracking: '' };
+    const extra = {
+      source: 'manual', customer_phone: o.phone.trim(), payment_status: o.paid ? 'paid' : 'unpaid', paid_at: o.paid ? now : null, amount_paid: o.paid ? o.total : 0,
+      subtotal: o.total, currency: o.currency, line_items: o.lines, history: [{ at: now, text: 'Order added in Nexora', by: fullName || 'Owner', customer: false }],
+    };
+    const row: Record<string, unknown> = ordersUpgraded ? { ...base, ...extra, order_number: `NX-${1001 + orders.length}` } : base;
+    let { error } = await supabase.from('orders').insert(row);
+    if (error && /order_number|duplicate/i.test(error.message)) ({ error } = await supabase.from('orders').insert({ ...base, ...extra, order_number: `NX-${Date.now().toString().slice(-6)}` }));
+    if (error) throw new Error("Couldn't save the order.");
+    setAddingOrder(false);
     await refreshOrders().catch(() => {});
+    refreshKnowledge().catch(() => {});   // picked products' stock went down
     flash('Order added');
   };
   const addImageToItem = async (item: KnowledgeItem) => {
@@ -11868,7 +11865,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
             ))}
           </ScrollView>
 {isOwnerRole() && (
-          <Pressable onPress={() => setNewOrder({ name: '', phone: '', items: '', total: '', paid: false, busy: false, error: '' })} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', marginBottom: 12 }}>
+          <Pressable onPress={() => setAddingOrder(true)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', marginBottom: 12 }}>
             <Ionicons name="add-circle-outline" size={18} color="#1E56A0" /><Text style={{ color: '#1E56A0', fontWeight: '700' }}>Add an order yourself</Text>
           </Pressable>
           )}
@@ -12048,32 +12045,9 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
         </Modal>
 
         {/* Add an order yourself (walk-in, phone or chat orders) */}
-        <Modal visible={!!newOrder} transparent animationType="fade" onRequestClose={() => setNewOrder(null)} statusBarTranslucent>
+        <Modal visible={addingOrder} transparent animationType="fade" onRequestClose={() => setAddingOrder(false)} statusBarTranslucent>
           <View style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)', justifyContent: 'center', padding: 16 }}>
-            {newOrder && (
-              <View style={{ width: '100%', maxWidth: 520, alignSelf: 'center', backgroundColor: '#FFF', borderRadius: 20, padding: 20 }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <Text style={{ flex: 1, fontSize: 18, fontWeight: '700', color: '#0B1220' }}>Add an order</Text>
-                  <Pressable onPress={() => setNewOrder(null)} hitSlop={8} accessibilityLabel="Close"><Ionicons name="close" size={22} color="#5C6B7A" /></Pressable>
-                </View>
-                <Text style={[styles.detailFieldLabel, { marginTop: 12 }]}>Customer</Text>
-                <TextInput value={newOrder.name} onChangeText={v => setNewOrder(f => f && { ...f, name: v })} placeholder="e.g. John Doe" placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={120} />
-                <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Phone (optional)</Text>
-                <TextInput value={newOrder.phone} onChangeText={v => setNewOrder(f => f && { ...f, phone: v })} placeholder="+1 555 123 4567" placeholderTextColor="#A5AFBB" keyboardType="phone-pad" style={styles.editInput} maxLength={40} />
-                <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>What they bought</Text>
-                <TextInput value={newOrder.items} onChangeText={v => setNewOrder(f => f && { ...f, items: v })} placeholder="e.g. Sneakers x2, Socks x1" placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={500} />
-                <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>Total</Text>
-                <TextInput value={newOrder.total} onChangeText={v => setNewOrder(f => f && { ...f, total: v })} placeholder="0" placeholderTextColor="#A5AFBB" keyboardType="decimal-pad" style={styles.editInput} maxLength={14} />
-                <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 12 }}>
-                  <Text style={[styles.attentionTitle, { flex: 1, fontSize: 14 }]}>Already paid</Text>
-                  <Switch value={newOrder.paid} onValueChange={v => setNewOrder(f => f && { ...f, paid: v })} trackColor={{ true: '#5381BB', false: '#D5DEE8' }} thumbColor="#FFFFFF" />
-                </View>
-                {!!newOrder.error && <Text style={{ color: '#B42318', fontSize: 13, marginTop: 8 }}>{newOrder.error}</Text>}
-                <Pressable disabled={newOrder.busy} onPress={() => { createManualOrder().catch(() => {}); }} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 14 }]}>
-                  {newOrder.busy ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>Save order</Text>}
-                </Pressable>
-              </View>
-            )}
+            {addingOrder && <AddOrderSheet products={knowledgeData.products.items} defaultCurrency={LOCAL_NGN ? 'NGN' : 'USD'} onClose={() => setAddingOrder(false)} onSave={createManualOrder} />}
           </View>
         </Modal>
       </View>
@@ -12890,13 +12864,16 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
     const verified = data.items.filter(i => i.status === 'Verified').length;
     const drafts = data.items.filter(i => i.status === 'Draft').length;
     const needReview = data.items.filter(i => i.status === 'Need review').length;
-    const filterCounts: Record<'All' | 'Verified' | 'Drafts' | 'Need review', number> = {
-      All: data.items.length, Verified: verified, Drafts: drafts, 'Need review': needReview,
+    const isLow = (i: KnowledgeItem) => stockOf(i.fields).low;
+    const filterCounts: Record<typeof listStatusFilter, number> = {
+      All: data.items.length, Verified: verified, Drafts: drafts, 'Need review': needReview, 'Low stock': data.items.filter(isLow).length,
     };
+    const listFilters = activeCategory === 'products' ? (['All', 'Verified', 'Drafts', 'Need review', 'Low stock'] as const) : (['All', 'Verified', 'Drafts', 'Need review'] as const);
     const q = listSearch.trim().toLowerCase();
     const filtered = data.items.filter(i =>
       (listStatusFilter === 'All' ? true :
       listStatusFilter === 'Drafts' ? i.status === 'Draft' :
+      listStatusFilter === 'Low stock' ? isLow(i) :
       i.status === listStatusFilter) &&
       (!q || i.name.toLowerCase().includes(q) || i.subtitle.toLowerCase().includes(q))
     );
@@ -12918,7 +12895,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
               style={styles.listFilterButton}
               onPress={() => {
                 const order = ['All', 'Verified', 'Drafts', 'Need review'] as const;
-                const next = order[(order.indexOf(listStatusFilter) + 1) % order.length];
+                const next = order[(order.indexOf(listStatusFilter as (typeof order)[number]) + 1) % order.length];
                 setListStatusFilter(next);
                 flash(`Showing: ${next}`);
               }}
@@ -12949,7 +12926,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
             <Text style={styles.sectionLabel}>Popular Questions</Text>
           ) : (
             <View style={styles.filterRow}>
-              {(['All', 'Verified', 'Drafts', 'Need review'] as const).map(f => (
+              {listFilters.map(f => (
                 <Pressable key={f} onPress={() => setListStatusFilter(f)} style={[styles.filterChip, listStatusFilter === f && styles.filterChipActive]}>
                   <Text style={[styles.filterChipText, listStatusFilter === f && styles.filterChipTextActive]}>{f} ({filterCounts[f]})</Text>
                 </Pressable>
@@ -12992,6 +12969,11 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                   <Text style={styles.attentionTitle}>{item.name}</Text>
                   <Text style={styles.attentionSubtitle}>{item.subtitle}</Text>
                 </View>
+                {(() => { const st = activeCategory === 'products' ? stockInfo(item.fields) : null; return st?.level ? (
+                  <View style={[styles.statusPill, { backgroundColor: LEVEL_COLORS[st.level].bg, marginRight: 6 }]}>
+                    <Text style={[styles.statusPillText, { color: LEVEL_COLORS[st.level].fg }]}>{st.label}</Text>
+                  </View>
+                ) : null; })()}
                 <View style={[styles.statusPill, item.status !== 'Verified' && styles.statusPillWarn]}>
                   <Text style={[styles.statusPillText, item.status !== 'Verified' && styles.statusPillTextWarn]}>{item.status}</Text>
                 </View>
@@ -13043,7 +13025,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                 Visibility between Price and Status, and only Last Updated
                 at the end. Sorting the combined list by DETAIL_FIELD_ORDER
                 interleaves each field into its correct truth position. */}
-            {[...item.fields, ...(item.viewOnlyFields ?? [])].sort((a, b) => {
+            {[...item.fields, ...(item.viewOnlyFields ?? [])].filter(f => !(activeCategory === 'products' && f.label === STOCK_LABEL)).sort((a, b) => {
               const ia = DETAIL_FIELD_ORDER.indexOf(a.label), ib = DETAIL_FIELD_ORDER.indexOf(b.label);
               return (ia === -1 ? DETAIL_FIELD_ORDER.length : ia) - (ib === -1 ? DETAIL_FIELD_ORDER.length : ib);
             }).map(f => (
@@ -13056,6 +13038,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
               </View>
             ))}
           </View>
+          {activeCategory === 'products' && <StockCard key={item.id} itemId={item.id} fields={item.fields} onChanged={() => { refreshKnowledge().catch(() => {}); }} />}
           {item.features && (
             <View style={styles.detailCard}>
               <Text style={styles.sectionLabel}>{featuresHeading}</Text>
@@ -13092,7 +13075,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
     const item = knowledgeData[activeCategory].items.find(i => i.id === activeItemId);
     const nameField = editDraft[0];
     const categoryField = editDraft.find(f => f.label === 'Category');
-    const restFieldsRaw = editDraft.filter(f => f !== nameField && f.label !== 'Category');
+    const restFieldsRaw = editDraft.filter(f => f !== nameField && f.label !== 'Category' && !(activeCategory === 'products' && f.label === STOCK_LABEL));
     // FIX: was rendered in raw data-array order (Specification, Brand,
     // Price, Status), but Product details-4's truth screen shows Price
     // first. Sorting by EDIT_FIELD_ORDER instead of touching the data
@@ -13846,7 +13829,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
     const ss = String(callSeconds % 60).padStart(2, '0');
     const lc = liveCall;
     const NAVY = '#0F1D37', CARD = '#0F2942';
-    const font = (w: '400' | '500' | '600', size: number) => ({ fontFamily: IS_WEB ? 'Inter, system-ui, -apple-system, sans-serif' : undefined, fontWeight: w, fontSize: size, color: '#FFFFFF' } as const);
+    const font = (w: '400' | '500' | '600', size: number) => ({ fontWeight: w, fontSize: size, color: '#FFFFFF' } as const);
     // Fit the 852-tall design on shorter screens by tightening the gaps only.
     const avail = (height || hookHeight) - (insets.top || 0) - (insets.bottom || 0);
     const g = Math.max(0.45, Math.min(1, (avail - 63 - 480) / (758 - 480)));
