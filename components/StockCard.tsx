@@ -46,6 +46,7 @@ export function StockCard({ itemId, fields, onChanged }: Props) {
 
       {form ? (
         <View style={s.form}>
+          <Text style={[s.label, { fontSize: 14, fontWeight: '700', marginBottom: 8 }]}>{form.mode === 'add' ? 'Add stock (received)' : stock === null ? 'Start tracking stock' : 'Correct count'}</Text>
           <Text style={s.label}>{form.mode === 'add' ? 'How many arrived?' : stock === null ? 'How many do you have?' : 'How many do you have now?'}</Text>
           <TextInput autoFocus value={form.qty} onChangeText={v => setForm({ ...form, qty: v.replace(/[^\d]/g, '').slice(0, 9) })} keyboardType="number-pad" placeholder="0" placeholderTextColor="#A5AFBB" style={s.input} />
           {stock !== null && <>
