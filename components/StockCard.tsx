@@ -2,20 +2,26 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Text, TextInput } from '../lib/inter';
+import { loadPendingFor, requestApproval, type Approval } from '../lib/approvals';
 import { LEVEL_COLORS, REASON_TEXT, STOCK_LABEL, adjustStock, loadMovements, stockInfo, type Movement } from '../lib/products';
 
 // A product's stock on its detail screen: how many are left, "Add stock (received)", "Correct count" and the
-// history of every change. Same behaviour as the website's StockCard.
-type Props = { itemId: string; fields: { label: string; value: string }[]; onChanged: () => void; canAdjust?: boolean };
+// history of every change. Same behaviour as the website's StockCard: with askCorrect (a team member while the owner's
+// stock-correction rule is on) "Correct count" is sent for approval instead.
+type Props = { itemId: string; fields: { label: string; value: string }[]; onChanged: () => void; canAdjust?: boolean; askCorrect?: boolean };
 const when = (iso: string) => new Date(iso).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
 
-export function StockCard({ itemId, fields, onChanged, canAdjust = true }: Props) {
+export function StockCard({ itemId, fields, onChanged, canAdjust = true, askCorrect = false }: Props) {
   const info = stockInfo(fields);
   const [stock, setStock] = useState(info.stock);
   const [history, setHistory] = useState<Movement[] | null>(null);
   const [form, setForm] = useState<null | { mode: 'add' | 'set'; qty: string; note: string }>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [pending, setPending] = useState<Approval[]>([]);
+  const [sent, setSent] = useState('');
+  const loadPending = useCallback(() => { loadPendingFor(itemId).then(setPending, () => {}); }, [itemId]);
+  useEffect(() => { loadPending(); }, [loadPending]);
   const shown = stockInfo([...fields.filter(f => f.label !== STOCK_LABEL), ...(stock === null ? [] : [{ label: STOCK_LABEL, value: String(stock) }])]);
 
   const loadHistory = useCallback(() => { loadMovements(itemId).then(setHistory).catch(() => setHistory([])); }, [itemId]);
@@ -26,8 +32,14 @@ export function StockCard({ itemId, fields, onChanged, canAdjust = true }: Props
     const qty = Number(form.qty);
     if (!form.qty || !Number.isInteger(qty) || qty < (form.mode === 'add' ? 1 : 0)) { setErr(form.mode === 'add' ? 'Enter how many arrived.' : 'Enter how many you have now.'); return; }
     if (form.mode === 'set' && stock !== null && !form.note.trim()) { setErr('Say why the count changed, e.g. "Counted the shelf" or "2 damaged".'); return; }
-    setBusy(true); setErr('');
-    try { setStock(await adjustStock(itemId, form.mode, qty, form.note)); setForm(null); loadHistory(); onChanged(); }
+    setBusy(true); setErr(''); setSent('');
+    try {
+      if (form.mode === 'set' && stock !== null && askCorrect) {
+        if (qty === stock) { setErr('That’s already the count.'); setBusy(false); return; }
+        await requestApproval('stock_correct', itemId, { qty }, form.note);
+        setForm(null); setSent('Sent for approval. The count changes once it’s approved.'); loadPending();
+      } else { setStock(await adjustStock(itemId, form.mode, qty, form.note)); setForm(null); loadHistory(); onChanged(); }
+    }
     catch (e) { setErr((e as Error).message); }
     setBusy(false);
   };
@@ -42,11 +54,13 @@ export function StockCard({ itemId, fields, onChanged, canAdjust = true }: Props
         </View>
         {shown.level && <View style={[s.pill, { backgroundColor: LEVEL_COLORS[shown.level].bg }]}><Text style={[s.pillText, { color: LEVEL_COLORS[shown.level].fg }]}>{shown.label}</Text></View>}
       </View>
+      {pending.map(a => <Text key={a.id} style={s.waiting}>Waiting for approval: {a.detail} · asked by {a.requester_name}</Text>)}
+      {!!sent && !pending.length && <Text style={s.sent} accessibilityRole="alert">{sent}</Text>}
       {stock !== null && <Text style={[s.small, { marginTop: 6 }]}>Orders take stock when they're placed and give it back if cancelled. Nexora tells you when it reaches {info.at}.</Text>}
 
       {!canAdjust ? null : form ? (
         <View style={s.form}>
-          <Text style={[s.label, { fontSize: 14, fontWeight: '700', marginBottom: 8 }]}>{form.mode === 'add' ? 'Add stock (received)' : stock === null ? 'Start tracking stock' : 'Correct count'}</Text>
+          <Text style={[s.label, { fontSize: 14, fontWeight: '700', marginBottom: 8 }]}>{form.mode === 'add' ? 'Add stock (received)' : stock === null ? 'Start tracking stock' : askCorrect ? 'Correct count (needs approval)' : 'Correct count'}</Text>
           <Text style={s.label}>{form.mode === 'add' ? 'How many arrived?' : stock === null ? 'How many do you have?' : 'How many do you have now?'}</Text>
           <TextInput autoFocus value={form.qty} onChangeText={v => setForm({ ...form, qty: v.replace(/[^\d]/g, '').slice(0, 9) })} keyboardType="number-pad" placeholder="0" placeholderTextColor="#A5AFBB" style={s.input} />
           {stock !== null && <>
@@ -57,7 +71,7 @@ export function StockCard({ itemId, fields, onChanged, canAdjust = true }: Props
           <View style={[s.row, { marginTop: 12, gap: 8 }]}>
             <Pressable onPress={() => { setForm(null); setErr(''); }} style={[s.btn, s.btnOutline]}><Text style={[s.btnText, { color: '#0B1220' }]}>Cancel</Text></Pressable>
             <Pressable disabled={busy} onPress={() => { save().catch(() => {}); }} style={[s.btn, s.btnPrimary, busy && { opacity: 0.6 }]}>
-              {busy ? <ActivityIndicator color="#FFF" /> : <Text style={[s.btnText, { color: '#FFF' }]}>Save</Text>}
+              {busy ? <ActivityIndicator color="#FFF" /> : <Text style={[s.btnText, { color: '#FFF' }]}>{form.mode === 'set' && stock !== null && askCorrect ? 'Send for approval' : 'Save'}</Text>}
             </Pressable>
           </View>
         </View>
@@ -94,6 +108,8 @@ export function StockCard({ itemId, fields, onChanged, canAdjust = true }: Props
 }
 
 const s = StyleSheet.create({
+  waiting: { marginTop: 8, borderRadius: 12, backgroundColor: '#FFF6E5', padding: 10, fontSize: 13, color: '#92400E' },
+  sent: { marginTop: 8, borderRadius: 12, backgroundColor: '#EAF1FB', padding: 10, fontSize: 13, color: '#1E56A0' },
   card: { backgroundColor: '#FFFFFF', borderRadius: 16, padding: 16, marginBottom: 12 },
   row: { flexDirection: 'row', alignItems: 'center' },
   icon: { width: 40, height: 40, borderRadius: 12, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center', marginRight: 12 },

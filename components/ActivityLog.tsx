@@ -8,11 +8,11 @@ import { ACTION_LABEL, loadActivity, loadTeam, type Activity, type ActivityActio
 // exports). Written by the database itself, so entries can't be edited or removed. Same as the website's /activity.
 const ICON: Record<ActivityAction, keyof typeof Ionicons.glyphMap> = {
   team: 'people-outline', invite: 'people-outline', order: 'bag-handle-outline', payment: 'card-outline', refund: 'return-down-back-outline',
-  stock: 'cube-outline', product: 'pricetag-outline', customer: 'people-outline', campaign: 'megaphone-outline', export: 'cloud-download-outline',
+  stock: 'cube-outline', product: 'pricetag-outline', customer: 'people-outline', campaign: 'megaphone-outline', export: 'cloud-download-outline', approval: 'shield-checkmark-outline',
 };
 const FILTERS: { label: string; actions?: ActivityAction[] }[] = [
   { label: 'All' }, { label: 'Team', actions: ['team', 'invite'] }, { label: 'Orders', actions: ['order', 'payment', 'refund'] },
-  { label: 'Stock & products', actions: ['stock', 'product'] }, { label: 'Customers', actions: ['customer'] }, { label: 'Campaigns', actions: ['campaign'] }, { label: 'Exports', actions: ['export'] },
+  { label: 'Stock & products', actions: ['stock', 'product'] }, { label: 'Customers', actions: ['customer'] }, { label: 'Campaigns', actions: ['campaign'] }, { label: 'Approvals', actions: ['approval'] }, { label: 'Exports', actions: ['export'] },
 ];
 const day = (iso: string) => {
   const d = new Date(iso), today = new Date(); const y = new Date(); y.setDate(today.getDate() - 1);

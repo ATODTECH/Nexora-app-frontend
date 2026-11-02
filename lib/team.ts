@@ -4,14 +4,14 @@ import { supabase } from './supabase';
 // src/lib/team.ts. The database enforces every permission; these helpers only decide what each person's screens show.
 export type Perm =
   | 'orders_view' | 'orders_manage' | 'customers_view' | 'customers_manage' | 'products_view' | 'products_manage'
-  | 'knowledge_manage' | 'inbox_view' | 'inbox_manage' | 'marketing_view' | 'marketing_manage' | 'export' | 'team_manage';
+  | 'knowledge_manage' | 'inbox_view' | 'inbox_manage' | 'marketing_view' | 'marketing_manage' | 'export' | 'team_manage' | 'approvals_manage';
 export type Perms = Partial<Record<Perm, boolean>>;
 export type JobRole = 'owner' | 'admin' | 'manager' | 'sales' | 'support' | 'inventory' | 'marketing' | 'analyst' | 'custom';
 export type StaffRole = Exclude<JobRole, 'owner'>;
 
 export const ROLES: { key: StaffRole; label: string; blurb: string }[] = [
   { key: 'admin', label: 'Admin', blurb: 'Everything except billing and ownership, including managing the team' },
-  { key: 'manager', label: 'Manager', blurb: 'Runs day-to-day work in every area, but can’t manage the team' },
+  { key: 'manager', label: 'Manager', blurb: 'Runs day-to-day work in every area and approves team requests, but can’t manage the team' },
   { key: 'sales', label: 'Sales', blurb: 'Orders, customers and the inbox' },
   { key: 'support', label: 'Support', blurb: 'Inbox and customers; can see orders' },
   { key: 'inventory', label: 'Inventory', blurb: 'Products, stock and orders' },
@@ -32,12 +32,13 @@ export const EXTRAS: { key: Perm; label: string; sub: string; ownerOnly?: boolea
   { key: 'knowledge_manage', label: 'Train AI', sub: 'Edit policies, FAQs and how the business works' },
   { key: 'export', label: 'Export data', sub: 'Download orders, customers and other lists' },
   { key: 'team_manage', label: 'Manage the team', sub: 'Invite, change access, suspend, and see the activity log', ownerOnly: true },
+  { key: 'approvals_manage', label: 'Approve team requests', sub: 'Approve or reject refunds, cancellations, stock corrections, campaign posts and bulk messages', ownerOnly: true },
 ];
 
 const ALL_MANAGE: Perm[] = ['orders_manage', 'customers_manage', 'products_manage', 'knowledge_manage', 'inbox_manage', 'marketing_manage', 'export'];
 const PRESETS: Record<Exclude<StaffRole, 'custom'>, Perm[]> = {
-  admin: [...ALL_MANAGE, 'team_manage'],
-  manager: ALL_MANAGE,
+  admin: [...ALL_MANAGE, 'team_manage', 'approvals_manage'],
+  manager: [...ALL_MANAGE, 'approvals_manage'],
   sales: ['orders_manage', 'customers_manage', 'products_view', 'inbox_manage', 'export'],
   support: ['inbox_manage', 'customers_manage', 'orders_view', 'products_view'],
   inventory: ['products_manage', 'orders_manage'],
@@ -102,10 +103,10 @@ export async function cancelInvite(id: string) {
 }
 
 // ---- Activity log ----
-export type ActivityAction = 'team' | 'order' | 'payment' | 'refund' | 'stock' | 'product' | 'customer' | 'campaign' | 'export' | 'invite';
+export type ActivityAction = 'team' | 'order' | 'payment' | 'refund' | 'stock' | 'product' | 'customer' | 'campaign' | 'export' | 'invite' | 'approval';
 export type Activity = { id: string; actor_id: string | null; actor_name: string; action: ActivityAction; summary: string; created_at: string };
 export const ACTION_LABEL: Record<ActivityAction, string> = {
-  team: 'Team', invite: 'Team', order: 'Orders', payment: 'Payments', refund: 'Refunds', stock: 'Stock', product: 'Products', customer: 'Customers', campaign: 'Campaigns', export: 'Exports',
+  team: 'Team', invite: 'Team', order: 'Orders', payment: 'Payments', refund: 'Refunds', stock: 'Stock', product: 'Products', customer: 'Customers', campaign: 'Campaigns', export: 'Exports', approval: 'Approvals',
 };
 export async function loadActivity(opts: { before?: string; actorId?: string; actions?: ActivityAction[] } = {}, limit = 50): Promise<Activity[]> {
   let q = supabase.from('audit_log').select('id,actor_id,actor_name,action,summary,created_at').order('created_at', { ascending: false }).limit(limit);
@@ -126,7 +127,7 @@ const SCREEN_NEEDS: Record<string, Perm[] | 'owner'> = {
   customers: ['customers_view'], customersLive: ['customers_view'], customerDetail: ['customers_view'], customerProfile: ['customers_view'],
   addCustomer: ['customers_manage'], interactionHistory: ['customers_view'], leads: ['customers_view'], leadDetail: ['customers_view'], followups: ['customers_view'],
   inboxChat: ['inbox_view'], 'tab:inbox': ['inbox_view'],
-  campaigns: ['marketing_view'], broadcast: ['marketing_manage'],
+  campaigns: ['marketing_view'], broadcast: ['inbox_manage'],
   activityLog: ['team_manage'],
   insights: 'owner', automations: 'owner', rules: 'owner', ownerAlerts: 'owner', learned: 'owner', storefront: 'owner', connectChannels: 'owner',
   channelSettings: 'owner', aiPermissions: 'owner', brainGallery: 'owner', 'tab:brain': 'owner', quickActions: 'owner',

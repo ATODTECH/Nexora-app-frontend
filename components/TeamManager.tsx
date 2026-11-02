@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Modal, Pressable, ScrollView, Share, StyleSheet, Switch, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { ALL_ON, KINDS, loadRules, saveRules, type ApprovalKind, type ApprovalRules } from '../lib/approvals';
 import { Text } from '../lib/inter';
 import {
   AREAS, EXTRAS, ROLES, cancelInvite, createInvite, loadInvites, loadTeam, presetPerms, removeMember, roleLabel, setMemberAccess, setMemberStatus, withViews,
@@ -9,7 +10,7 @@ import {
 
 // Team & Access: who is on the team, their role, what they can see and do, suspend / reactivate / remove, invites.
 // Same as the website's TeamManager. The owner manages everyone; members with "Manage the team" manage other staff.
-type Props = { access: Access; flash: (t: string) => void; onOpenActivity: () => void; onChanged?: () => void };
+type Props = { access: Access; flash: (t: string) => void; onOpenActivity: () => void; onOpenApprovals: () => void; onChanged?: () => void };
 type Level = 'none' | 'see' | 'manage';
 
 const lastSeen = (iso: string | null) => {
@@ -19,7 +20,7 @@ const lastSeen = (iso: string | null) => {
 };
 const levelOf = (p: Perms, area: string): Level => (p[`${area}_manage` as Perm] ? 'manage' : p[`${area}_view` as Perm] ? 'see' : 'none');
 
-export function TeamManager({ access: me, flash, onOpenActivity, onChanged }: Props) {
+export function TeamManager({ access: me, flash, onOpenActivity, onOpenApprovals, onChanged }: Props) {
   const manager = me.isOwner || me.can('team_manage');
   const [team, setTeam] = useState<TeamMember[] | null>(null);
   const [invites, setInvites] = useState<PendingInvite[]>([]);
@@ -57,6 +58,14 @@ export function TeamManager({ access: me, flash, onOpenActivity, onChanged }: Pr
           <Ionicons name="chevron-forward" size={16} color="#8A97A6" />
         </Pressable>
       )}
+      {!me.suspended && (
+        <Pressable onPress={onOpenApprovals} style={[s.card, s.row, { marginTop: 10, gap: 12, paddingVertical: 12 }]} accessibilityRole="button">
+          <View style={s.iconBox}><Ionicons name="shield-checkmark-outline" size={18} color="#1E56A0" /></View>
+          <View style={{ flex: 1 }}><Text style={s.title}>Approvals</Text><Text style={s.small}>{me.can('approvals_manage') ? 'Requests from your team waiting for a decision' : 'Requests you sent for approval'}</Text></View>
+          <Ionicons name="chevron-forward" size={16} color="#8A97A6" style={{ marginRight: 12 }} />
+        </Pressable>
+      )}
+      {me.isOwner && <ApprovalRulesCard flash={flash} />}
 
       <Text style={s.section}>Team members{team ? ` (${team.length})` : ''}</Text>
       {error ? <Text style={s.error}>{error}</Text> : !team ? <ActivityIndicator color="#1E56A0" /> : (
@@ -207,6 +216,35 @@ function MemberSheet({ member, ownerView, onClose, flash, onChanged }: { member:
         </View>
       </View>
     </Modal>
+  );
+}
+
+/** Owner: which team actions need approval first (all on by default). The owner's own actions never do. */
+function ApprovalRulesCard({ flash }: { flash: (t: string) => void }) {
+  const [rules, setRules] = useState<ApprovalRules | null>(null);
+  const [busy, setBusy] = useState<ApprovalKind | ''>('');
+  useEffect(() => { loadRules().then(setRules).catch(() => setRules(ALL_ON)); }, []);
+  const flip = async (k: ApprovalKind, on: boolean) => {
+    if (!rules) return;
+    setBusy(k);
+    try { setRules(await saveRules({ ...rules, [k]: on })); flash(on ? 'Your team will ask first' : 'Your team can now do this without asking'); }
+    catch (e) { flash((e as Error).message); }
+    setBusy('');
+  };
+  return (
+    <View>
+      <Text style={s.section}>Needs your approval</Text>
+      <Text style={[s.small, { marginTop: -4, marginBottom: 8 }]}>When a team member does one of these, it waits for you (or anyone you let approve requests). What you do yourself never waits.</Text>
+      <View style={s.card}>
+        {KINDS.map((k, i) => (
+          <View key={k.key} style={[s.row, s.member, i > 0 && s.divider]}>
+            <View style={{ flex: 1 }}><Text style={s.title}>{k.label}</Text><Text style={s.small}>{k.sub}</Text></View>
+            {busy === k.key ? <ActivityIndicator color="#1E56A0" />
+              : <Switch value={rules?.[k.key] ?? true} disabled={!rules} onValueChange={v => { flip(k.key, v).catch(() => {}); }} trackColor={{ true: '#5381BB', false: '#D5DEE8' }} thumbColor="#FFFFFF" accessibilityLabel={k.label} />}
+          </View>
+        ))}
+      </View>
+    </View>
   );
 }
 

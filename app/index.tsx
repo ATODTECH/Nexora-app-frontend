@@ -18,6 +18,9 @@ import { StockCard } from '../components/StockCard';
 import { AddOrderSheet, type ManualOrder } from '../components/AddOrderSheet';
 import { TeamManager } from '../components/TeamManager';
 import { ActivityLog } from '../components/ActivityLog';
+import { Approvals } from '../components/Approvals';
+import { AskApproval } from '../components/AskApproval';
+import { ALL_ON, countWaiting, loadPendingFor, loadRules as loadApprovalRules, needsApprovalError, onApprovalsChanged, requestApproval, type Approval, type ApprovalKind, type ApprovalRules } from '../lib/approvals';
 import { NoAccess } from '../components/NoAccess';
 import { accessOf, canOpenScreen, logExport, roleLabel } from '../lib/team';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -1153,7 +1156,7 @@ function BrandIcon({ platform, size = 36, ring = false }: { platform: Conversati
   );
 }
 
-type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'campaigns'|'automations'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules'|'opportunities'|'opportunityDetail'|'settings'|'quickActions'|'activityLog';
+type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'campaigns'|'automations'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules'|'opportunities'|'opportunityDetail'|'settings'|'quickActions'|'activityLog'|'approvals';
 type KnowledgeCategory='products'|'services'|'operations'|'policies'|'faqs';
 type KnowledgeField={label:string;value:string};
 // ---- Brain AI tools (company guide, 29 Oct 2026): organised tools instead of one crowded screen ----
@@ -3930,6 +3933,23 @@ function HomeScreenInner(){
   const [ordersQuery, setOrdersQuery] = useState('');
   const [orderOpenId, setOrderOpenId] = useState<string | null>(null);
   const [orderForm, setOrderForm] = useState<{ tracking: string; delivery_fee: string; discount: string; refund: string; cancel_reason: string; note: string } | null>(null);
+  // ---- Team approvals (lib/approvals.ts): the owner's rules, requests waiting for this person, and the "Ask for approval" sheet ----
+  const [approvalRules, setApprovalRules] = useState<ApprovalRules>(ALL_ON);
+  const [approvalsWaiting, setApprovalsWaiting] = useState(0);
+  const [askSheet, setAskSheet] = useState<null | { title: string; what: string; reasonLabel: string; reasonPlaceholder?: string; reasonRequired?: boolean; send: (reason: string) => Promise<void> }>(null);
+  const [orderPending, setOrderPending] = useState<Approval[]>([]);
+  /** A team member's action that waits for approval while the owner's rule for it is on (the owner never waits). */
+  const needsApproval = (k: ApprovalKind) => !access.isOwner && approvalRules[k];
+  useEffect(() => { if (workspace && workspace.role !== 'owner') loadApprovalRules().then(setApprovalRules).catch(() => {}); }, [workspace?.business_id, workspace?.role]);
+  useEffect(() => {
+    if (!userId || !workspace) return;
+    const recount = () => { countWaiting(userId).then(setApprovalsWaiting, () => {}); };
+    recount();
+    return onApprovalsChanged(recount);
+  }, [userId, workspace?.business_id, screen]);
+  const loadOrderPending = (id: string | null) => { if (id && workspace?.role === 'staff') loadPendingFor(id).then(setOrderPending, () => {}); else setOrderPending([]); };
+  useEffect(() => { loadOrderPending(orderOpenId); }, [orderOpenId, workspace?.role]); // eslint-disable-line react-hooks/exhaustive-deps
+  const askSheetEl = askSheet && <AskApproval title={askSheet.title} what={askSheet.what} reasonLabel={askSheet.reasonLabel} reasonPlaceholder={askSheet.reasonPlaceholder} reasonRequired={askSheet.reasonRequired} onSend={askSheet.send} onClose={() => setAskSheet(null)} />;
   const [ordersUpgraded, setOrdersUpgraded] = useState(true);
   const [addingOrder, setAddingOrder] = useState(false);
   const [agendaEvents, setAgendaEvents] = useState<AgendaEvent[]>([]);
@@ -6233,6 +6253,7 @@ function HomeScreenInner(){
         case 'inbox': goTab('inbox'); loadConversations().catch(() => {}); break;
         case 'loginActivity': openSettings('loginActivity'); break;
         case 'products': openKnowledgeList('products'); break;   // "Running low" / "Sold out"
+        case 'approvals': setScreen('approvals'); break;         // a team request to decide, or a decision on yours
       }
     });
     return () => sub.remove();
@@ -7190,12 +7211,18 @@ function HomeScreenInner(){
     flash(launch ? (future ? `Scheduled for ${f.start}` : 'Campaign is live') : 'Campaign saved as draft');
   };
   const publishCampaign = async (x: Campaign) => {
+    if (needsApproval('campaign_post') && !x.published_at) {
+      setAskSheet({ title: `Ask to post ${x.name}`, what: 'Once approved, the campaign is marked as posted and you can share the post.', reasonLabel: 'Note for the approver', reasonPlaceholder: 'e.g. Ready for the weekend', reasonRequired: false,
+        send: async reason => { await requestApproval('campaign_post', x.id, {}, reason); flash('Sent for approval. You’ll be notified when it’s decided.'); } });
+      return;
+    }
     const link = campaignLink(x);
     const text = `${x.message || x.name}${x.coupon_code ? `\n\nUse code ${x.coupon_code} for ${x.discount_type === 'percent' ? `${x.discount_value}% off` : `${x.discount_value} off`}.` : ''}${link ? `\n\n${link}` : ''}`;
     try {
       if (IS_WEB) { await (globalThis as any).navigator?.clipboard?.writeText(text); flash('Post copied: paste it on ' + (x.channel.charAt(0).toUpperCase() + x.channel.slice(1))); }
       else await Share.share({ message: text });
     } catch { Share.share({ message: text }).catch(() => {}); }
+    if (needsApproval('campaign_post')) return;   // already posted (approved): sharing it again needs no new approval
     await supabase.from('campaigns').update({ published_at: new Date().toISOString(), status: x.status === 'draft' ? 'active' : x.status, updated_at: new Date().toISOString() }).eq('id', x.id);
     loadCampaigns().catch(() => {});
   };
@@ -8252,7 +8279,7 @@ function HomeScreenInner(){
       if (!Object.keys(basic).length) { flash('Run the shop and orders SQL script in Supabase to use payments and history.'); return false; }
       ({ error } = await supabase.from('orders').update(basic).eq('id', o.id));
     }
-    if (error) { flash("Couldn't update that order."); return false; }
+    if (error) { flash(needsApprovalError(error) ? error.message : "Couldn't update that order."); return false; }
     await refreshOrders().catch(() => {});
     flash(done);
     return true;
@@ -8273,7 +8300,6 @@ function HomeScreenInner(){
     return updateOrder(o, { payment_status }, `Payment status: ${PAY_TEXT[payment_status]}`, false);
   };
   const refundOrder = async (o: OrderRow, amount: number) => {
-    if (!isOwnerRole()) { flash('Only the business owner can record refunds.'); return false; }
     const paid = Number(o.amount_paid || o.total || 0);
     const already = Number(o.refunded_amount || 0);
     const total = Math.min(paid, already + amount);
@@ -9513,6 +9539,14 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
   const sendBroadcast = async (keys: string[]) => {
     const text = broadcastText.trim();
     if (!text || keys.length === 0 || broadcastSending) return;
+    if (needsApproval('bulk_message')) {
+      const ids = keys.flatMap(k => broadcastRecipients(k).map(c => c.id));
+      if (ids.length > 100) { flash('You can ask to message up to 100 customers at once.'); return; }
+      setAskSheet({ title: 'Ask to message customers', what: `Your message goes to ${ids.length} customer${ids.length === 1 ? '' : 's'} as soon as it's approved.`, reasonLabel: 'Note for the approver',
+        reasonPlaceholder: 'e.g. Telling everyone the new stock is in', reasonRequired: false,
+        send: async reason => { await requestApproval('bulk_message', null, { text, conversation_ids: ids }, reason); setBroadcastText(''); flash('Sent for approval. It goes out as soon as it’s approved.'); } });
+      return;
+    }
     setBroadcastSending(true);
     setBroadcastStatus(Object.fromEntries(keys.map(k => [k, 'sending' as const])));
     await Promise.all(keys.map(async key => {
@@ -11271,6 +11305,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
       const lowStock = lowStockItems;
       const noPhoto = offers.filter(i => !i.image).length;
       const todo = [
+        approvalsWaiting && { icon: 'shield-checkmark-outline', color: '#C2760C', title: `${approvalsWaiting} team request${approvalsWaiting === 1 ? '' : 's'} waiting for you`, sub: 'Refunds, cancellations, stock corrections and more', onPress: () => setScreen('approvals') },
         unpaid.length && { icon: 'card-outline', color: '#B42318', title: `${unpaid.length} unpaid order${unpaid.length === 1 ? '' : 's'}`, sub: `${moneyText(unpaid.reduce((n, o) => n + Number(o.total || 0), 0))} to collect`, onPress: () => openOrders('Unpaid') },
         pendingOrders.length && { icon: 'cube-outline', color: '#1E56A0', title: `${pendingOrders.length} order${pendingOrders.length === 1 ? '' : 's'} to prepare or ship`, sub: 'Confirm and send them out', onPress: () => openOrders('Unshipped') },
         autoRuns.filter(r => r.status === 'awaiting_approval').length && { icon: 'checkmark-done-outline', color: '#1E56A0', title: `${autoRuns.filter(r => r.status === 'awaiting_approval').length} message${autoRuns.filter(r => r.status === 'awaiting_approval').length === 1 ? '' : 's'} waiting for your approval`, sub: 'Drafted by your automations', onPress: () => openAutomations() },
@@ -11885,9 +11920,15 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
             const feesChanged = fee !== Number(o.delivery_fee || 0) || disc !== Number(o.discount || 0);
             const phone = (o.customer_phone || '').replace(/[^\d+]/g, '');
             const owner = isOwnerRole();
+            // Cancel and refund: done directly by the owner (or a team member when that approval rule is off), otherwise asked for.
+            const manageOrders = access.can('orders_manage');
+            const direct = (k: ApprovalKind) => owner || (manageOrders && !approvalRules[k]);
+            const ask = (k: ApprovalKind) => !owner && manageOrders && approvalRules[k];
+            const sentForApproval = () => { flash('Sent for approval. You’ll be notified when it’s decided.'); loadOrderPending(o.id); };
             const section = (t: string) => <Text style={[styles.channelSectionLabel, { marginTop: 16 }]}>{t}</Text>;
             return (
               <View style={[styles.mainScreen, { paddingTop: IS_WEB ? 0 : insets.top }]}>
+                {askSheetEl}
                 <View style={[styles.knowledgeHeader]}>
                   <Pressable onPress={() => setOrderOpenId(null)} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
                   <Text style={styles.knowledgeHeaderTitle}>Order {orderLabel(o)}</Text>
@@ -11939,6 +11980,11 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                     {feesChanged && btn('Save fees and new total', () => { updateOrder(o, { delivery_fee: fee, discount: disc, total: Math.max(0, subtotal + fee - disc) }, `Total updated to ${orderMoney(o, Math.max(0, subtotal + fee - disc))}${fee ? ` (delivery ${orderMoney(o, fee)})` : ''}${disc ? ` (discount ${orderMoney(o, disc)})` : ''}`, true, 'Total updated').catch(() => {}); }, 'primary', !ordersUpgraded)}
                   </View>
 
+                  {orderPending.map(a => (
+                    <Text key={a.id} style={{ marginTop: 12, borderRadius: 12, backgroundColor: '#FFF6E5', padding: 12, fontSize: 13, color: '#92400E' }}>
+                      <Text style={{ fontWeight: '700', color: '#92400E' }}>Waiting for approval: </Text>{a.title} · asked by {a.requester_name}
+                    </Text>
+                  ))}
                   {section('Payment')}
                   <View style={styles.detailCard}>
                     <Text style={styles.attentionSubtitle}>Payment is tracked separately from delivery: an order can be paid but not shipped, or cancelled with a refund still to send.</Text>
@@ -11949,13 +11995,20 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                       {(o.payment_status === 'unpaid' || o.payment_status === 'unknown') && btn('Customer says they paid', () => { setPayment(o, 'pending').catch(() => {}); }, 'outline', !ordersUpgraded)}
                       {o.payment_status === 'paid' && btn('Mark as unpaid', () => { setPayment(o, 'unpaid').catch(() => {}); }, 'outline', !ordersUpgraded)}
                     </View>
-                    {(o.payment_status === 'paid' || o.payment_status === 'partially_refunded') && owner && (
+                    {(o.payment_status === 'paid' || o.payment_status === 'partially_refunded') && (direct('refund') || ask('refund')) && (
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 }}>
                         <TextInput value={orderForm.refund} onChangeText={v => setOrderForm(f => f && { ...f, refund: v })} keyboardType="decimal-pad" placeholder="Refund amount" placeholderTextColor="#A5AFBB" style={[styles.editInput, { flex: 1, height: 40 }]} />
-                        <Pressable onPress={() => { const amt = Number(orderForm.refund.replace(/[^\d.]/g, '')); refundOrder(o, amt).then(ok => { if (ok) setOrderForm(f => f && { ...f, refund: '' }); }).catch(() => {}); }} style={{ paddingHorizontal: 14, height: 40, borderRadius: 12, backgroundColor: '#7C3AED', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#FFF', fontWeight: '700' }}>Record refund</Text></Pressable>
+                        <Pressable onPress={() => {
+                          const amt = Number(orderForm.refund.replace(/[^\d.]/g, ''));
+                          if (direct('refund')) { refundOrder(o, amt).then(ok => { if (ok) setOrderForm(f => f && { ...f, refund: '' }); }).catch(() => {}); return; }
+                          if (!(amt > 0) || Number(o.refunded_amount || 0) + amt > Number(o.amount_paid || o.total || 0)) { flash('Enter a refund amount up to what was paid.'); return; }
+                          setAskSheet({ title: `Ask to refund ${orderMoney(o, amt)}`, what: `A refund of ${orderMoney(o, amt)} on ${orderLabel(o)} will be recorded once approved. Send the money to the customer after it's approved.`,
+                            reasonLabel: 'Why is it being refunded?', reasonPlaceholder: 'e.g. One item arrived damaged',
+                            send: async reason => { await requestApproval('refund', o.id, { amount: amt }, reason); setOrderForm(f => f && { ...f, refund: '' }); sentForApproval(); } });
+                        }} style={{ paddingHorizontal: 14, height: 40, borderRadius: 12, backgroundColor: '#7C3AED', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#FFF', fontWeight: '700' }}>{direct('refund') ? 'Record refund' : 'Ask to refund'}</Text></Pressable>
                       </View>
                     )}
-                    {!owner && <Text style={[styles.attentionSubtitle, { marginTop: 8, fontSize: 12 }]}>Only the business owner can record refunds or cancel orders.</Text>}
+                    {!owner && (!manageOrders || ask('refund') || ask('order_cancel')) && <Text style={[styles.attentionSubtitle, { marginTop: 8, fontSize: 12 }]}>{!manageOrders ? 'Your role can see orders but not change them.' : 'Refunds and cancelling need approval: your request goes to the owner.'}</Text>}
                   </View>
 
                   {section('Delivery')}
@@ -11968,9 +12021,17 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                       {o.status === 'shipped' && btn('Mark delivered', () => { setOrderStatus(o, 'delivered').catch(() => {}); }, 'primary')}
                       {o.status === 'delivered' && btn('Complete order', () => { setOrderStatus(o, 'completed').catch(() => {}); }, 'primary', !ordersUpgraded)}
                       {o.status !== 'pending' && o.status !== 'cancelled' && orderForm.tracking.trim() !== (o.tracking || '') && btn('Save tracking', () => { updateOrder(o, { tracking: orderForm.tracking.trim() }, `Tracking updated: ${orderForm.tracking.trim()}`, true, 'Tracking saved').catch(() => {}); })}
-                      {o.status === 'cancelled' && owner && btn('Reopen order', () => { setOrderStatus(o, 'pending', { cancelled_at: null, cancel_reason: '' }).catch(() => {}); })}
+                      {o.status === 'cancelled' && direct('order_cancel') && btn('Reopen order', () => { setOrderStatus(o, 'pending', { cancelled_at: null, cancel_reason: '' }).catch(() => {}); })}
                     </View>
-                    {o.status !== 'cancelled' && o.status !== 'completed' && owner && (
+                    {o.status !== 'cancelled' && o.status !== 'completed' && ask('order_cancel') && (
+                      <View style={{ flexDirection: 'row', marginTop: 14 }}>
+                        {btn('Ask to cancel', () => setAskSheet({ title: `Ask to cancel ${orderLabel(o)}`,
+                          what: `${orderLabel(o)} for ${o.customer_name} (${orderMoney(o, o.total)}) will be cancelled once approved${(o.line_items ?? []).length ? ', and its items go back into stock' : ''}.`,
+                          reasonLabel: 'Reason for cancelling (shown to the customer)', reasonPlaceholder: 'e.g. Customer changed their mind',
+                          send: async reason => { await requestApproval('order_cancel', o.id, {}, reason); sentForApproval(); } }), 'danger')}
+                      </View>
+                    )}
+                    {o.status !== 'cancelled' && o.status !== 'completed' && direct('order_cancel') && (
                       <View style={{ marginTop: 14 }}>
                         <TextInput value={orderForm.cancel_reason} onChangeText={v => setOrderForm(f => f && { ...f, cancel_reason: v })} placeholder="Reason for cancelling (shown to the customer)" placeholderTextColor="#A5AFBB" style={styles.editInput} maxLength={200} />
                         <View style={{ flexDirection: 'row', marginTop: 8 }}>
@@ -12027,6 +12088,8 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
   }
 
   if (screen === 'activityLog') return <ActivityLog onBack={() => setScreen('settings')} topInset={insets.top} />;
+  if (screen === 'approvals') return <Approvals userId={userId ?? ''} approver={access.can('approvals_manage')} isOwner={access.isOwner} callFn={callFn} flash={flash}
+    onBack={() => goTab('home')} onOpenRules={() => openSettings('team')} topInset={insets.top} />;
 
   if (screen === 'missingImages') {
     const missing = KNOWLEDGE_CATEGORIES.filter(k => k === 'products' || k === 'services').flatMap(k => knowledgeData[k].items.filter(i => !i.image).map(i => ({ cat: k, item: i })));
@@ -13012,7 +13075,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
               </View>
             ))}
           </View>
-          {activeCategory === 'products' && <StockCard key={item.id} itemId={item.id} fields={item.fields} canAdjust={access.can('products_manage')} onChanged={() => { refreshKnowledge().catch(() => {}); }} />}
+          {activeCategory === 'products' && <StockCard key={item.id} itemId={item.id} fields={item.fields} canAdjust={access.can('products_manage')} askCorrect={needsApproval('stock_correct')} onChanged={() => { refreshKnowledge().catch(() => {}); }} />}
           {item.features && (
             <View style={styles.detailCard}>
               <Text style={styles.sectionLabel}>{featuresHeading}</Text>
@@ -13727,6 +13790,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
     return (
       <View style={styles.mainScreen}>
         <StatusBar style="dark" />
+        {askSheetEl}
         <View style={[styles.knowledgeHeader, headerSafe]}>
           <Pressable onPress={() => setScreen(broadcastReturnRef.current)} hitSlop={8}><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
           <Text style={styles.knowledgeHeaderTitle}>Send to all channels</Text>
@@ -13794,7 +13858,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
             style={[styles.resetButton, canSend ? styles.resetButtonEnabled : styles.resetButtonDisabled]}
           >
             <Text style={styles.resetButtonText}>
-              {broadcastSending ? 'Sending\u2026' : sentAny ? 'Send another message' : `Send to ${selectedKeys.length} channel${selectedKeys.length === 1 ? '' : 's'}`}
+              {broadcastSending ? 'Sending\u2026' : sentAny ? 'Send another message' : needsApproval('bulk_message') ? `Ask to send to ${totalConvos} customer${totalConvos === 1 ? '' : 's'}` : `Send to ${selectedKeys.length} channel${selectedKeys.length === 1 ? '' : 's'}`}
             </Text>
           </Pressable>
         </View>
@@ -15749,6 +15813,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
     return (
       <View style={styles.mainScreen}>
         <StatusBar style="dark" />
+        {askSheetEl}
         {renderPageHeader('Campaigns', 'Each campaign gets a tracked shop link and an optional discount code, so you can see what worked.', () => goTab('home'), { label: 'New campaign', icon: 'add', onPress: () => setCampaignForm(newCampaignForm()) })}
         <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40, width: '100%', maxWidth: desktop ? 1240 : 820, alignSelf: 'center' }, desktop && { padding: 28, backgroundColor: '#F4F7FB', flexGrow: 1 }]} keyboardShouldPersistTaps="handled">
           {desktop && (() => {
@@ -15813,7 +15878,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                 {!!link && <Text selectable style={{ fontSize: 12, color: '#1E3A5F', marginTop: 10, backgroundColor: '#F2F8FD', padding: 8, borderRadius: 8 }} numberOfLines={1}>{link}</Text>}
                 <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
                   {!campaignOver(x) && (
-                    <Pressable onPress={() => { publishCampaign(x).catch(() => {}); }} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, backgroundColor: '#1E56A0' }}><Text style={{ color: '#FFF', fontWeight: '700', fontSize: 13 }}>{x.published_at ? 'Post again' : 'Post it now'}</Text></Pressable>
+                    <Pressable onPress={() => { publishCampaign(x).catch(() => {}); }} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, backgroundColor: '#1E56A0' }}><Text style={{ color: '#FFF', fontWeight: '700', fontSize: 13 }}>{x.published_at ? (needsApproval('campaign_post') ? 'Share post' : 'Post again') : needsApproval('campaign_post') ? 'Ask to post' : 'Post it now'}</Text></Pressable>
                   )}
                   {x.status === 'draft' && <Pressable onPress={() => { supabase.from('campaigns').update({ status: x.starts_at && new Date(x.starts_at).getTime() > Date.now() ? 'scheduled' : 'active', updated_at: new Date().toISOString() }).eq('id', x.id).then(() => loadCampaigns()); }} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: '#5381BB' }}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>Launch</Text></Pressable>}
                   <Pressable onPress={() => setCampaignForm(editCampaignForm(x))} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: '#5381BB' }}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>Edit</Text></Pressable>
@@ -16908,7 +16973,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
       case 'team': {
         body = (
           <>
-            <TeamManager access={access} flash={flash} onOpenActivity={() => setScreen('activityLog')} onChanged={() => { loadTeam().catch(() => {}); }} />
+            <TeamManager access={access} flash={flash} onOpenActivity={() => setScreen('activityLog')} onOpenApprovals={() => setScreen('approvals')} onChanged={() => { loadTeam().catch(() => {}); }} />
             {label(`Team tasks${teamTasks ? ` (${teamTasks.filter(t => t.status === 'open').length} open)` : ''}`)}
             {teamTasks === null && <Text style={styles.attentionSubtitle}>Run the automation, team and referrals SQL script in Supabase to use team tasks.</Text>}
             {(teamTasks ?? []).map(t => {
