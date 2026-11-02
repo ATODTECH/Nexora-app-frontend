@@ -6,10 +6,10 @@ import { LEVEL_COLORS, REASON_TEXT, STOCK_LABEL, adjustStock, loadMovements, sto
 
 // A product's stock on its detail screen: how many are left, "Add stock (received)", "Correct count" and the
 // history of every change. Same behaviour as the website's StockCard.
-type Props = { itemId: string; fields: { label: string; value: string }[]; onChanged: () => void };
+type Props = { itemId: string; fields: { label: string; value: string }[]; onChanged: () => void; canAdjust?: boolean };
 const when = (iso: string) => new Date(iso).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
 
-export function StockCard({ itemId, fields, onChanged }: Props) {
+export function StockCard({ itemId, fields, onChanged, canAdjust = true }: Props) {
   const info = stockInfo(fields);
   const [stock, setStock] = useState(info.stock);
   const [history, setHistory] = useState<Movement[] | null>(null);
@@ -44,7 +44,7 @@ export function StockCard({ itemId, fields, onChanged }: Props) {
       </View>
       {stock !== null && <Text style={[s.small, { marginTop: 6 }]}>Orders take stock when they're placed and give it back if cancelled. Nexora tells you when it reaches {info.at}.</Text>}
 
-      {form ? (
+      {!canAdjust ? null : form ? (
         <View style={s.form}>
           <Text style={[s.label, { fontSize: 14, fontWeight: '700', marginBottom: 8 }]}>{form.mode === 'add' ? 'Add stock (received)' : stock === null ? 'Start tracking stock' : 'Correct count'}</Text>
           <Text style={s.label}>{form.mode === 'add' ? 'How many arrived?' : stock === null ? 'How many do you have?' : 'How many do you have now?'}</Text>

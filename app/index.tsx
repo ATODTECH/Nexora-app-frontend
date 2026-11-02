@@ -16,6 +16,10 @@ import { Text, TextInput, interFamily, useInterFonts } from '../lib/inter';
 import { LEVEL_COLORS, STOCK_ALERT_LABEL, STOCK_LABEL, currentStockField, stockInfo, stockOf } from '../lib/products';
 import { StockCard } from '../components/StockCard';
 import { AddOrderSheet, type ManualOrder } from '../components/AddOrderSheet';
+import { TeamManager } from '../components/TeamManager';
+import { ActivityLog } from '../components/ActivityLog';
+import { NoAccess } from '../components/NoAccess';
+import { accessOf, canOpenScreen, logExport, roleLabel } from '../lib/team';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
@@ -1149,7 +1153,7 @@ function BrandIcon({ platform, size = 36, ring = false }: { platform: Conversati
   );
 }
 
-type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'campaigns'|'automations'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules'|'opportunities'|'opportunityDetail'|'settings'|'quickActions';
+type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'campaigns'|'automations'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules'|'opportunities'|'opportunityDetail'|'settings'|'quickActions'|'activityLog';
 type KnowledgeCategory='products'|'services'|'operations'|'policies'|'faqs';
 type KnowledgeField={label:string;value:string};
 // ---- Brain AI tools (company guide, 29 Oct 2026): organised tools instead of one crowded screen ----
@@ -3710,13 +3714,17 @@ function HomeScreenInner(){
   const [awayStartedAt, setAwayStartedAt] = useState<number | null>(null);
   const [awayStats, setAwayStats] = useState<null | { actions: number; opportunities: number }>(null);
   // Company workspace + subscription (businesses / plans tables).
-  type Workspace = { business_id: string; name: string; industry: string; country: string; plan: string; subscription_status: 'trialing' | 'active' | 'past_due' | 'canceled'; trial_ends_at: string | null; role: 'owner' | 'staff'; owner_name: string; staff_seats: number | null; monthly_ai_messages: number | null; ai_messages_used: number | null };
+  type Workspace = { business_id: string; name: string; industry: string; country: string; plan: string; subscription_status: 'trialing' | 'active' | 'past_due' | 'canceled'; trial_ends_at: string | null; role: 'owner' | 'staff'; owner_name: string; staff_seats: number | null; monthly_ai_messages: number | null; ai_messages_used: number | null;
+    // Team access (lib/team.ts): who owns the business, this person's job role, permissions and whether they're suspended.
+    owner_id?: string; job_role?: string; permissions?: Record<string, boolean> | null; member_status?: 'active' | 'suspended' };
   // staff_seats = users besides the owner; monthly_ai_messages = AI tasks a month; null limits = custom (Organization).
   type Plan = {
     key: string; name: string; price_usd: number; price_ngn: number | null; price_usd_year: number | null; price_ngn_year: number | null;
     staff_seats: number | null; max_users: number | null; monthly_ai_messages: number | null; blurb: string; features: string[]; contact_sales: boolean;
   };
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  // What this person can see and do (team roles; the database enforces the same rules).
+  const access = accessOf(workspace);
   const [workspaceChecked, setWorkspaceChecked] = useState(false);
   const [plans, setPlans] = useState<Plan[]>([]);
   const [billingInterval, setBillingInterval] = useState<'month' | 'year'>('month');
@@ -3730,7 +3738,6 @@ function HomeScreenInner(){
   const [billingBusy, setBillingBusy] = useState<string | null>(null);
   const [bizForm, setBizForm] = useState({ name: '', industry: '', country: '' });
   const [joinCode, setJoinCode] = useState('');
-  const [staffInviteCode, setStaffInviteCode] = useState('');
   const billingReturnRef = useRef<() => void>(() => {});
   const billingAfterCreateRef = useRef<() => void>(() => {});
   // Real channel connection (channel-connect function).
@@ -4913,7 +4920,6 @@ function HomeScreenInner(){
   const openBilling = (back?: () => void) => {
     billingReturnRef.current = back ?? (() => goTab('profile'));
     billingAfterCreateRef.current = back ?? (() => goTab('home'));   // a brand-new company goes to Home, not Profile
-    setStaffInviteCode('');
     loadWorkspaceInfo().catch(() => {});
     loadPayConfig().catch(() => {});
     setScreen('billing');
@@ -5019,17 +5025,6 @@ function HomeScreenInner(){
     }, 900);
     return () => clearTimeout(t);
   }, [userId]);
-  const inviteStaff = async () => {
-    setBillingBusy('invite');
-    try {
-      const { data, error } = await supabase.rpc('create_staff_invite');
-      if (error) throw error;
-      const code = String(data ?? '');
-      setStaffInviteCode(code);
-      if (code) Share.share({ message: `Join ${workspace?.name || 'our company'} on Nexora AI. Install the app, sign up, then open Plans & billing and enter this invite code: ${code}` }).catch(() => {});
-    } catch (e: any) { flash(rpcError(e, "Couldn't create an invite.")); }
-    finally { setBillingBusy(null); }
-  };
 
   // ---- Real channels (WhatsApp Cloud API / Facebook Page / Instagram) ----
   const requireOwnerBusiness = (why: string) => {
@@ -5912,7 +5907,7 @@ function HomeScreenInner(){
     setScreen('settings');
     if (['aiPerms', 'aiInteraction', 'notifications', 'security', 'quietHours'].includes(page)) loadOwnerPrefs().catch(() => {});
     if (page === 'quietHours') { setQuietDraft(null); setQuietPick(null); }
-    if (page === 'team') { loadTeam().catch(() => {}); loadMemberPerms().catch(() => {}); loadTeamTasks().catch(() => {}); }
+    if (page === 'team') { loadTeam().catch(() => {}); loadTeamTasks().catch(() => {}); }
     if (page === 'loginActivity') loadLogins().catch(() => {});
     if (page === 'accountSecurity' || page === 'twoFactor' || page === 'security') loadMfa().catch(() => {});
     if (page === 'business') loadBizForm().catch(() => {});
@@ -5972,10 +5967,7 @@ function HomeScreenInner(){
     setReferral({ loading: false, code: row.code, signups: row.signups ?? 0, paid: row.paid ?? 0, error: '' });
   };
   // ---- Team workspace: staff permissions (enforced by the database) and tasks assigned to people ----
-  type MemberPerms = { orders_view?: boolean; orders_manage?: boolean; customers_view?: boolean; customers_manage?: boolean };
   type TeamTask = { id: string; title: string; details: string; due_date: string | null; status: 'open' | 'done'; assigned_to: string | null; created_by: string; created_at: string };
-  const [memberPerms, setMemberPerms] = useState<Record<string, MemberPerms>>({});
-  const [memberUser, setMemberUser] = useState<Record<string, string>>({});
   const [teamTasks, setTeamTasks] = useState<TeamTask[] | null>(null);
   const [taskForm, setTaskForm] = useState<{ title: string; assigned_to: string; due: string; busy: boolean } | null>(null);
   const loadTeamTasks = async () => {
@@ -5983,24 +5975,7 @@ function HomeScreenInner(){
     const { data, error } = await supabase.from('team_tasks').select('*').eq('business_id', workspace.business_id).order('status', { ascending: true }).order('due_date', { ascending: true, nullsFirst: false }).limit(200);
     setTeamTasks(error ? null : ((data ?? []) as TeamTask[]));
   };
-  const loadMemberPerms = async () => {
-    if (!workspace?.business_id) return;
-    const { data } = await supabase.from('business_members').select('id,user_id,permissions').eq('business_id', workspace.business_id);
-    const perms: Record<string, MemberPerms> = {}, users: Record<string, string> = {};
-    for (const r of (data ?? []) as any[]) { perms[r.id] = r.permissions || {}; users[r.id] = r.user_id; }
-    setMemberPerms(perms); setMemberUser(users);
-  };
   const myOpenTasks = () => (teamTasks ?? []).filter(t => t.status === 'open' && (t.assigned_to === userId || (!t.assigned_to && workspace?.role === 'owner')));
-  const toggleMemberPerm = async (memberId: string, key: keyof MemberPerms, value: boolean) => {
-    const next = { ...(memberPerms[memberId] || {}), [key]: value };
-    if (key === 'orders_manage' && value) next.orders_view = true;
-    if (key === 'customers_manage' && value) next.customers_view = true;
-    if (key === 'orders_view' && !value) next.orders_manage = false;
-    if (key === 'customers_view' && !value) next.customers_manage = false;
-    setMemberPerms(p => ({ ...p, [memberId]: next }));
-    const { error } = await supabase.rpc('set_member_permissions', { p_member: memberId, p_permissions: next });
-    if (error) { flash(/function|does not exist/i.test(error.message) ? 'Run the automation, team and referrals SQL script in Supabase first.' : "Couldn't change access."); loadMemberPerms().catch(() => {}); }
-  };
   const saveTask = async () => {
     const f = taskForm;
     if (!f || !workspace?.business_id || !userId) return;
@@ -6010,17 +5985,6 @@ function HomeScreenInner(){
     const { error } = await supabase.from('team_tasks').insert({ business_id: workspace.business_id, created_by: userId, title: f.title.trim().slice(0, 200), assigned_to: f.assigned_to || null, due_date: f.due || null });
     if (error) { setTaskForm(x => x && { ...x, busy: false }); flash(/does not exist|schema cache/i.test(error.message) ? 'Run the automation, team and referrals SQL script in Supabase first.' : "Couldn't add the task."); return; }
     setTaskForm(null); loadTeamTasks().catch(() => {}); flash('Task added');
-  };
-  const removeMember = (m: TeamRow) => {
-    Alert.alert('Remove from team?', `${m.full_name} will lose access to ${workspace?.name || 'your business'} on Nexora.`, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Remove', style: 'destructive', onPress: async () => {
-        const { error } = await supabase.from('business_members').delete().eq('id', m.member_id);
-        if (error) { flash("Couldn't remove that person."); return; }
-        flash(`${m.full_name} was removed`);
-        loadTeam().catch(() => {});
-      } },
-    ]);
   };
   const loadLogins = async () => {
     const { data, error } = await supabase.from('login_activity').select('id,device,platform,place,device_key,created_at').order('created_at', { ascending: false }).limit(30);
@@ -7839,10 +7803,11 @@ function HomeScreenInner(){
     const liveStock = activeCategory === 'products' ? await currentStockField(item.id).catch(() => null) : null;
     const savedFields = liveStock === null ? fields
       : [...fields.filter(f => f.label !== STOCK_LABEL), ...(liveStock ? [{ label: STOCK_LABEL, value: liveStock }] : [])];
-    const { error } = await supabase.from('knowledge_items')
-      .update({ name, subtitle, status, overview, fields: savedFields, features: features ?? item.features ?? [] }).eq('id', item.id);
+    const { data: saved, error } = await supabase.from('knowledge_items')
+      .update({ name, subtitle, status, overview, fields: savedFields, features: features ?? item.features ?? [] }).eq('id', item.id).select('id');
     setSavingKnowledge(false);
     if (error) { flash("Couldn't save your changes. Please try again."); return; }
+    if (!saved?.length) { flash("Your role can't change this."); return; }   // the database let nothing through
     await refreshKnowledge().catch(() => {});
     flash(asDraft ? 'Saved as draft' : 'Changes saved');
     setScreen('itemDetail');
@@ -10175,6 +10140,11 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
     );
   }
 
+  // Team members only see the areas their role allows (the database enforces the same rules).
+  if (!canOpenScreen(access, screen, mainTab)) {
+    return <NoAccess suspended={access.suspended} business={access.businessName} role={roleLabel(access.role)} topInset={insets.top} onHome={() => goTab(access.suspended ? 'profile' : 'home')} />;
+  }
+
   if (screen === 'main') {
     if (mainTab === 'market') {
       const all = market.all;
@@ -11824,7 +11794,9 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
     const payPill = (p?: PaymentStatus) => p === 'paid' ? { bg: '#E3F6EE', fg: '#1E9E6D' } : p === 'unpaid' ? { bg: '#FDECEC', fg: '#B42318' } : p === 'pending' ? { bg: '#FDF3E1', fg: '#B7791F' } : p === 'refunded' || p === 'partially_refunded' ? { bg: '#F3EEFF', fg: '#7C3AED' } : { bg: '#F1F5F9', fg: '#5C6B7A' };
     const pill = (text: string, c: { bg: string; fg: string }) => <View style={{ backgroundColor: c.bg, borderRadius: 10, paddingHorizontal: 9, paddingVertical: 3 }}><Text style={{ color: c.fg, fontSize: 11, fontWeight: '700' }}>{text}</Text></View>;
     const open = orderOpenId ? orders.find(o => o.id === orderOpenId) ?? null : null;
-    const btn = (text: string, onPress: () => void, kind: 'primary' | 'outline' | 'danger' = 'outline', disabled = false) => (
+    // Changing an order needs "Orders: manage"; contacting the customer is fine with "see".
+    const orderManage = access.can('orders_manage');
+    const btn = (text: string, onPress: () => void, kind: 'primary' | 'outline' | 'danger' = 'outline', disabled = false, viewOnlyOk = false) => (!orderManage && !viewOnlyOk) ? null : (
       <Pressable disabled={disabled} onPress={onPress} style={[styles.resetButton, { flexGrow: 1, flexBasis: '45%', minHeight: 40, opacity: disabled ? 0.5 : 1 }, kind === 'primary' ? styles.resetButtonEnabled : kind === 'danger' ? { borderWidth: 1, borderColor: '#F5C2C2', backgroundColor: '#FDECEC' } : { borderWidth: 1, borderColor: '#5381BB' }]}>
         <Text style={[styles.resetButtonText, { fontSize: 13 }, kind === 'outline' && { color: '#1E56A0' }, kind === 'danger' && { color: '#B42318' }]}>{text}</Text>
       </Pressable>
@@ -11838,7 +11810,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
           <Pressable onPress={() => { setMainTab('home'); setScreen('main'); }} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
           <Text style={styles.knowledgeHeaderTitle}>Orders</Text>
           <View style={{ flexDirection: 'row', gap: 16 }}>
-            <Pressable onPress={() => exportOrdersCsv(shown)} hitSlop={8} accessibilityLabel="Export orders"><Ionicons name="download-outline" size={22} color="#0B1220" /></Pressable>
+            {access.can('export') && <Pressable onPress={() => { exportOrdersCsv(shown); logExport('orders', shown.length); }} hitSlop={8} accessibilityLabel="Export orders"><Ionicons name="download-outline" size={22} color="#0B1220" /></Pressable>}
             <Pressable onPress={() => refreshOrders().then(() => flash('Orders refreshed')).catch(() => flash("Couldn't refresh orders."))} hitSlop={8} accessibilityLabel="Refresh"><Ionicons name="refresh-outline" size={22} color="#0B1220" /></Pressable>
           </View>
         </View>
@@ -11864,7 +11836,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
               </Pressable>
             ))}
           </ScrollView>
-{isOwnerRole() && (
+{access.can('orders_manage') && (
           <Pressable onPress={() => setAddingOrder(true)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', marginBottom: 12 }}>
             <Ionicons name="add-circle-outline" size={18} color="#1E56A0" /><Text style={{ color: '#1E56A0', fontWeight: '700' }}>Add an order yourself</Text>
           </Pressable>
@@ -11939,10 +11911,10 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                     {!!o.delivery_address && <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}><Text style={{ fontWeight: '700' }}>Deliver to: </Text>{o.delivery_address}</Text>}
                     {!!o.note && <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}><Text style={{ fontWeight: '700' }}>Note: </Text>{o.note}</Text>}
                     <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
-                      {phone.length >= 7 && btn('WhatsApp update', () => { notifyCustomer(o, 'whatsapp').catch(() => {}); })}
-                      {!!o.customer_email && btn('Email update', () => { notifyCustomer(o, 'email').catch(() => {}); })}
-                      {phone.length >= 7 && btn('Call', () => { Linking.openURL(`tel:${phone}`).catch(() => {}); })}
-                      {btn('Share update', () => { notifyCustomer(o, 'share').catch(() => {}); })}
+                      {phone.length >= 7 && btn('WhatsApp update', () => { notifyCustomer(o, 'whatsapp').catch(() => {}); }, 'outline', false, true)}
+                      {!!o.customer_email && btn('Email update', () => { notifyCustomer(o, 'email').catch(() => {}); }, 'outline', false, true)}
+                      {phone.length >= 7 && btn('Call', () => { Linking.openURL(`tel:${phone}`).catch(() => {}); }, 'outline', false, true)}
+                      {btn('Share update', () => { notifyCustomer(o, 'share').catch(() => {}); }, 'outline', false, true)}
                     </View>
                   </View>
 
@@ -12053,6 +12025,8 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
       </View>
     );
   }
+
+  if (screen === 'activityLog') return <ActivityLog onBack={() => setScreen('settings')} topInset={insets.top} />;
 
   if (screen === 'missingImages') {
     const missing = KNOWLEDGE_CATEGORIES.filter(k => k === 'products' || k === 'services').flatMap(k => knowledgeData[k].items.filter(i => !i.image).map(i => ({ cat: k, item: i })));
@@ -13038,7 +13012,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
               </View>
             ))}
           </View>
-          {activeCategory === 'products' && <StockCard key={item.id} itemId={item.id} fields={item.fields} onChanged={() => { refreshKnowledge().catch(() => {}); }} />}
+          {activeCategory === 'products' && <StockCard key={item.id} itemId={item.id} fields={item.fields} canAdjust={access.can('products_manage')} onChanged={() => { refreshKnowledge().catch(() => {}); }} />}
           {item.features && (
             <View style={styles.detailCard}>
               <Text style={styles.sectionLabel}>{featuresHeading}</Text>
@@ -13050,14 +13024,19 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
               ))}
             </View>
           )}
-          <Pressable onPress={openItemEdit} style={styles.editLink}>
-            <Ionicons name="create-outline" size={16} color="#1E56A0" />
-            <Text style={styles.insightLink}>Edit</Text>
-          </Pressable>
-          <Pressable onPress={deleteActiveItem} style={[styles.dangerSoft, { marginTop: 10 }]} accessibilityRole="button">
-            <Ionicons name="trash-outline" size={15} color="#B42318" />
-            <Text style={styles.dangerSoftText}>Delete</Text>
-          </Pressable>
+          {/* Team members edit products with "Products: manage" and policies/FAQs with "Train AI"; only the owner deletes. */}
+          {access.can(activeCategory === 'products' || activeCategory === 'services' ? 'products_manage' : 'knowledge_manage') ? (
+            <Pressable onPress={openItemEdit} style={styles.editLink}>
+              <Ionicons name="create-outline" size={16} color="#1E56A0" />
+              <Text style={styles.insightLink}>Edit</Text>
+            </Pressable>
+          ) : <Text style={[styles.attentionSubtitle, { textAlign: 'center', marginTop: 8 }]}>View only: your role can see this but not change it.</Text>}
+          {access.isOwner && (
+            <Pressable onPress={deleteActiveItem} style={[styles.dangerSoft, { marginTop: 10 }]} accessibilityRole="button">
+              <Ionicons name="trash-outline" size={15} color="#B42318" />
+              <Text style={styles.dangerSoftText}>Delete</Text>
+            </Pressable>
+          )}
         </ScrollView>
       </View>
     );
@@ -16927,47 +16906,9 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
         break;
       }
       case 'team': {
-        const ROLE: Record<string, [string, string]> = { owner: ['Owner', '#E3ECF7'], manager: ['Manager', '#FDEFE0'], staff: ['Staff', '#E3ECF7'] };
         body = (
           <>
-            <Text style={[styles.attentionSubtitle, { fontSize: 14 }]}>Manage your team members and what they can do.</Text>
-            {label(`Team members${team ? ` (${team.length})` : ''}`)}
-            {!team && <ActivityIndicator color="#1E56A0" />}
-            {team?.length === 0 && <Text style={styles.attentionSubtitle}>Only you so far.</Text>}
-            {team?.map(m => row({ k: m.member_id, icon: 'person-circle-outline', title: `${m.full_name}${m.is_me ? ' (you)' : ''}`, sub: `${m.role === 'owner' ? 'Full access' : 'Limited access'}${m.email ? ` · ${m.email}` : ''}${m.status !== 'active' ? ` · ${m.status}` : ''}`,
-              onPress: isOwner && m.role !== 'owner' ? () => removeMember(m) : undefined,
-              right: <Text style={{ fontSize: 12.5, color: m.role === 'manager' ? '#C2760C' : '#1E56A0', backgroundColor: (ROLE[m.role] || ROLE.staff)[1], paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12, overflow: 'hidden' }}>{(ROLE[m.role] || [m.role])[0]}</Text> }))}
-            {isOwner && (
-              <Pressable onPress={() => { inviteStaff().then(() => loadTeam()).catch(() => {}); }} disabled={billingBusy === 'invite'} style={{ marginTop: 6, height: 46, borderRadius: 12, borderWidth: 1, borderColor: '#1E56A0', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-                {billingBusy === 'invite' ? <ActivityIndicator color="#1E56A0" /> : <><Ionicons name="add" size={20} color="#1E56A0" /><Text style={{ color: '#1E56A0', fontSize: 15, fontWeight: '600' }}>Invite teammates</Text></>}
-              </Pressable>
-            )}
-            {!!staffInviteCode && isOwner && <Text style={[styles.attentionSubtitle, { marginTop: 8, textAlign: 'center' }]}>Latest invite code: <Text style={{ fontWeight: '700', color: '#0B1220' }}>{staffInviteCode}</Text></Text>}
-            {isOwner && !!team?.some(m => m.role !== 'owner') && (
-              <>
-                {label('What each team member can see and do')}
-                {team!.filter(m => m.role !== 'owner').map(m => {
-                  const p = memberPerms[m.member_id] || {};
-                  const sw = (key: keyof MemberPerms, title: string) => (
-                    <View key={key} style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 6 }}>
-                      <Text style={{ flex: 1, fontSize: 14, color: '#0B1220' }}>{title}</Text>
-                      <Switch value={!!p[key]} onValueChange={v => { toggleMemberPerm(m.member_id, key, v).catch(() => {}); }} trackColor={{ true: '#5381BB', false: '#D5DEE8' }} thumbColor="#FFFFFF" />
-                    </View>
-                  );
-                  return (
-                    <View key={`perm-${m.member_id}`} style={[card, { flexDirection: 'column', alignItems: 'stretch' }]}>
-                      <Text style={{ fontSize: 15, fontWeight: '700', color: '#0B1220', marginBottom: 4 }}>{m.full_name}</Text>
-                      {sw('orders_view', 'See orders')}
-                      {sw('orders_manage', 'Update orders (ship, mark paid)')}
-                      {sw('customers_view', 'See customers and leads')}
-                      {sw('customers_manage', 'Update customers, notes and follow-ups')}
-                    </View>
-                  );
-                })}
-                <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}>Every team member can ask Nexora about your products, services and policies. Revenue, billing, refunds, cancelling orders and settings stay with you. Access is checked by the server, not just hidden in the app.</Text>
-              </>
-            )}
-            {!isOwner && row({ icon: 'school-outline', title: 'What you can do', sub: `Ask Nexora about products and policies${Object.values(memberPerms)[0]?.orders_view ? ', see orders' : ''}${Object.values(memberPerms)[0]?.customers_view ? ', see customers' : ''}. Ask the owner for more access.` })}
+            <TeamManager access={access} flash={flash} onOpenActivity={() => setScreen('activityLog')} onChanged={() => { loadTeam().catch(() => {}); }} />
             {label(`Team tasks${teamTasks ? ` (${teamTasks.filter(t => t.status === 'open').length} open)` : ''}`)}
             {teamTasks === null && <Text style={styles.attentionSubtitle}>Run the automation, team and referrals SQL script in Supabase to use team tasks.</Text>}
             {(teamTasks ?? []).map(t => {
@@ -17950,13 +17891,10 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                   })}
                   {IN_APP_SUBSCRIBE_ENABLED && <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}>Payments are processed securely by Paystack (card, bank transfer or USSD) and charged in your local currency at checkout. Monthly payments cover 30 days and yearly payments cover 365 days (paying early adds the time to your current period), and your plan updates as soon as Paystack confirms it. If a paid plan isn't renewed, your business moves to the Free plan's limits and keeps its data.</Text>}
                   <Text style={[styles.channelSectionLabel, { marginTop: 20 }]}>Your team</Text>
-                  <View style={styles.detailCard}>
-                    <Text style={styles.attentionSubtitle}>Invite staff to use Nexora with your company's knowledge. Each invite code works once.</Text>
-                    {!!staffInviteCode && <Text selectable style={{ fontSize: 22, fontWeight: '800', letterSpacing: 3, color: '#0B1220', textAlign: 'center', marginTop: 12 }}>{staffInviteCode}</Text>}
-                    <Pressable disabled={billingBusy === 'invite'} onPress={inviteStaff} style={[styles.resetButton, { marginTop: 12, minHeight: 42, borderWidth: 1, borderColor: '#5381BB' }]}>
-                      {billingBusy === 'invite' ? <ActivityIndicator color="#1E56A0" /> : <Text style={[styles.resetButtonText, { color: '#1E56A0' }]}>{staffInviteCode ? 'Create another invite' : 'Invite a staff member'}</Text>}
-                    </Pressable>
-                  </View>
+                  <Pressable onPress={() => openSettings('team', { exit: () => setScreen('billing') })} style={[styles.detailCard, { flexDirection: 'row', alignItems: 'center', gap: 10 }]} accessibilityRole="button">
+                    <Text style={[styles.attentionSubtitle, { flex: 1 }]}>Invite staff with a role (Sales, Support, Inventory…), change what they can do, or suspend them in Team & Access.</Text>
+                    <Ionicons name="chevron-forward" size={18} color="#8A97A6" />
+                  </Pressable>
                 </>
               )}
             </>
