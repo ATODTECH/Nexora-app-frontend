@@ -79,12 +79,20 @@ export async function decideApproval(a: Approval, approve: boolean, note: string
   const e = clean(error, "Couldn't save your decision."); if (e) throw e;
   const approval = data as Approval;
   changed();
-  if (approve && approval.kind === 'bulk_message' && approval.status === 'approved') {
-    const r = await callFn('send-message', { approval_id: approval.id }, 120000).catch((x: Error) => ({ message: x.message }));
-    return { approval, sent: r?.message || 'Sending finished.' };
-  }
+  if (approve && approval.kind === 'bulk_message' && approval.status === 'approved') return { approval, sent: await sendApprovedBulk(approval.id, callFn) };
   return { approval };
 }
+/** Sends an approved bulk message (straight after approving, or again with "Send now" if that didn't finish). Says how it went. */
+export async function sendApprovedBulk(id: string, callFn: CallFn): Promise<string> {
+  const r = await callFn('send-message', { approval_id: id }, 120000).catch((x: Error) => ({ message: x.message }));
+  changed();
+  return r?.message || 'Sending finished.';
+}
+/** What to tell the approver after a decision. */
+export const decisionText = (approve: boolean, a: Approval, sent?: string) =>
+  a.status === 'expired' ? 'This request had expired, so nothing was done.'
+    : !approve ? 'Rejected. They’ve been told.'
+    : sent ?? (a.status === 'not_needed' ? 'Nothing to do: it had already changed.' : 'Approved and done.');
 export async function withdrawApproval(id: string) {
   const { error } = await supabase.rpc('withdraw_approval', { p_id: id });
   const e = clean(error, "Couldn't withdraw it."); if (e) throw e;

@@ -3832,6 +3832,8 @@ function HomeScreenInner(){
       if (screen === 'terms') { setMainTab(termsReturnRef.current.tab); setScreen(termsReturnRef.current.screen); return true; }
       if (screen === 'communityPost') { setScreen('community'); return true; }
       if (screen === 'settings') { settingsBack(); return true; }
+      if (screen === 'activityLog') { setScreen('settings'); return true; }
+      if (screen === 'approvals') { if (approvalsFromRef.current === 'settings') setScreen('settings'); else goTab('home'); return true; }
       if (screen === 'opportunityDetail') { setScreen('opportunities'); return true; }
       if (screen === 'opportunities') { marketBackRef.current(); return true; }
       if ((screen === 'explore' || screen === 'trends' || screen === 'community') && exploreBackRef.current) { exploreBackRef.current(); return true; }
@@ -3938,6 +3940,9 @@ function HomeScreenInner(){
   const [approvalsWaiting, setApprovalsWaiting] = useState(0);
   const [askSheet, setAskSheet] = useState<null | { title: string; what: string; reasonLabel: string; reasonPlaceholder?: string; reasonRequired?: boolean; send: (reason: string) => Promise<void> }>(null);
   const [orderPending, setOrderPending] = useState<Approval[]>([]);
+  // Approvals opens from Home (or a notification) and from Team & Access; Back returns there.
+  const approvalsFromRef = useRef<'home' | 'settings'>('home');
+  const openApprovals = (from: 'home' | 'settings') => { approvalsFromRef.current = from; setScreen('approvals'); };
   /** A team member's action that waits for approval while the owner's rule for it is on (the owner never waits). */
   const needsApproval = (k: ApprovalKind) => !access.isOwner && approvalRules[k];
   useEffect(() => { if (workspace && workspace.role !== 'owner') loadApprovalRules().then(setApprovalRules).catch(() => {}); }, [workspace?.business_id, workspace?.role]);
@@ -4243,7 +4248,9 @@ function HomeScreenInner(){
     // This phone stops getting the account's notifications.
     if (pushTokenRef.current) { await supabase.from('push_tokens').delete().eq('token', pushTokenRef.current).then(() => {}, () => {}); pushTokenRef.current = ''; }
     setBioLocked(false);
-    await supabase.auth.signOut();
+    // Only this phone: logging out here must not sign the person out on the website or other phones
+    // (Security → "Sign out other devices" does that on purpose).
+    await supabase.auth.signOut({ scope: 'local' });
     setInfoMessage('');
     setScreen('login');
     setLoginIndex(0);
@@ -6253,7 +6260,7 @@ function HomeScreenInner(){
         case 'inbox': goTab('inbox'); loadConversations().catch(() => {}); break;
         case 'loginActivity': openSettings('loginActivity'); break;
         case 'products': openKnowledgeList('products'); break;   // "Running low" / "Sold out"
-        case 'approvals': setScreen('approvals'); break;         // a team request to decide, or a decision on yours
+        case 'approvals': openApprovals('home'); break;         // a team request to decide, or a decision on yours
       }
     });
     return () => sub.remove();
@@ -7210,8 +7217,9 @@ function HomeScreenInner(){
     await loadCampaigns().catch(() => {});
     flash(launch ? (future ? `Scheduled for ${f.start}` : 'Campaign is live') : 'Campaign saved as draft');
   };
-  const publishCampaign = async (x: Campaign) => {
-    if (needsApproval('campaign_post') && !x.published_at) {
+  // shareOnly: just share the post again (view-only team members, or a campaign that's already posted).
+  const publishCampaign = async (x: Campaign, shareOnly = false) => {
+    if (!shareOnly && needsApproval('campaign_post') && !x.published_at) {
       setAskSheet({ title: `Ask to post ${x.name}`, what: 'Once approved, the campaign is marked as posted and you can share the post.', reasonLabel: 'Note for the approver', reasonPlaceholder: 'e.g. Ready for the weekend', reasonRequired: false,
         send: async reason => { await requestApproval('campaign_post', x.id, {}, reason); flash('Sent for approval. You’ll be notified when it’s decided.'); } });
       return;
@@ -7222,7 +7230,7 @@ function HomeScreenInner(){
       if (IS_WEB) { await (globalThis as any).navigator?.clipboard?.writeText(text); flash('Post copied: paste it on ' + (x.channel.charAt(0).toUpperCase() + x.channel.slice(1))); }
       else await Share.share({ message: text });
     } catch { Share.share({ message: text }).catch(() => {}); }
-    if (needsApproval('campaign_post')) return;   // already posted (approved): sharing it again needs no new approval
+    if (shareOnly || needsApproval('campaign_post')) return;   // already posted (approved): sharing it again needs no new approval
     await supabase.from('campaigns').update({ published_at: new Date().toISOString(), status: x.status === 'draft' ? 'active' : x.status, updated_at: new Date().toISOString() }).eq('id', x.id);
     loadCampaigns().catch(() => {});
   };
@@ -11305,7 +11313,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
       const lowStock = lowStockItems;
       const noPhoto = offers.filter(i => !i.image).length;
       const todo = [
-        approvalsWaiting && { icon: 'shield-checkmark-outline', color: '#C2760C', title: `${approvalsWaiting} team request${approvalsWaiting === 1 ? '' : 's'} waiting for you`, sub: 'Refunds, cancellations, stock corrections and more', onPress: () => setScreen('approvals') },
+        approvalsWaiting && { icon: 'shield-checkmark-outline', color: '#C2760C', title: `${approvalsWaiting} team request${approvalsWaiting === 1 ? '' : 's'} waiting for you`, sub: 'Refunds, cancellations, stock corrections and more', onPress: () => openApprovals('home') },
         unpaid.length && { icon: 'card-outline', color: '#B42318', title: `${unpaid.length} unpaid order${unpaid.length === 1 ? '' : 's'}`, sub: `${moneyText(unpaid.reduce((n, o) => n + Number(o.total || 0), 0))} to collect`, onPress: () => openOrders('Unpaid') },
         pendingOrders.length && { icon: 'cube-outline', color: '#1E56A0', title: `${pendingOrders.length} order${pendingOrders.length === 1 ? '' : 's'} to prepare or ship`, sub: 'Confirm and send them out', onPress: () => openOrders('Unshipped') },
         autoRuns.filter(r => r.status === 'awaiting_approval').length && { icon: 'checkmark-done-outline', color: '#1E56A0', title: `${autoRuns.filter(r => r.status === 'awaiting_approval').length} message${autoRuns.filter(r => r.status === 'awaiting_approval').length === 1 ? '' : 's'} waiting for your approval`, sub: 'Drafted by your automations', onPress: () => openAutomations() },
@@ -11925,6 +11933,8 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
             const direct = (k: ApprovalKind) => owner || (manageOrders && !approvalRules[k]);
             const ask = (k: ApprovalKind) => !owner && manageOrders && approvalRules[k];
             const sentForApproval = () => { flash('Sent for approval. You’ll be notified when it’s decided.'); loadOrderPending(o.id); };
+            // No second "Ask" while the same request is already waiting (the banner says so).
+            const canAsk = (k: ApprovalKind) => ask(k) && !orderPending.some(a => a.kind === k);
             const section = (t: string) => <Text style={[styles.channelSectionLabel, { marginTop: 16 }]}>{t}</Text>;
             return (
               <View style={[styles.mainScreen, { paddingTop: IS_WEB ? 0 : insets.top }]}>
@@ -11995,7 +12005,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                       {(o.payment_status === 'unpaid' || o.payment_status === 'unknown') && btn('Customer says they paid', () => { setPayment(o, 'pending').catch(() => {}); }, 'outline', !ordersUpgraded)}
                       {o.payment_status === 'paid' && btn('Mark as unpaid', () => { setPayment(o, 'unpaid').catch(() => {}); }, 'outline', !ordersUpgraded)}
                     </View>
-                    {(o.payment_status === 'paid' || o.payment_status === 'partially_refunded') && (direct('refund') || ask('refund')) && (
+                    {(o.payment_status === 'paid' || o.payment_status === 'partially_refunded') && (direct('refund') || canAsk('refund')) && (
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 }}>
                         <TextInput value={orderForm.refund} onChangeText={v => setOrderForm(f => f && { ...f, refund: v })} keyboardType="decimal-pad" placeholder="Refund amount" placeholderTextColor="#A5AFBB" style={[styles.editInput, { flex: 1, height: 40 }]} />
                         <Pressable onPress={() => {
@@ -12008,7 +12018,8 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                         }} style={{ paddingHorizontal: 14, height: 40, borderRadius: 12, backgroundColor: '#7C3AED', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#FFF', fontWeight: '700' }}>{direct('refund') ? 'Record refund' : 'Ask to refund'}</Text></Pressable>
                       </View>
                     )}
-                    {!owner && (!manageOrders || ask('refund') || ask('order_cancel')) && <Text style={[styles.attentionSubtitle, { marginTop: 8, fontSize: 12 }]}>{!manageOrders ? 'Your role can see orders but not change them.' : 'Refunds and cancelling need approval: your request goes to the owner.'}</Text>}
+                    {!owner && (!manageOrders || ask('refund') || ask('order_cancel')) && <Text style={[styles.attentionSubtitle, { marginTop: 8, fontSize: 12 }]}>{!manageOrders ? 'Your role can see orders but not change them.' : ask('refund') && ask('order_cancel') ? 'Refunds and cancelling need approval: your request goes to the owner.'
+                      : ask('refund') ? 'Refunds need approval: your request goes to the owner.' : 'Cancelling needs approval: your request goes to the owner.'}</Text>}
                   </View>
 
                   {section('Delivery')}
@@ -12023,7 +12034,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                       {o.status !== 'pending' && o.status !== 'cancelled' && orderForm.tracking.trim() !== (o.tracking || '') && btn('Save tracking', () => { updateOrder(o, { tracking: orderForm.tracking.trim() }, `Tracking updated: ${orderForm.tracking.trim()}`, true, 'Tracking saved').catch(() => {}); })}
                       {o.status === 'cancelled' && direct('order_cancel') && btn('Reopen order', () => { setOrderStatus(o, 'pending', { cancelled_at: null, cancel_reason: '' }).catch(() => {}); })}
                     </View>
-                    {o.status !== 'cancelled' && o.status !== 'completed' && ask('order_cancel') && (
+                    {o.status !== 'cancelled' && o.status !== 'completed' && canAsk('order_cancel') && (
                       <View style={{ flexDirection: 'row', marginTop: 14 }}>
                         {btn('Ask to cancel', () => setAskSheet({ title: `Ask to cancel ${orderLabel(o)}`,
                           what: `${orderLabel(o)} for ${o.customer_name} (${orderMoney(o, o.total)}) will be cancelled once approved${(o.line_items ?? []).length ? ', and its items go back into stock' : ''}.`,
@@ -12089,7 +12100,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
 
   if (screen === 'activityLog') return <ActivityLog onBack={() => setScreen('settings')} topInset={insets.top} />;
   if (screen === 'approvals') return <Approvals userId={userId ?? ''} approver={access.can('approvals_manage')} isOwner={access.isOwner} callFn={callFn} flash={flash}
-    onBack={() => goTab('home')} onOpenRules={() => openSettings('team')} topInset={insets.top} />;
+    onBack={() => { if (approvalsFromRef.current === 'settings') setScreen('settings'); else goTab('home'); }} onOpenRules={() => openSettings('team')} topInset={insets.top} />;
 
   if (screen === 'missingImages') {
     const missing = KNOWLEDGE_CATEGORIES.filter(k => k === 'products' || k === 'services').flatMap(k => knowledgeData[k].items.filter(i => !i.image).map(i => ({ cat: k, item: i })));
@@ -15814,7 +15825,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
       <View style={styles.mainScreen}>
         <StatusBar style="dark" />
         {askSheetEl}
-        {renderPageHeader('Campaigns', 'Each campaign gets a tracked shop link and an optional discount code, so you can see what worked.', () => goTab('home'), { label: 'New campaign', icon: 'add', onPress: () => setCampaignForm(newCampaignForm()) })}
+        {renderPageHeader('Campaigns', 'Each campaign gets a tracked shop link and an optional discount code, so you can see what worked.', () => goTab('home'), access.can('marketing_manage') ? { label: 'New campaign', icon: 'add', onPress: () => setCampaignForm(newCampaignForm()) } : undefined)}
         <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40, width: '100%', maxWidth: desktop ? 1240 : 820, alignSelf: 'center' }, desktop && { padding: 28, backgroundColor: '#F4F7FB', flexGrow: 1 }]} keyboardShouldPersistTaps="handled">
           {desktop && (() => {
             const all = list.map(results);
@@ -15851,7 +15862,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
             <View style={{ alignItems: 'center', paddingVertical: 30 }}>
               <Ionicons name="megaphone-outline" size={34} color="#A5AFBB" />
               <Text style={[styles.attentionSubtitle, { textAlign: 'center', marginTop: 8 }]}>No campaigns yet. Create one for a sale, a new product or a season, then post it wherever your customers are.</Text>
-              <Pressable onPress={() => setCampaignForm(newCampaignForm())} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 14, paddingHorizontal: 24 }]}><Text style={styles.resetButtonText}>Create a campaign</Text></Pressable>
+              {access.can('marketing_manage') && <Pressable onPress={() => setCampaignForm(newCampaignForm())} style={[styles.resetButton, styles.resetButtonEnabled, { marginTop: 14, paddingHorizontal: 24 }]}><Text style={styles.resetButtonText}>Create a campaign</Text></Pressable>}
             </View>
           ) : (<View style={desktop ? { flexDirection: 'row', flexWrap: 'wrap', gap: 16, marginTop: 12, alignItems: 'stretch' } : undefined}>{list.map(x => {
             const st = statusOf(x);
@@ -15877,13 +15888,17 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                 </View>
                 {!!link && <Text selectable style={{ fontSize: 12, color: '#1E3A5F', marginTop: 10, backgroundColor: '#F2F8FD', padding: 8, borderRadius: 8 }} numberOfLines={1}>{link}</Text>}
                 <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+                  {!access.can('marketing_manage') ? (!!x.published_at && !campaignOver(x) && (
+                    <Pressable onPress={() => { publishCampaign(x, true).catch(() => {}); }} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: '#5381BB' }}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>Share post</Text></Pressable>
+                  )) : <>
                   {!campaignOver(x) && (
                     <Pressable onPress={() => { publishCampaign(x).catch(() => {}); }} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, backgroundColor: '#1E56A0' }}><Text style={{ color: '#FFF', fontWeight: '700', fontSize: 13 }}>{x.published_at ? (needsApproval('campaign_post') ? 'Share post' : 'Post again') : needsApproval('campaign_post') ? 'Ask to post' : 'Post it now'}</Text></Pressable>
                   )}
                   {x.status === 'draft' && <Pressable onPress={() => { supabase.from('campaigns').update({ status: x.starts_at && new Date(x.starts_at).getTime() > Date.now() ? 'scheduled' : 'active', updated_at: new Date().toISOString() }).eq('id', x.id).then(() => loadCampaigns()); }} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: '#5381BB' }}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>Launch</Text></Pressable>}
                   <Pressable onPress={() => setCampaignForm(editCampaignForm(x))} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: '#5381BB' }}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>Edit</Text></Pressable>
                   {!campaignOver(x) && x.status !== 'draft' && <Pressable onPress={() => { supabase.from('campaigns').update({ status: 'ended', updated_at: new Date().toISOString() }).eq('id', x.id).then(() => { loadCampaigns(); flash('Campaign ended. Its code no longer works.'); }); }} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: '#F5C2C2', backgroundColor: '#FDECEC' }}><Text style={{ color: '#B42318', fontWeight: '700', fontSize: 13 }}>End</Text></Pressable>}
-                  {(campaignOver(x) || x.status === 'draft') && <Pressable onPress={() => Alert.alert('Delete this campaign?', x.name, [{ text: 'Cancel', style: 'cancel' }, { text: 'Delete', style: 'destructive', onPress: () => { supabase.from('campaigns').delete().eq('id', x.id).then(() => loadCampaigns()); } }])} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12 }}><Text style={{ color: '#B42318', fontWeight: '700', fontSize: 13 }}>Delete</Text></Pressable>}
+                  {isOwnerRole() && (campaignOver(x) || x.status === 'draft') && <Pressable onPress={() => Alert.alert('Delete this campaign?', x.name, [{ text: 'Cancel', style: 'cancel' }, { text: 'Delete', style: 'destructive', onPress: () => { supabase.from('campaigns').delete().eq('id', x.id).then(() => loadCampaigns()); } }])} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12 }}><Text style={{ color: '#B42318', fontWeight: '700', fontSize: 13 }}>Delete</Text></Pressable>}
+                  </>}
                 </View>
               </View>
             );
@@ -16973,7 +16988,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
       case 'team': {
         body = (
           <>
-            <TeamManager access={access} flash={flash} onOpenActivity={() => setScreen('activityLog')} onOpenApprovals={() => setScreen('approvals')} onChanged={() => { loadTeam().catch(() => {}); }} />
+            <TeamManager access={access} flash={flash} onOpenActivity={() => setScreen('activityLog')} onOpenApprovals={() => openApprovals('settings')} onChanged={() => { loadTeam().catch(() => {}); }} />
             {label(`Team tasks${teamTasks ? ` (${teamTasks.filter(t => t.status === 'open').length} open)` : ''}`)}
             {teamTasks === null && <Text style={styles.attentionSubtitle}>Run the automation, team and referrals SQL script in Supabase to use team tasks.</Text>}
             {(teamTasks ?? []).map(t => {

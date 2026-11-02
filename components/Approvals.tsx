@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Text, TextInput } from '../lib/inter';
-import { STATUS_COLORS, STATUS_TEXT, decideApproval, isWaiting, loadApprovals, withdrawApproval, type Approval, type ApprovalKind } from '../lib/approvals';
+import { STATUS_COLORS, STATUS_TEXT, decideApproval, decisionText, isWaiting, loadApprovals, sendApprovedBulk, withdrawApproval, type Approval, type ApprovalKind } from '../lib/approvals';
 
 // Approvals: requests from the team (refunds, cancellations, stock corrections, campaign posts, bulk messages).
 // Approvers (the owner and anyone with "Approve team requests") decide; everyone else sees what they asked for.
@@ -15,7 +15,11 @@ const ago = (iso: string) => {
   const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
   return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
 };
-const daysLeft = (iso: string) => Math.max(1, Math.ceil((new Date(iso).getTime() - Date.now()) / 86400000));
+/** "expires in 6 days" / "in 5 h" / "in 12 min". */
+const expiresIn = (iso: string) => {
+  const m = Math.max(1, Math.ceil((new Date(iso).getTime() - Date.now()) / 60000));
+  return m < 60 ? `${m} min` : m < 1440 ? `${Math.ceil(m / 60)} h` : `${Math.ceil(m / 1440)} day${Math.ceil(m / 1440) === 1 ? '' : 's'}`;
+};
 
 export function Approvals({ userId, approver, isOwner, callFn, flash, onBack, onOpenRules, topInset = 0 }: {
   userId: string; approver: boolean; isOwner: boolean; callFn: CallFn; flash: (t: string) => void; onBack: () => void; onOpenRules: () => void; topInset?: number;
@@ -62,7 +66,7 @@ export function Approvals({ userId, approver, isOwner, callFn, flash, onBack, on
 
 function Request({ a, mine, approver, callFn, onDone }: { a: Approval; mine: boolean; approver: boolean; callFn: CallFn; onDone: (text: string) => void }) {
   const [note, setNote] = useState('');
-  const [busy, setBusy] = useState<'' | 'yes' | 'no' | 'withdraw'>('');
+  const [busy, setBusy] = useState<'' | 'yes' | 'no' | 'withdraw' | 'send'>('');
   const [err, setErr] = useState('');
   const waiting = isWaiting(a);
   const status = a.status === 'pending' && !waiting ? 'expired' : a.status;
@@ -71,14 +75,14 @@ function Request({ a, mine, approver, callFn, onDone }: { a: Approval; mine: boo
     setBusy(approve ? 'yes' : 'no'); setErr('');
     try {
       const r = await decideApproval(a, approve, note, callFn);
-      onDone(!approve ? 'Rejected. They’ve been told.' : r.sent ?? (r.approval.status === 'not_needed' ? 'Nothing to do: it had already changed.' : 'Approved and done.'));
+      onDone(decisionText(approve, r.approval, r.sent));
     } catch (e) { setErr((e as Error).message); setBusy(''); }
   };
+  const sendNow = async () => { setBusy('send'); setErr(''); onDone(await sendApprovedBulk(a.id, callFn)); };
   const withdraw = async () => {
     setBusy('withdraw'); setErr('');
     try { await withdrawApproval(a.id); onDone('Request withdrawn.'); } catch (e) { setErr((e as Error).message); setBusy(''); }
   };
-  const d = daysLeft(a.expires_at);
   return (
     <View style={s.card}>
       <View style={{ flexDirection: 'row', gap: 12 }}>
@@ -88,7 +92,7 @@ function Request({ a, mine, approver, callFn, onDone }: { a: Approval; mine: boo
           <View style={[s.pill, { backgroundColor: STATUS_COLORS[status].bg }]}><Text style={[s.pillText, { color: STATUS_COLORS[status].fg }]}>{STATUS_TEXT[status]}</Text></View>
           {!!a.detail && <Text style={[s.detail, a.kind === 'bulk_message' && s.quoteBox]}>{a.detail}</Text>}
           {!!a.reason && <Text style={s.reason}>“{a.reason}”</Text>}
-          <Text style={s.meta}>{mine ? 'You' : a.requester_name} · {ago(a.created_at)}{waiting ? ` · expires in ${d} day${d === 1 ? '' : 's'}` : ''}</Text>
+          <Text style={s.meta}>{mine ? 'You' : a.requester_name} · {ago(a.created_at)}{waiting ? ` · expires in ${expiresIn(a.expires_at)}` : ''}</Text>
           {!!a.decider_name && (
             <Text style={s.meta}>{a.status === 'rejected' ? 'Rejected' : 'Approved'} by {a.decider_name}{a.decision_note ? `: “${a.decision_note}”` : ''}
               {a.kind === 'bulk_message' && a.result?.sent != null ? ` · sent to ${a.result.sent}${a.result.failed ? `, ${a.result.failed} not sent` : ''}` : ''}</Text>
@@ -108,6 +112,14 @@ function Request({ a, mine, approver, callFn, onDone }: { a: Approval; mine: boo
               {busy === 'yes' ? <ActivityIndicator color="#FFF" /> : <Text style={[s.btnText, { color: '#FFF' }]}>Approve</Text>}
             </Pressable>
           </View>
+        </View>
+      )}
+      {a.kind === 'bulk_message' && a.status === 'approved' && approver && (
+        <View style={{ marginTop: 12, flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+          <Text style={[s.meta, { flex: 1, marginTop: 0 }]}>Approved, but sending didn’t finish.</Text>
+          <Pressable disabled={!!busy} onPress={() => { sendNow().catch(() => {}); }} style={[s.withdraw, { backgroundColor: '#1E56A0', borderColor: '#1E56A0' }]}>
+            {busy === 'send' ? <ActivityIndicator color="#FFF" /> : <Text style={{ fontSize: 13, fontWeight: '700', color: '#FFF' }}>Send now</Text>}
+          </Pressable>
         </View>
       )}
       {waiting && mine && (

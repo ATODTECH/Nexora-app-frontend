@@ -16,7 +16,8 @@ type Level = 'none' | 'see' | 'manage';
 const lastSeen = (iso: string | null) => {
   if (!iso) return 'Hasn’t signed in yet';
   const m = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
-  return m < 2 ? 'Active now' : m < 60 ? `Active ${m} min ago` : m < 1440 ? `Active ${Math.round(m / 60)} h ago` : `Active ${Math.round(m / 1440)} d ago`;
+  // From the last sign-in (not every action), so it says so.
+  return m < 2 ? 'Signed in just now' : m < 60 ? `Last signed in ${m} min ago` : m < 1440 ? `Last signed in ${Math.round(m / 60)} h ago` : `Last signed in ${Math.round(m / 1440)} d ago`;
 };
 const levelOf = (p: Perms, area: string): Level => (p[`${area}_manage` as Perm] ? 'manage' : p[`${area}_view` as Perm] ? 'see' : 'none');
 
@@ -173,7 +174,7 @@ function MemberSheet({ member, ownerView, onClose, flash, onChanged }: { member:
                 <Text style={s.small}>{r.blurb}</Text>
               </Pressable>
             ))}
-            <Text style={[s.label, { marginTop: 14 }]}>{role === 'custom' ? 'Choose what they can do' : `What a ${roleLabel(role)} can do`}</Text>
+            <Text style={[s.label, { marginTop: 14 }]}>{role === 'custom' ? 'Choose what they can do' : `What ${/^[AEIOU]/.test(roleLabel(role)) ? 'an' : 'a'} ${roleLabel(role)} can do`}</Text>
             <View style={[s.card, { borderWidth: 1, borderColor: '#E1E5EA' }]}>
               {AREAS.map((a, i) => {
                 const lv = levelOf(perms, a.key);
@@ -201,7 +202,7 @@ function MemberSheet({ member, ownerView, onClose, flash, onChanged }: { member:
             </View>
             <Text style={[s.small, { marginTop: 8 }]}>Always owner-only: billing and plans, connecting channels, AI settings, Insights, Brain, and deleting orders, customers or products.</Text>
           </ScrollView>
-          <Pressable disabled={!changed || !!busy} onPress={() => { run('save', () => setMemberAccess(member.member_id, role, custom), `${member.full_name} is now ${roleLabel(role)}`).catch(() => {}); }}
+          <Pressable disabled={!changed || !!busy} onPress={() => { run('save', () => setMemberAccess(member.member_id, role, custom), `${member.full_name} is now ${roleLabel(role)}`, true).catch(() => {}); }}
             style={[s.btn, s.btnPrimary, { marginTop: 12 }, (!changed || !!busy) && { opacity: 0.5 }]}>
             {busy === 'save' ? <ActivityIndicator color="#FFF" /> : <Text style={[s.btnText, { color: '#FFF' }]}>{changed ? 'Save access' : 'No changes'}</Text>}
           </Pressable>
