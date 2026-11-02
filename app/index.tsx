@@ -1681,8 +1681,6 @@ function DrawerHost() {
     { k: 'insights', icon: 'stats-chart-outline', label: 'Business Insights' },
     { k: 'orders', icon: 'cube-outline', label: 'Orders' },
     { k: 'customers', icon: 'people-outline', label: 'Customers' },
-    { k: 'campaigns', icon: 'megaphone-outline', label: 'Campaigns' },
-    { k: 'automations', icon: 'git-branch-outline', label: 'Automations' },
     { k: 'network', icon: 'people-outline', label: 'Find partners' },
     { k: 'shop', icon: 'qr-code-outline', label: 'AI shop link' },
     { k: 'billing', icon: 'card-outline', label: 'Plans & billing' },
@@ -1844,12 +1842,11 @@ const WEB_NAV: { label: string; icon: string; key: FeatureKey; pages: string[] }
   { label: 'Brain', icon: 'sparkles-outline', key: 'knowledge', pages: ['brain'] },
   // Inbox, Schedule and Train AI open from Home (its cards and Quick actions), so they aren't listed here.
   // Market also holds Leads, Customers, Trending, Find online and Community (its tiles), so they aren't listed separately.
+  // Campaigns and Automations open from Home (Quick actions), so they aren't listed either (company feedback 2 Nov 2026).
   { label: 'Market', icon: 'storefront-outline', key: 'market', pages: ['market', 'opportunities', 'opportunityDetail', 'leads', 'leadDetail', 'trends', 'explore', 'browser', 'community', 'communityPost'] },
   { label: 'Insights', icon: 'stats-chart-outline', key: 'analytics', pages: ['insights'] },
   { label: 'Orders', icon: 'bag-handle-outline', key: 'orders', pages: ['orders'] },
   { label: 'Customers', icon: 'people-outline', key: 'customers', pages: ['customersLive', 'customerDetail'] },
-  { label: 'Campaigns', icon: 'megaphone-outline', key: 'campaigns', pages: ['campaigns'] },
-  { label: 'Automations', icon: 'git-branch-outline', key: 'automations', pages: ['automations', 'rules'] },
   { label: 'Find partners', icon: 'people-circle-outline', key: 'partners', pages: ['network'] },
   { label: 'AI shop link', icon: 'qr-code-outline', key: 'shop', pages: ['storefront'] },
   { label: 'Plans & billing', icon: 'card-outline', key: 'billing', pages: ['billing'] },
