@@ -3979,6 +3979,7 @@ function HomeScreenInner(){
   // ---- Team approvals (lib/approvals.ts): the owner's rules, requests waiting for this person, and the "Ask for approval" sheet ----
   const [approvalRules, setApprovalRules] = useState<ApprovalRules>(ALL_ON);
   const [approvalsWaiting, setApprovalsWaiting] = useState(0);
+  const [notesOpen, setNotesOpen] = useState(false);   // Notifications panel (the bell)
   const [askSheet, setAskSheet] = useState<null | { title: string; what: string; reasonLabel: string; reasonPlaceholder?: string; reasonRequired?: boolean; send: (reason: string) => Promise<void> }>(null);
   const [orderPending, setOrderPending] = useState<Approval[]>([]);
   // Approvals opens from Home (or a notification) and from Team & Access; Back returns there.
@@ -10118,6 +10119,66 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
     return { ...pick, showingAway: pick.state === 'home1d', index: homeCardIdx % cards.length, count: cards.length };
   })();
 
+  // Notifications (the bell, company feedback 2 Nov 2026): a panel on the right of the same screen with what needs you and
+  // the latest activity. The red dot shows only when team requests, customer enquiries or unread chats are waiting.
+  const notesUnread = conversations.filter(c => c.unread > 0);
+  const notesCount = approvalsWaiting + escalations.length + notesUnread.length;
+  const renderNotes = () => {
+    if (!notesOpen) return null;
+    const close = () => setNotesOpen(false);
+    const go = (f: () => void) => () => { close(); f(); };
+    const unpaid = orders.filter(o => o.status !== 'cancelled' && (o.payment_status === 'unpaid' || o.payment_status === 'pending'));
+    const toShip = orders.filter(o => o.status === 'pending' || o.status === 'processing');
+    const needs = [
+      approvalsWaiting > 0 && { n: approvalsWaiting, color: '#C2760C', title: `${approvalsWaiting} team request${approvalsWaiting === 1 ? '' : 's'} waiting for you`, sub: 'Refunds, cancellations, stock corrections and more', onPress: go(() => openApprovals('home')) },
+      escalations.length > 0 && { n: escalations.length, color: '#C2760C', title: `${escalations.length} enquir${escalations.length === 1 ? 'y needs' : 'ies need'} you`, sub: escalations[0]?.reason?.slice(0, 80) || 'Customers waiting for a person', onPress: go(() => { refreshEscalations().catch(() => {}); setScreen('agendaPriority'); }) },
+      notesUnread.length > 0 && { n: notesUnread.length, color: '#7C3AED', title: `${notesUnread.length} unanswered chat${notesUnread.length === 1 ? '' : 's'}`, sub: notesUnread[0] ? `${notesUnread[0].name}: ${notesUnread[0].lastMessage}`.slice(0, 80) : '', onPress: go(() => goTab('inbox')) },
+      unpaid.length > 0 && { n: unpaid.length, color: '#B42318', title: `${unpaid.length} unpaid order${unpaid.length === 1 ? '' : 's'}`, sub: 'Waiting for payment', onPress: go(() => openOrders('Unpaid')) },
+      toShip.length > 0 && { n: toShip.length, color: '#1E56A0', title: `${toShip.length} order${toShip.length === 1 ? '' : 's'} to prepare or ship`, sub: 'Confirm and send them out', onPress: go(() => openOrders('Unshipped')) },
+      lowStockItems.length > 0 && { n: lowStockItems.length, color: '#D64545', title: `${lowStockItems.length} product${lowStockItems.length === 1 ? ' is' : 's are'} running low`, sub: lowStockItems.slice(0, 3).map(i => i.name).join(', '), onPress: go(() => openKnowledgeList('products')) },
+    ].filter(Boolean) as { n: number; color: string; title: string; sub: string; onPress: () => void }[];
+    const recent = (homeOverview?.activity ?? []).slice(0, 15);
+    const row = (key: string, badge: React.ReactNode, bg: string, title: string, sub: string, onPress: () => void, chevron: boolean) => (
+      <Pressable key={key} onPress={onPress} accessibilityRole="button" style={(st: any) => ({ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 11, paddingHorizontal: 10, borderRadius: 12, backgroundColor: st.hovered || st.pressed ? '#F4F7FB' : 'transparent' } as any)}>
+        <View style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: bg, alignItems: 'center', justifyContent: 'center' }}>{badge}</View>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={{ fontSize: 14, fontWeight: '700', color: '#0B1220' }} numberOfLines={1}>{title}</Text>
+          {!!sub && <Text style={{ fontSize: 12.5, color: '#5C6B7A', marginTop: 1 }} numberOfLines={1}>{sub}</Text>}
+        </View>
+        {chevron && <Ionicons name="chevron-forward" size={16} color="#A5AFBB" />}
+      </Pressable>
+    );
+    return (
+      <Modal visible transparent animationType="fade" onRequestClose={close} statusBarTranslucent>
+        <View style={{ flex: 1, flexDirection: 'row' }}>
+          <Pressable onPress={close} accessibilityLabel="Close notifications" style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.30)' }} />
+          <View style={{ width: Math.min(400, hookWidth), backgroundColor: '#FFFFFF', paddingTop: IS_WEB ? 0 : insets.top, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 20, elevation: 16 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#E6ECF3' }}>
+              <Text style={{ flex: 1, fontSize: 18, fontWeight: '700', color: '#0B1220' }}>Notifications</Text>
+              <Pressable onPress={close} hitSlop={8} accessibilityRole="button" accessibilityLabel="Close" style={{ width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' }}><Ionicons name="close" size={22} color="#0B1220" /></Pressable>
+            </View>
+            <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 10, paddingBottom: 20 }}>
+              <Text style={{ fontSize: 12, fontWeight: '800', color: '#8A97A6', letterSpacing: 0.8, marginHorizontal: 10, marginTop: 6, marginBottom: 4 }}>NEEDS YOU</Text>
+              {needs.length === 0
+                ? <Text style={{ fontSize: 13.5, color: '#5C6B7A', marginHorizontal: 10, marginVertical: 10 }}>You’re all caught up: no waiting customers, team requests, unpaid orders or low stock.</Text>
+                : needs.map((t, i) => row(`n${i}`, <Text style={{ color: t.color, fontWeight: '800', fontSize: 14 }}>{t.n > 99 ? '99+' : t.n}</Text>, `${t.color}14`, t.title, t.sub, t.onPress, true))}
+              <Text style={{ fontSize: 12, fontWeight: '800', color: '#8A97A6', letterSpacing: 0.8, marginHorizontal: 10, marginTop: 18, marginBottom: 4 }}>RECENT ACTIVITY</Text>
+              {recent.length === 0
+                ? <Text style={{ fontSize: 13.5, color: '#5C6B7A', marginHorizontal: 10, marginVertical: 10 }}>Nothing yet. Replies Nexora sends, new orders and leads will show here.</Text>
+                : recent.map((a, i) => {
+                  const icon = a.kind === 'reply' ? 'checkmark-circle' : a.kind === 'escalation' ? 'hand-left' : a.kind === 'order' ? 'bag-handle' : a.kind === 'lead' ? 'person-add' : a.kind === 'learned' ? 'bulb' : 'chatbubbles';
+                  return row(`r${i}`, <Ionicons name={icon as any} size={17} color="#1E56A0" />, '#F1F5F9', a.title, `${a.subtitle}${a.subtitle ? ' · ' : ''}${commAgo(a.at)}`,
+                    go(() => (a.action === 'community' && a.post_id ? openCommPostById(a.post_id) : runBriefingAction(a.action))), false);
+                })}
+            </ScrollView>
+            <Pressable onPress={go(() => openOwnerAlerts())} accessibilityRole="button" style={{ borderTopWidth: 1, borderTopColor: '#E6ECF3', paddingVertical: 14, paddingBottom: 14 + (IS_WEB ? 0 : insets.bottom), alignItems: 'center' }}>
+              <Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13.5 }}>Notification settings</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+    );
+  };
   // Desktop web (sidebar visible): one slim page bar with the page title, its main actions, then bell and profile.
   const isDesktopWeb = IS_WEB && !!userId && hookWidth >= 1000;
   const renderDesktopBar = (title: string | React.ReactNode, subtitle?: string, actions?: React.ReactNode) => {
@@ -10134,15 +10195,16 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
         </View>
         {actions}
       <View style={styles.topBarRight}>
-          <Pressable onPress={() => setMainTab('inbox')} hitSlop={8} accessibilityRole="button" accessibilityLabel="Notifications" style={[styles.bellWrap, dark && styles.bellWrapDark]}>
+          <Pressable onPress={() => setNotesOpen(true)} hitSlop={8} accessibilityRole="button" accessibilityLabel={notesCount ? `Notifications, ${notesCount} waiting` : 'Notifications'} style={[styles.bellWrap, dark && styles.bellWrapDark]}>
             <Ionicons name="notifications-outline" size={22} color={dark ? '#FFF' : '#0B1220'} />
-            <View style={styles.bellDot} />
+            {notesCount > 0 && <View style={styles.bellDot} />}
           </Pressable>
           {/* FIX: this showed a stock photo of a stranger as the signed-in user's avatar. */}
           <Pressable onPress={() => goTab('profile')} accessibilityRole="button" accessibilityLabel="Profile" style={[styles.topBarAvatar, { backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }]}>
             {avatarUrl ? <ExpoImage source={{ uri: avatarUrl }} style={{ width: '100%', height: '100%' }} contentFit="cover" /> : <Text style={{ color: '#FFF', fontWeight: '700', fontSize: 13 }}>{(fullName || userEmail || '?').trim().split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase()}</Text>}
           </Pressable>
         </View>
+        {renderNotes()}
       </View>
     );
   };
@@ -10173,15 +10235,16 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
         </>
       )}
       <View style={styles.topBarRight}>
-        <Pressable onPress={() => setMainTab('inbox')} hitSlop={8} accessibilityRole="button" accessibilityLabel="Notifications" style={[styles.bellWrap, dark && styles.bellWrapDark]}>
+        <Pressable onPress={() => setNotesOpen(true)} hitSlop={8} accessibilityRole="button" accessibilityLabel={notesCount ? `Notifications, ${notesCount} waiting` : 'Notifications'} style={[styles.bellWrap, dark && styles.bellWrapDark]}>
           <Ionicons name="notifications-outline" size={22} color={dark ? '#FFF' : '#0B1220'} />
-          <View style={styles.bellDot} />
+          {notesCount > 0 && <View style={styles.bellDot} />}
         </Pressable>
         {/* FIX: this showed a stock photo of a stranger as the signed-in user's avatar. */}
         <Pressable onPress={() => goTab('profile')} accessibilityRole="button" accessibilityLabel="Profile" style={[styles.topBarAvatar, { backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }]}>
           {avatarUrl ? <ExpoImage source={{ uri: avatarUrl }} style={{ width: '100%', height: '100%' }} contentFit="cover" /> : <Text style={{ color: '#FFF', fontWeight: '700', fontSize: 13 }}>{(fullName || userEmail || '?').trim().split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase()}</Text>}
         </Pressable>
       </View>
+      {renderNotes()}
     </View>
   );
 
@@ -11476,7 +11539,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
       const activityRows = homeOverview?.activity ?? [];
       // Ask Nexora (design: "Ask Nexora about your business...", mic, send): in the top bar on computers, under the greeting on phones.
       const askBox = (inBar: boolean) => (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, height: inBar ? 46 : 56, borderRadius: 28, paddingLeft: 18, paddingRight: inBar ? 5 : 8, backgroundColor: inBar ? '#F5F7FA' : '#FFFFFF', borderWidth: 1, borderColor: '#E1E8F0', maxWidth: inBar ? 640 : undefined, ...(inBar ? null : { shadowColor: '#0B1220', shadowOpacity: 0.04, shadowRadius: 8, shadowOffset: { width: 0, height: 2 } }) }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, height: inBar ? 46 : 56, borderRadius: 28, paddingLeft: 18, paddingRight: inBar ? 5 : 8, backgroundColor: inBar ? '#F5F7FA' : '#FFFFFF', borderWidth: 1, borderColor: '#E1E8F0', maxWidth: inBar ? 440 : undefined, ...(inBar ? null : { shadowColor: '#0B1220', shadowOpacity: 0.04, shadowRadius: 8, shadowOffset: { width: 0, height: 2 } }) }}>
           <Ionicons name="sparkles" size={18} color="#D98BE8" />
           <TextInput value={homeAsk} onChangeText={setHomeAsk} onSubmitEditing={askHome} returnKeyType="send" placeholder="Ask Nexora about your business..." placeholderTextColor="#8A97A6" accessibilityLabel="Ask Nexora" style={{ flex: 1, minWidth: 0, fontSize: 15, color: '#0B1220', height: inBar ? 44 : 54, ...(IS_WEB ? { outlineStyle: 'none' } as any : null) }} />
           <Pressable onPress={() => goTab('brain')} hitSlop={6} accessibilityRole="button" accessibilityLabel="Talk to Nexora" style={{ width: 36, height: 36, alignItems: 'center', justifyContent: 'center' }}><Ionicons name="mic-outline" size={21} color="#5C6B7A" /></Pressable>
