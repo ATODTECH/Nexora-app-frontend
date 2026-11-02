@@ -17808,7 +17808,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                   {IN_APP_SUBSCRIBE_ENABLED && payConfig && !payConfig.ready && (
                     <View style={{ marginTop: 12, padding: 12, borderRadius: 14, backgroundColor: '#FFF6E5' }}>
                       <Text style={{ color: '#92400E', fontWeight: '700' }}>Online upgrades are coming soon</Text>
-                      <Text style={{ color: '#92400E', fontSize: 13, marginTop: 2, lineHeight: 18 }}>You can't pay for a plan in the app just yet. Your Free plan keeps working, and you can email {SUPPORT_EMAIL} to upgrade today.</Text>
+                      <Text style={{ color: '#92400E', fontSize: 13, marginTop: 2, lineHeight: 18 }}>You can't pay for a plan in the app just yet. Your current plan keeps working, and you can email {SUPPORT_EMAIL} to upgrade today.</Text>
                     </View>
                   )}
                   {IN_APP_SUBSCRIBE_ENABLED && payConfig?.ready && payConfig.test_mode && (
