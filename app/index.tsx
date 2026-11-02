@@ -1163,7 +1163,8 @@ type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'know
 type KnowledgeCategory='products'|'services'|'operations'|'policies'|'faqs';
 type KnowledgeField={label:string;value:string};
 // ---- Brain AI tools (company guide, 29 Oct 2026): organised tools instead of one crowded screen ----
-type AiToolKey = 'description' | 'advert' | 'social' | 'email' | 'blog' | 'video' | 'plan' | 'proposal' | 'persona' | 'pricing' | 'salesScript' | 'launch' | 'summary' | 'brainstorm';
+type AiToolKey = 'description' | 'advert' | 'social' | 'email' | 'blog' | 'video' | 'plan' | 'proposal' | 'persona' | 'pricing' | 'salesScript' | 'launch' | 'summary' | 'brainstorm'
+  | 'strategy' | 'sop' | 'report' | 'letter' | 'agenda' | 'minutes' | 'job' | 'policy' | 'compare' | 'proscons' | 'risk';
 type AiTool = { key: AiToolKey; label: string; icon: string; kind: 'content' | 'business' | 'note'; hint: string; extra?: string; build: (topic: string, extra: string) => string };
 const AI_RULE = 'Use what you know about my business from my knowledge base. Do not invent facts, prices, numbers, testimonials or guarantees; where something is missing write [add: ...] so I can fill it in. Use clear headings and plain words.';
 const AI_TOOL_GROUPS: { title: string; sub: string; icon: string; tools: AiTool[] }[] = [
@@ -1186,6 +1187,24 @@ const AI_TOOL_GROUPS: { title: string; sub: string; icon: string; tools: AiTool[
   { title: 'AI Assistant', sub: 'Summarise, brainstorm and solve problems', icon: 'sparkles-outline', tools: [
     { key: 'summary', label: 'Summarise text', icon: 'reader-outline', kind: 'note', hint: 'Paste the text or document to summarise', build: (t) => `Summarise this clearly in bullet points, then list any actions I should take:\n\n${t}` },
     { key: 'brainstorm', label: 'Brainstorm ideas', icon: 'bulb-outline', kind: 'note', hint: 'What do you need ideas for?', build: (t) => `Brainstorm 10 practical ideas for: ${t}. For each, say why it could work for my business and the first step. ${AI_RULE}` },
+  ] },
+  // AI Business Brain and Assistant (blueprint 2.1): documents, administration and decision support (same prompts as the website).
+  { title: 'Documents and strategy', sub: 'Strategies, operating procedures, reports and business letters', icon: 'document-text-outline', tools: [
+    { key: 'strategy', label: 'Strategy', icon: 'compass-outline', kind: 'business', hint: 'What is the strategy for? (e.g. grow online sales, enter a new city)', extra: 'Time frame or budget (optional)', build: (t, x) => `Write a practical strategy for: ${t}${x ? ` (${x})` : ''}. Include the goal, where we are now (use my real numbers where you have them), 3 strategic choices with reasons, the actions for each with owners and dates, what it needs (money, people, tools), risks, and how we will measure success. ${AI_RULE}` },
+    { key: 'sop', label: 'Operating procedure (SOP)', icon: 'list-outline', kind: 'business', hint: 'Which task or process? (e.g. packing and shipping an order)', extra: 'Who does it? (optional)', build: (t, x) => `Write a standard operating procedure for "${t}"${x ? `, done by ${x}` : ''}: purpose, when it applies, what is needed, numbered step-by-step instructions, quality checks, common mistakes to avoid, and who to ask when something goes wrong. ${AI_RULE}` },
+    { key: 'report', label: 'Business report', icon: 'bar-chart-outline', kind: 'business', hint: 'What should the report cover? (e.g. last month’s sales, a supplier review)', extra: 'Who will read it? (optional)', build: (t, x) => `Write a business report on ${t}${x ? ` for ${x}` : ''}: a short summary first, the key numbers (use my real orders, customers and stock where they are available; never invent figures), what went well, what needs attention, and 3–5 recommended actions. ${AI_RULE}` },
+    { key: 'letter', label: 'Business letter or document', icon: 'mail-open-outline', kind: 'business', hint: 'What document do you need? (e.g. letter to a supplier, notice to customers)', extra: 'Key points to include (optional)', build: (t, x) => `Write this business document: ${t}.${x ? ` Include: ${x}.` : ''} Use a professional, friendly tone, the right format for the document, and my business details where they are known. ${AI_RULE}` },
+  ] },
+  { title: 'Administration', sub: 'Meetings, hiring and policies', icon: 'briefcase-outline', tools: [
+    { key: 'agenda', label: 'Meeting agenda', icon: 'calendar-outline', kind: 'note', hint: 'What is the meeting about?', extra: 'Length and who attends (optional)', build: (t, x) => `Prepare a meeting agenda for "${t}"${x ? ` (${x})` : ''}: purpose, items with time for each and who leads them, decisions needed, and what people should prepare. ${AI_RULE}` },
+    { key: 'minutes', label: 'Meeting notes to minutes', icon: 'reader-outline', kind: 'note', hint: 'Paste your rough meeting notes', build: (t) => `Turn these rough meeting notes into clear minutes: attendees (if mentioned), decisions made, action items with owner and due date, and open questions.\n\n${t}` },
+    { key: 'job', label: 'Job description', icon: 'person-add-outline', kind: 'business', hint: 'Which role? (e.g. sales assistant, delivery rider)', extra: 'Pay, hours or location (optional)', build: (t, x) => `Write a job description for a ${t} at my business${x ? ` (${x})` : ''}: a short intro to the business, responsibilities, requirements, nice-to-haves, what we offer, and how to apply. Do not invent pay or benefits; write [add: ...] where they are missing. ${AI_RULE}` },
+    { key: 'policy', label: 'Business policy', icon: 'shield-checkmark-outline', kind: 'business', hint: 'Which policy? (e.g. returns, delivery, staff leave)', build: (t) => `Draft a clear ${t} policy for my business in plain language: what it covers, the rules, examples, exceptions, and how customers or staff use it. Match any policy already in my knowledge base, and point out where it would change. ${AI_RULE}` },
+  ] },
+  { title: 'Decision support', sub: 'Compare options, weigh pros and cons, check risks', icon: 'git-compare-outline', tools: [
+    { key: 'compare', label: 'Compare options', icon: 'git-compare-outline', kind: 'note', hint: 'What are you choosing between? (e.g. supplier A vs supplier B)', extra: 'What matters most? (e.g. price, speed, quality)', build: (t, x) => `Help me decide: ${t}. Compare the options in a table against ${x || 'cost, quality, speed, risk and fit with my business'}, score each 1–5, give a clear recommendation with the reason, and say what would change your answer. ${AI_RULE}` },
+    { key: 'proscons', label: 'Pros and cons', icon: 'scale-outline', kind: 'note', hint: 'What decision are you weighing?', build: (t) => `List the pros and cons of: ${t}, for my business specifically. Then give the 3 questions I should answer before deciding, and your recommendation. ${AI_RULE}` },
+    { key: 'risk', label: 'Risk check', icon: 'warning-outline', kind: 'note', hint: 'What plan or decision should be checked?', build: (t) => `Do a risk check on: ${t}. List the main risks (money, customers, operations, legal, reputation), how likely and how serious each is, and a practical way to reduce each one. ${AI_RULE}` },
   ] },
 ];
 const AI_SAVED_KIND_LABEL: Record<string, string> = { note: 'Notes', content: 'Content', business: 'Business', listing: 'Listings', caption: 'Captions', email: 'Emails', plan: 'Plans', script: 'Scripts', other: 'Other' };
@@ -4873,7 +4892,7 @@ function HomeScreenInner(){
   const [savedIds, setSavedIds] = useState<Record<string, boolean>>({});
   const openSavedLib = async () => {
     setSavedLib({ loading: true, items: [], query: '', kind: 'all', openId: '', error: '' });
-    const { data, error } = await supabase.from('ai_saved_items').select('id,kind,title,content,tags,pinned,created_at').order('pinned', { ascending: false }).order('created_at', { ascending: false }).limit(500);
+    const { data, error } = await supabase.from('ai_saved_items').select('id,kind,title,content,tags,pinned,created_at').neq('kind', 'prompt').order('pinned', { ascending: false }).order('created_at', { ascending: false }).limit(500);
     if (error) { setSavedLib(x => x && { ...x, loading: false, error: /does not exist|schema cache/i.test(error.message) ? 'The saved library needs one setup step: run the "brain library" SQL script in Supabase.' : "Couldn't load your saved work." }); return; }
     setSavedLib(x => x && { ...x, loading: false, items: (data ?? []) as SavedItem[] });
   };
