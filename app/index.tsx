@@ -22,6 +22,9 @@ import { Approvals } from '../components/Approvals';
 import { AskApproval } from '../components/AskApproval';
 import { ALL_ON, countWaiting, loadPendingFor, loadRules as loadApprovalRules, needsApprovalError, onApprovalsChanged, requestApproval, type Approval, type ApprovalKind, type ApprovalRules } from '../lib/approvals';
 import { NoAccess } from '../components/NoAccess';
+import { SuggestionSlider } from '../components/SuggestionSlider';
+import { openPaystackPopup } from '../lib/paystackPopup';
+import * as WebBrowser from 'expo-web-browser';
 import { accessOf, canOpenScreen, logExport, roleLabel } from '../lib/team';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
@@ -1656,6 +1659,13 @@ let drawerOpenFn: () => void = () => {};
 let drawerRefresh: () => void = () => {};
 let drawerBridge: { name: string; email: string; away: boolean; go: (k: string) => void; setAway: (v: boolean) => void; signOut: () => void } =
   { name: '', email: '', away: false, go: () => {}, setAway: () => {}, signOut: () => {} };
+// Brain dropdown in the desktop sidebar (company feedback 2 Nov 2026): new chat, recent chats and all chats.
+type BrainChatLink = { key: string; title: string; when: string };
+let brainNavBridge: { chats: BrainChatLink[] | null; newChat: () => void; open: (key: string) => void; all: () => void } =
+  { chats: null, newChat: () => {}, open: () => {}, all: () => {} };
+const brainNavSubs = new Set<() => void>();
+function setBrainNavBridge(next: typeof brainNavBridge) { brainNavBridge = next; brainNavSubs.forEach(f => f()); }
+const BRAIN_NAV_OPEN_KEY = 'nexora-nav-brain-open';
 function DrawerHost() {
   const [open, setOpen] = useState(false);
   const [, tick] = useState(0);
@@ -1846,6 +1856,18 @@ const WEB_NAV: { label: string; icon: string; key: FeatureKey; pages: string[] }
 ];
 const WEB_SIDEBAR_W = 248;
 function WebSidebar({ active }: { active: string }) {
+  // Brain's chats sit in a dropdown that starts closed; the person opens or closes it and the choice is remembered.
+  const [brainOpen, setBrainOpen] = useState(() => { try { return (globalThis as any).localStorage?.getItem(BRAIN_NAV_OPEN_KEY) === '1'; } catch { return false; } });
+  const [, tick] = useState(0);
+  useEffect(() => { const f = () => tick(n => n + 1); brainNavSubs.add(f); return () => { brainNavSubs.delete(f); }; }, []);
+  const toggleBrain = () => setBrainOpen(v => { try { (globalThis as any).localStorage?.setItem(BRAIN_NAV_OPEN_KEY, v ? '0' : '1'); } catch { /* storage blocked */ } return !v; });
+  const subRow = (icon: string, label: string, onPress: () => void, strong: boolean, key?: string) => (
+    <Pressable key={key ?? label} onPress={onPress} accessibilityRole="button" accessibilityLabel={label}
+      style={(st: any) => ({ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 7, paddingHorizontal: 8, borderRadius: 8, backgroundColor: st.hovered ? 'rgba(255,255,255,0.05)' : 'transparent', cursor: 'pointer' } as any)}>
+      <Ionicons name={icon as any} size={14} color={strong ? '#9CC3FF' : '#7F93AD'} />
+      <Text style={{ flex: 1, minWidth: 0, color: strong ? '#E6EEF8' : '#B8C7DA', fontSize: 13, fontWeight: strong ? '600' : '400' }} numberOfLines={1}>{label}</Text>
+    </Pressable>
+  );
   return (
     <View style={{ width: WEB_SIDEBAR_W, backgroundColor: '#0B1220', borderRightWidth: 1, borderRightColor: 'rgba(255,255,255,0.06)', paddingTop: 24, paddingHorizontal: 14 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 10, marginBottom: 26 }}>
@@ -1854,14 +1876,36 @@ function WebSidebar({ active }: { active: string }) {
       <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 24 }}>
         {WEB_NAV.map(item => {
           const on = item.pages.includes(active);
-          return (
+          const drop = item.key === 'knowledge';
+          const row = (
             <Pressable key={item.key} onPress={() => requestFeature(item.key)} accessibilityRole="link" accessibilityState={{ selected: on }}
-              style={(st: any) => ({ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10, marginBottom: 2,
+              style={(st: any) => ({ flex: drop ? 1 : undefined, flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10, marginBottom: drop ? 0 : 2,
                 backgroundColor: on ? 'rgba(127,178,255,0.16)' : st.hovered ? 'rgba(255,255,255,0.05)' : 'transparent', cursor: 'pointer' } as any)}>
               <Ionicons name={item.icon as any} size={18} color={on ? '#9CC3FF' : '#8FA3BC'} />
               <Text style={{ color: on ? '#FFFFFF' : '#C9D6E6', fontSize: 14, fontWeight: on ? '700' : '500' }}>{item.label}</Text>
-              {on && <View style={{ marginLeft: 'auto', width: 6, height: 6, borderRadius: 3, backgroundColor: '#7FB2FF' }} />}
+              {on && !drop && <View style={{ marginLeft: 'auto', width: 6, height: 6, borderRadius: 3, backgroundColor: '#7FB2FF' }} />}
             </Pressable>
+          );
+          if (!drop) return row;
+          return (
+            <View key={item.key} style={{ marginBottom: 2 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                {row}
+                <Pressable onPress={toggleBrain} accessibilityRole="button" accessibilityLabel={brainOpen ? 'Hide Brain chats' : 'Show Brain chats'} accessibilityState={{ expanded: brainOpen }}
+                  style={(st: any) => ({ position: 'absolute', right: 4, width: 30, height: 30, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: st.hovered ? 'rgba(255,255,255,0.08)' : 'transparent', cursor: 'pointer' } as any)}>
+                  <Ionicons name={brainOpen ? 'chevron-up' : 'chevron-down'} size={15} color="#8FA3BC" />
+                </Pressable>
+              </View>
+              {brainOpen && (
+                <View style={{ marginLeft: 21, paddingLeft: 10, borderLeftWidth: 1, borderLeftColor: 'rgba(255,255,255,0.10)', marginTop: 2, marginBottom: 4 }}>
+                  {subRow('add', 'New chat', () => brainNavBridge.newChat(), true)}
+                  {brainNavBridge.chats === null ? null
+                    : !brainNavBridge.chats.length ? <Text style={{ color: '#7F93AD', fontSize: 12.5, paddingVertical: 6, paddingHorizontal: 8 }}>Your chats will show here</Text>
+                    : brainNavBridge.chats.map(c => subRow('chatbubble-outline', c.title, () => brainNavBridge.open(c.key), false, c.key))}
+                  {!!brainNavBridge.chats?.length && subRow('time-outline', 'All chats', () => brainNavBridge.all(), true)}
+                </View>
+              )}
+            </View>
           );
         })}
       </ScrollView>
@@ -4760,11 +4804,8 @@ function HomeScreenInner(){
     setChannelRows(rows);
   };
   const loadChatHistory = async () => {
-    const { data, error } = await supabase.from('chat_messages')
-      .select('id,role,text,image_url,created_at').order('created_at', { ascending: false }).limit(50);
-    if (error) throw error;
-    const history: ChatMessage[] = (data ?? []).reverse().map(m => ({ id: m.id, role: m.role as 'user' | 'ai', text: m.text, imageUri: m.image_url ?? undefined, at: Date.parse(m.created_at) || undefined }));
-    setChatMessages(prev => (prev.length ? prev : history));
+    // Brain opens on a new, empty chat (company feedback 2 Nov 2026); past chats are in the sidebar dropdown, the menu and Chat history.
+    await loadRecentChats();
   };
   // ---- AI chat: every message is dated and timed, and past chats are kept in Chat history (company guide) ----
   const msgTime = (m: ChatMessage) => m.at ?? (/^\d{12,}$/.test(m.id) ? Number(m.id) : Date.now());
@@ -4804,6 +4845,19 @@ function HomeScreenInner(){
     }
     setRecentChats([...byDay.values()].reverse().slice(0, 8));
   };
+  useEffect(() => {
+    setBrainNavBridge({
+      chats: recentChats ? recentChats.map(d => ({ key: d.key, when: d.label, title: (d.msgs.find(m => m.role === 'user' && m.text)?.text || d.label).replace(/\s+/g, ' ').trim() })) : null,
+      newChat: () => { goTab('brain'); setChatMessages([]); setBrainAsk(false); setChatInput(''); },
+      open: (key: string) => {
+        const d = recentChats?.find(x => x.key === key);
+        if (!d) return;
+        goTab('brain'); setBrainAsk(false); setChatMessages(d.msgs);
+        setTimeout(() => (chatScrollRef.current as any)?.scrollToEnd?.({ animated: false }), 150);
+      },
+      all: () => { goTab('brain'); openChatHistory().catch(() => {}); },
+    });
+  }, [recentChats]); // eslint-disable-line react-hooks/exhaustive-deps
   // ---- Brain AI tools and saved work library ----
   const [aiTool, setAiTool] = useState<{ tool: AiTool | null; topic: string; extra: string } | null>(null);
   const lastToolRef = useRef<AiTool | null>(null);
@@ -5007,11 +5061,23 @@ function HomeScreenInner(){
       if (!out?.url) throw new Error("We couldn't start the checkout.");
       pendingPaymentRef.current = out.reference;
       if (IS_WEB && typeof window !== 'undefined') {
-        // Same tab: Paystack sends the buyer straight back here, and the app confirms the payment.
         try { window.localStorage.setItem(PENDING_PAY_KEY, out.reference); } catch { /* private mode */ }
-        window.location.assign(out.url);
+        // Payment opens in Paystack's pop-up over the page (company feedback 2 Nov 2026).
+        const ref = out.reference as string;
+        const opened = !!out.access_code && await openPaystackPopup(out.access_code, {
+          onSuccess: () => { flash('Confirming your payment\u2026'); verifyPayment(ref).catch(() => {}); },
+          onCancel: () => { pendingPaymentRef.current = ''; try { window.localStorage.removeItem(PENDING_PAY_KEY); } catch { /* ignore */ } flash('Payment cancelled. You have not been charged.'); },
+          onError: () => window.location.assign(out.url),
+        });
+        // If the pop-up can't open: Paystack's own page in this tab, which sends the buyer straight back here.
+        if (!opened) window.location.assign(out.url);
         return;
       }
+      // Phones: Paystack opens in an in-app browser sheet over Nexora; it closes by itself when Paystack sends the buyer back.
+      try {
+        const r = await WebBrowser.openAuthSessionAsync(out.url, returnUrl);
+        if (r.type === 'success' || r.type === 'dismiss' || r.type === 'cancel') { verifyPayment(out.reference).catch(() => {}); return; }
+      } catch { /* no in-app browser: open the phone's browser */ }
       awaitingReturnRef.current = 'checkout';
       await Linking.openURL(out.url);
     } catch (e: any) { flash(e?.message || "We couldn't start the checkout."); }
@@ -7762,7 +7828,7 @@ function HomeScreenInner(){
   const saveChatMessage = (role: 'user' | 'ai', text: string, imageUrl?: string) => {
     if (!userId || (!text && !imageUrl)) return;
     supabase.from('chat_messages').insert({ user_id: userId, role, text, image_url: imageUrl ?? null })
-      .then(({ error }) => { if (error && __DEV__) console.log('[chat save]', error.message); });
+      .then(({ error }) => { if (error) { if (__DEV__) console.log('[chat save]', error.message); } else if (role === 'ai') loadRecentChats().catch(() => {}); });
   };
   // The ai-chat function only sees what we send it, so the owner's trained
   // knowledge is attached to each question (verified + needs-review items only).
@@ -10057,13 +10123,17 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
 
   // Desktop web (sidebar visible): one slim page bar with the page title, its main actions, then bell and profile.
   const isDesktopWeb = IS_WEB && !!userId && hookWidth >= 1000;
-  const renderDesktopBar = (title: string, subtitle?: string, actions?: React.ReactNode) => {
+  const renderDesktopBar = (title: string | React.ReactNode, subtitle?: string, actions?: React.ReactNode) => {
     const dark = false;
     return (
       <View style={{ minHeight: 76, flexDirection: 'row', alignItems: 'center', gap: 16, paddingHorizontal: 32, paddingVertical: 14, backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: '#E6ECF3' }}>
         <View style={{ flex: 1, minWidth: 0 }}>
-          <Text style={{ fontSize: 21, fontWeight: '700', color: '#0B1220' }} numberOfLines={1}>{title}</Text>
-          {!!subtitle && <Text style={{ fontSize: 13, color: '#5C6B7A', marginTop: 2 }} numberOfLines={1}>{subtitle}</Text>}
+          {typeof title === 'string' ? (
+            <>
+              <Text style={{ fontSize: 21, fontWeight: '700', color: '#0B1220' }} numberOfLines={1}>{title}</Text>
+              {!!subtitle && <Text style={{ fontSize: 13, color: '#5C6B7A', marginTop: 2 }} numberOfLines={1}>{subtitle}</Text>}
+            </>
+          ) : title}
         </View>
         {actions}
       <View style={styles.topBarRight}>
@@ -10661,19 +10731,17 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
           {/* Brain header (Figma "Brain General Interface", Oct 2026): menu, centred logo, chat history. */}
           <View style={[styles.topBar, headerSafe, styles.topBarDark, { borderBottomWidth: 0 }]}>
             <View style={{ width: 44, alignItems: 'flex-start' }}>
-              <Pressable onPress={() => { setBrainNav(true); loadRecentChats().catch(() => {}); }} hitSlop={10} accessibilityRole="button" accessibilityLabel="AI tools and recent chats">
-                <Ionicons name="menu-outline" size={28} color="#FFF" />
-              </Pressable>
+              {/* On computers the sidebar's Brain dropdown holds the chats (company feedback 2 Nov 2026). */}
+              {!isDesktopWeb && (
+                <Pressable onPress={() => { setBrainNav(true); loadRecentChats().catch(() => {}); }} hitSlop={10} accessibilityRole="button" accessibilityLabel="AI tools and recent chats">
+                  <Ionicons name="menu-outline" size={28} color="#FFF" />
+                </Pressable>
+              )}
             </View>
             <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
               <NexoraLockup letter={13} light />
             </View>
-            <View style={{ width: 44, alignItems: 'flex-end' }}>
-              <Pressable onPress={() => { openChatHistory().catch(() => {}); }} hitSlop={6} accessibilityRole="button" accessibilityLabel="Chat history" style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' }}>
-                <Ionicons name="chatbubble-ellipses-outline" size={19} color="#0B1220" />
-                {chatMessages.length > 0 && <View style={{ position: 'absolute', top: 6, right: 6, width: 8, height: 8, borderRadius: 4, backgroundColor: '#EF4444' }} />}
-              </Pressable>
-            </View>
+            <View style={{ width: 44 }} />
           </View>
           <Modal visible={!!chatHist} transparent animationType="slide" onRequestClose={() => setChatHist(null)} statusBarTranslucent>
             <View style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.55)', justifyContent: IS_WEB ? 'center' : 'flex-end', padding: IS_WEB ? 16 : 0 }}>
@@ -10932,7 +11000,6 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                       <Text style={styles.brainHeroTitle}>Hi, {fullName || 'there'}</Text>
                       <Text style={styles.brainHeroSubtitle}>What would you like to do today?</Text>
                     </View>
-                    {renderComposer(true)}
                   </>
                 )}
               </>
@@ -11037,11 +11104,17 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
               previously a dead button with no onPress, which is why there
               was no way to reach these screens from the Brain tab. */}
 
-          {chatMessages.length > 0 && renderComposer(false)}
+          {/* The ask box stays at the bottom; an empty chat shows sliding question tags above it (company feedback 2 Nov 2026). */}
+          {!(chatMessages.length === 0 && brainAsk) && (
+            <View style={{ width: '100%', maxWidth: 980, alignSelf: 'center' }}>
+              {chatMessages.length === 0 && <View style={{ marginHorizontal: 16 }}><SuggestionSlider onPick={q => { setShowAttachMenu(false); sendChatMessage(q); }} /></View>}
+              {renderComposer(false)}
+            </View>
+          )}
           {/* Floating Nexora button (designs 0-3): switches between the greeting and the "What would you like to do today?" ask view. */}
           {chatMessages.length === 0 && (
             <Pressable onPress={() => { setShowAttachMenu(false); setBrainAsk(v => !v); }} accessibilityRole="button" accessibilityLabel={brainAsk ? 'Back to the greeting' : 'Ask Nexora'}
-              style={{ position: 'absolute', right: 18, bottom: (IS_WEB && userId && hookWidth >= 1000 ? 24 : 92 + insets.bottom), width: 58, height: 58, borderRadius: 29, backgroundColor: '#1B3A5C', borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)', alignItems: 'center', justifyContent: 'center', zIndex: 30, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 6 }}>
+              style={{ position: 'absolute', right: 18, bottom: (brainAsk ? 0 : 128) + (IS_WEB && userId && hookWidth >= 1000 ? 24 : 92 + insets.bottom), width: 58, height: 58, borderRadius: 29, backgroundColor: '#1B3A5C', borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)', alignItems: 'center', justifyContent: 'center', zIndex: 30, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 6 }}>
               <MaterialCommunityIcons name="robot-happy-outline" size={28} color="#9CC3FF" />
               <View style={{ position: 'absolute', top: 12, right: 13, width: 8, height: 8, borderRadius: 4, backgroundColor: '#EF4444' }} />
             </Pressable>
@@ -11313,6 +11386,9 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
       const lowStock = lowStockItems;
       const noPhoto = offers.filter(i => !i.image).length;
       const todo = [
+        // Status that used to sit as strips under the Ask box (company feedback 2 Nov 2026: they can't stay at the top).
+        !!myShop && !myShop.enabled && { icon: 'storefront-outline', color: '#B45309', title: 'Your AI shop link is switched off', sub: 'Customers can’t see your products or order yet', action: shopBusy ? 'Switching on…' : 'Switch on', onPress: () => { if (!shopBusy) saveShop({ enabled: true }).catch(() => {}); } },
+        awayMode && { icon: 'moon', color: '#B7791F', title: 'Away mode is on', sub: `Nexora is answering customers for you${awayStats ? ` · ${awayStats.actions} replies, ${awayStats.opportunities} opportunities so far` : ''}`, action: 'View', onPress: () => goTab('profile') },
         approvalsWaiting && { icon: 'shield-checkmark-outline', color: '#C2760C', title: `${approvalsWaiting} team request${approvalsWaiting === 1 ? '' : 's'} waiting for you`, sub: 'Refunds, cancellations, stock corrections and more', onPress: () => openApprovals('home') },
         unpaid.length && { icon: 'card-outline', color: '#B42318', title: `${unpaid.length} unpaid order${unpaid.length === 1 ? '' : 's'}`, sub: `${moneyText(unpaid.reduce((n, o) => n + Number(o.total || 0), 0))} to collect`, onPress: () => openOrders('Unpaid') },
         pendingOrders.length && { icon: 'cube-outline', color: '#1E56A0', title: `${pendingOrders.length} order${pendingOrders.length === 1 ? '' : 's'} to prepare or ship`, sub: 'Confirm and send them out', onPress: () => openOrders('Unshipped') },
@@ -11325,7 +11401,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
         lowStock.length && { icon: 'alert-circle-outline', color: '#D64545', title: `${lowStock.length} product${lowStock.length === 1 ? ' is' : 's are'} running low`, sub: lowStock.slice(0, 3).map(i => i.name).join(', '), onPress: () => openKnowledgeList('products') },
         noPhoto && { icon: 'image-outline', color: '#1E56A0', title: `${noPhoto} item${noPhoto === 1 ? ' has' : 's have'} no photo`, sub: 'Photos help customers decide', onPress: () => openMissingImages() },
         setupDone < setup.length && { icon: 'rocket-outline', color: '#0E7490', title: 'Finish setting up', sub: `${setupDone} of ${setup.length} steps done`, onPress: () => { const next = setup.find(x => !x.done); next?.onPress(); } },
-      ].filter(Boolean) as { icon: string; color: string; title: string; sub: string; onPress: () => void }[];
+      ].filter(Boolean) as { icon: string; color: string; title: string; sub: string; action?: string; onPress: () => void }[];
       // Recommendations: only from this business's own numbers; each says why and opens the place to act.
       const topSrc = shopStats?.sources.filter(r => r.src !== 'direct').sort((x, y) => (y.orders + y.enquiries) - (x.orders + x.enquiries) || y.visits - x.visits)[0];
       const unpricedN = offers.filter(i => !hasPrice(i)).length;
@@ -11401,53 +11477,65 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
       const wide = !narrow;
       const attention = todo.slice(0, desktop ? 6 : 4);
       const activityRows = homeOverview?.activity ?? [];
+      // Ask Nexora (design: "Ask Nexora about your business...", mic, send): in the top bar on computers, under the greeting on phones.
+      const askBox = (inBar: boolean) => (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, height: inBar ? 46 : 56, borderRadius: 28, paddingLeft: 18, paddingRight: inBar ? 5 : 8, backgroundColor: inBar ? '#F5F7FA' : '#FFFFFF', borderWidth: 1, borderColor: '#E1E8F0', maxWidth: inBar ? 640 : undefined, ...(inBar ? null : { shadowColor: '#0B1220', shadowOpacity: 0.04, shadowRadius: 8, shadowOffset: { width: 0, height: 2 } }) }}>
+          <Ionicons name="sparkles" size={18} color="#D98BE8" />
+          <TextInput value={homeAsk} onChangeText={setHomeAsk} onSubmitEditing={askHome} returnKeyType="send" placeholder="Ask Nexora about your business..." placeholderTextColor="#8A97A6" accessibilityLabel="Ask Nexora" style={{ flex: 1, minWidth: 0, fontSize: 15, color: '#0B1220', height: inBar ? 44 : 54, ...(IS_WEB ? { outlineStyle: 'none' } as any : null) }} />
+          <Pressable onPress={() => goTab('brain')} hitSlop={6} accessibilityRole="button" accessibilityLabel="Talk to Nexora" style={{ width: 36, height: 36, alignItems: 'center', justifyContent: 'center' }}><Ionicons name="mic-outline" size={21} color="#5C6B7A" /></Pressable>
+          <Pressable onPress={askHome} accessibilityRole="button" accessibilityLabel="Ask Nexora" style={{ width: inBar ? 36 : 40, height: inBar ? 36 : 40, borderRadius: 20, backgroundColor: '#0F2942', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="arrow-up" size={inBar ? 18 : 20} color="#FFFFFF" /></Pressable>
+        </View>
+      );
       return (
         <View style={styles.mainScreen}>
           <StatusBar style="dark" />
-          {desktop ? renderDesktopBar(greeting, dateLine, (
-            <Pressable onPress={() => openTruth('createPostHome')} accessibilityRole="button" style={{ height: 40, paddingHorizontal: 14, borderRadius: 10, backgroundColor: '#1E56A0', flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Ionicons name="add" size={17} color="#FFFFFF" /><Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 14 }}>Create post</Text>
+          {desktop ? renderDesktopBar(askBox(true), undefined, (
+            // Chats (company feedback 2 Nov 2026: replaces Create post in the bar), with the number of unread chats.
+            <Pressable onPress={() => goTab('inbox')} hitSlop={6} accessibilityRole="button" accessibilityLabel={unread.length ? `Chats, ${unread.length} unread` : 'Chats'}
+              style={{ width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' }}>
+              <Ionicons name="chatbubble-ellipses-outline" size={23} color="#0B1220" />
+              {unread.length > 0 && (
+                <View style={{ position: 'absolute', top: 1, right: -1, minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 4, backgroundColor: '#EF4444', borderWidth: 2, borderColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' }}>
+                  <Text style={{ color: '#FFFFFF', fontSize: 10, fontWeight: '800' }}>{unread.length > 99 ? '99+' : unread.length}</Text>
+                </View>
+              )}
             </Pressable>
           )) : renderTopBar()}
           <ScrollView style={{ flex: 1, backgroundColor: '#F4F7FB' }} keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: narrow ? 16 : desktop ? 28 : 24, paddingBottom: 40, width: '100%', maxWidth: desktop ? 1240 : 1120, alignSelf: 'center', gap: narrow ? 14 : 18 }}>
-            {!desktop && (
-              <View>
-                <Text style={{ fontSize: narrow ? 22 : 24, fontWeight: '700', color: '#0B1220' }}>{greeting}</Text>
-                <Text style={{ fontSize: 13.5, color: '#5C6B7A', marginTop: 2 }}>{dateLine}</Text>
+            {/* Greeting with Create post beside it; the Ask box sits in the top bar on computers (company feedback 2 Nov 2026). */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={{ fontSize: narrow ? 22 : 24, fontWeight: '700', color: '#0B1220' }} numberOfLines={1}>{greeting}</Text>
+                <Text style={{ fontSize: 13.5, color: '#5C6B7A', marginTop: 2 }} numberOfLines={1}>{dateLine}</Text>
               </View>
-            )}
-
-            {/* Ask Nexora (design: "Ask Nexora about your business...", mic, send) */}
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, height: 56, borderRadius: 28, paddingLeft: 18, paddingRight: 8, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E1E8F0', shadowColor: '#0B1220', shadowOpacity: 0.04, shadowRadius: 8, shadowOffset: { width: 0, height: 2 } }}>
-              <Ionicons name="sparkles" size={18} color="#D98BE8" />
-              <TextInput value={homeAsk} onChangeText={setHomeAsk} onSubmitEditing={askHome} returnKeyType="send" placeholder="Ask Nexora about your business..." placeholderTextColor="#8A97A6" style={{ flex: 1, minWidth: 0, fontSize: 15, color: '#0B1220', height: 54, ...(IS_WEB ? { outlineStyle: 'none' } as any : null) }} />
-              <Pressable onPress={() => goTab('brain')} hitSlop={6} accessibilityRole="button" accessibilityLabel="Talk to Nexora" style={{ width: 36, height: 36, alignItems: 'center', justifyContent: 'center' }}><Ionicons name="mic-outline" size={21} color="#5C6B7A" /></Pressable>
-              <Pressable onPress={askHome} accessibilityRole="button" accessibilityLabel="Ask Nexora" style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: '#0F2942', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="arrow-up" size={20} color="#FFFFFF" /></Pressable>
+              <Pressable onPress={() => openTruth('createPostHome')} accessibilityRole="button" accessibilityLabel="Create post" style={{ height: 40, paddingHorizontal: narrow ? 12 : 14, borderRadius: 10, backgroundColor: '#1E56A0', flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="add" size={17} color="#FFFFFF" /><Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 14 }}>{narrow ? 'Post' : 'Create post'}</Text>
+              </Pressable>
             </View>
 
-            {awayMode && (
-              <Pressable onPress={() => goTab('profile')} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, padding: 14, borderRadius: 14, backgroundColor: '#FFF6E5' }}>
-                <Ionicons name="moon" size={18} color="#B7791F" />
-                <Text style={{ flex: 1, color: '#7A4A00', fontSize: 14 }}><Text style={{ fontWeight: '800' }}>Away mode is on.</Text> Nexora is answering customers for you{awayStats ? ` · ${awayStats.actions} replies, ${awayStats.opportunities} opportunities so far` : ''}.</Text>
-              </Pressable>
-            )}
+            {!desktop && askBox(false)}
 
-            {shopOff && myShop && (
-              // A slim one-line strip, full width (company feedback 30 Oct 2026: half the height of the old banner).
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 40, paddingVertical: 5, paddingLeft: 14, paddingRight: 6, borderRadius: 12, borderWidth: 1, borderColor: '#F5C46B', backgroundColor: '#FFFBF0' }}>
-                <Ionicons name="storefront-outline" size={16} color="#B45309" />
-                <Text style={{ flex: 1, minWidth: 0, fontSize: 13.5, color: '#5C6B7A' }} numberOfLines={1}>
-                  <Text style={{ fontWeight: '700', color: '#0B1220' }}>Your AI shop link is switched off</Text>
-                  {narrow ? '' : ` · Customers who open ${shopUrl(myShop.slug).replace(/^https?:\/\//, '')} can't see your products or order yet.`}
-                </Text>
-                {!narrow && (
-                  <Pressable onPress={() => { openStorefront().catch(() => {}); }} accessibilityRole="button" style={{ height: 30, paddingHorizontal: 12, borderRadius: 15, borderWidth: 1, borderColor: '#D5DEE8', backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#0B1220', fontWeight: '700', fontSize: 12.5 }}>Review shop</Text></Pressable>
-                )}
-                <Pressable onPress={() => { saveShop({ enabled: true }).catch(() => {}); }} disabled={shopBusy} accessibilityRole="button" style={{ height: 30, paddingHorizontal: 12, borderRadius: 15, backgroundColor: '#1E9E6D', flexDirection: 'row', gap: 5, alignItems: 'center', justifyContent: 'center' }}>
-                  {shopBusy ? <ActivityIndicator color="#FFFFFF" size="small" /> : <><Ionicons name="power" size={13} color="#FFFFFF" /><Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 12.5 }}>Switch on</Text></>}
-                </Pressable>
+            {/* Business Overview first (company feedback 2 Nov 2026: moved up, the small status chips under it removed) */}
+            <View style={panel}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                <Text style={{ fontSize: 15.5, fontWeight: '700', color: '#0B1220' }}>Business Overview</Text>
+                <Text style={{ fontSize: 12, color: '#5C6B7A', backgroundColor: '#F1F5F9', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, overflow: 'hidden' }}>Last 30 days</Text>
               </View>
-            )}
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+                {(ovRows.length ? ovRows : [{ icon: 'cash-outline', label: 'Revenue', v: { value: 0, change: null }, onPress: () => openOrders('All') }, { icon: 'bag-handle-outline', label: 'Orders', v: { value: 0, change: null }, onPress: () => openOrders('All') }, { icon: 'people-outline', label: 'Customers', v: { value: 0, change: null }, onPress: () => openCustomers(() => goTab('home')) }, { icon: 'person-add-outline', label: 'Leads', v: { value: 0, change: null }, onPress: () => openLeads() }] as typeof ovRows).map(t => (
+                  <Pressable key={t.label} onPress={t.onPress} accessibilityRole="button" style={{ flexBasis: narrow ? '46%' : '22%', flexGrow: 1, padding: 14, borderRadius: 12, backgroundColor: '#F7F9FC', borderWidth: 1, borderColor: '#EEF2F7' }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <View style={{ width: 30, height: 30, borderRadius: 8, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}><Ionicons name={t.icon as any} size={15} color="#1E56A0" /></View>
+                      <Ionicons name="arrow-forward" size={14} color="#8A97A6" style={{ transform: [{ rotate: '-45deg' }] }} />
+                    </View>
+                    <Text style={{ fontSize: 22, fontWeight: '700', color: '#0B1220', marginTop: 10 }} numberOfLines={1} adjustsFontSizeToFit>{t.label === 'Revenue' ? moneyText(t.v.value) : t.v.value.toLocaleString()}</Text>
+                    <Text style={{ fontSize: 12, marginTop: 2, fontWeight: '600', color: t.v.change === null ? '#8A97A6' : t.v.change >= 0 ? '#1E9E6D' : '#D64545' }} numberOfLines={1}>
+                      {t.v.change === null ? `${t.label} · no earlier data yet` : `${t.v.change >= 0 ? '▲' : '▼'} ${Math.abs(t.v.change)}% ${t.label} vs last month`}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
 
             {/* Nexora insight + Quick action (Home design) */}
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: narrow ? 14 : 18, alignItems: 'stretch' }}>
@@ -11516,7 +11604,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                         {!!t.sub && <Text style={{ fontSize: 12.5, color: '#5C6B7A', marginTop: 1 }} numberOfLines={1}>{t.sub}</Text>}
                       </View>
                       <Pressable onPress={t.onPress} accessibilityRole="button" style={{ paddingHorizontal: 12, height: 32, borderRadius: 16, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}>
-                        <Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 12.5 }}>{/setting up/i.test(t.title) ? 'Continue' : /photo/i.test(t.title) ? 'Fix now' : 'Review'}</Text>
+                        <Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 12.5 }}>{t.action ?? (/setting up/i.test(t.title) ? 'Continue' : /photo/i.test(t.title) ? 'Fix now' : 'Review')}</Text>
                       </Pressable>
                     </View>
                   );
@@ -11539,37 +11627,6 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                     </Pressable>
                   );
                 })}
-              </View>
-            </View>
-
-            {/* Business Overview (Home design), with this week's live numbers underneath */}
-            <View style={panel}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-                <Text style={{ fontSize: 15.5, fontWeight: '700', color: '#0B1220' }}>Business Overview</Text>
-                <Text style={{ fontSize: 12, color: '#5C6B7A', backgroundColor: '#F1F5F9', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, overflow: 'hidden' }}>Last 30 days</Text>
-              </View>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
-                {(ovRows.length ? ovRows : [{ icon: 'cash-outline', label: 'Revenue', v: { value: 0, change: null }, onPress: () => openOrders('All') }, { icon: 'bag-handle-outline', label: 'Orders', v: { value: 0, change: null }, onPress: () => openOrders('All') }, { icon: 'people-outline', label: 'Customers', v: { value: 0, change: null }, onPress: () => openCustomers(() => goTab('home')) }, { icon: 'person-add-outline', label: 'Leads', v: { value: 0, change: null }, onPress: () => openLeads() }] as typeof ovRows).map(t => (
-                  <Pressable key={t.label} onPress={t.onPress} accessibilityRole="button" style={{ flexBasis: narrow ? '46%' : '22%', flexGrow: 1, padding: 14, borderRadius: 12, backgroundColor: '#F7F9FC', borderWidth: 1, borderColor: '#EEF2F7' }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                      <View style={{ width: 30, height: 30, borderRadius: 8, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}><Ionicons name={t.icon as any} size={15} color="#1E56A0" /></View>
-                      <Ionicons name="arrow-forward" size={14} color="#8A97A6" style={{ transform: [{ rotate: '-45deg' }] }} />
-                    </View>
-                    <Text style={{ fontSize: 22, fontWeight: '700', color: '#0B1220', marginTop: 10 }} numberOfLines={1} adjustsFontSizeToFit>{t.label === 'Revenue' ? moneyText(t.v.value) : t.v.value.toLocaleString()}</Text>
-                    <Text style={{ fontSize: 12, marginTop: 2, fontWeight: '600', color: t.v.change === null ? '#8A97A6' : t.v.change >= 0 ? '#1E9E6D' : '#D64545' }} numberOfLines={1}>
-                      {t.v.change === null ? `${t.label} · no earlier data yet` : `${t.v.change >= 0 ? '▲' : '▼'} ${Math.abs(t.v.change)}% ${t.label} vs last month`}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14, paddingTop: 14, borderTopWidth: 1, borderTopColor: '#F1F5F9' }}>
-                {kpis.map(k => (
-                  <Pressable key={k.label} onPress={k.onPress} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 11, height: 32, borderRadius: 16, backgroundColor: '#F7F9FC', borderWidth: 1, borderColor: '#EEF2F7' }}>
-                    <Ionicons name={k.icon as any} size={14} color={k.color} />
-                    <Text style={{ fontSize: 12.5, color: '#0B1220', fontWeight: '700' }}>{k.value}</Text>
-                    <Text style={{ fontSize: 12.5, color: '#5C6B7A' }}>{k.label}</Text>
-                  </Pressable>
-                ))}
               </View>
             </View>
 
