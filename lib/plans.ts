@@ -22,7 +22,7 @@ async function askNexora(text: string): Promise<{ text: string }> {
     } finally { clearTimeout(t); }
   };
   try {
-    const r = await post('nexora-agent', { mode: 'assistant', message: text, history: [], client_now: clientNow() }, 60000);
+    const r = await post('nexora-agent', { mode: 'assistant', long: true, message: text, history: [], client_now: clientNow() }, 90000);
     if (r.ok && r.json.success && r.json.reply) return { text: String(r.json.reply) };
     if (r.json?.code === 'subscription' || r.json?.code === 'quota') return { text: `${r.json.message || 'Your Nexora plan needs attention.'}\n\nOpen Profile, then Plans & billing.` };
   } catch { /* fall back below */ }
@@ -96,27 +96,30 @@ export const partDef = (key: string) => ALL_PARTS.find(p => p.key === key);
 export const UPDATE_DEFAULT = ['value', 'pricing', 'marketing_plan', 'sales_plan', 'goals', 'experiments'];
 export const LEARNING_KIND: Record<Learning['kind'], string> = { customer: 'From customers', result: 'From results', other: 'Other' };
 
-const RULE = 'Use what you know about my business from my knowledge base, and follow the globally proven method named. Do not invent facts, prices, numbers, names, testimonials or guarantees; where something is missing write [add: ...] so I can fill it in, and mark estimates clearly. Use clear headings, short tables where they help, and plain words. Only write the text: do not take any actions or change anything in my account. Start directly with the content, with no greeting.';
+const RULE = 'Use what you know about my business from my knowledge base, and follow the globally proven method named. Do not invent facts, prices, numbers, names, testimonials or guarantees; where something is missing write [add: ...] so I can fill it in, and mark estimates clearly. Use clear headings, short tables where they help (one short line per cell), and plain words. Write Markdown only, never HTML tags such as <br>. When you mention my goals, sales or other figures, quote them exactly as given to you; do not work out new targets. Only write the text: do not take any actions or change anything in my account. Start directly with the content, with no greeting.';
 const clip = (t: string, n: number) => (t.length > n ? `${t.slice(0, n)}…` : t);
 const today = () => new Date().toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' });
 
 function about(p: Plan) {
   const who = p.kind === 'existing' ? 'a plan to grow my existing business' : 'a new business idea (not my current business, so only use my business data where it clearly applies)';
-  const done = ALL_PARTS.filter(d => p.sections[d.key]?.text).map(d => `### ${d.label}\n${clip(p.sections[d.key].text, 700)}`);
-  return `I am working on ${who}, called "${p.title}". Today is ${today()}.\nThe idea: ${p.idea || p.title}\n${done.length ? `\nWhat we have worked out so far (short extracts):\n${done.join('\n\n')}\n` : ''}`;
+  // Short extracts of the parts already written (kept under ~6,000 characters so the request stays within limits).
+  const done = ALL_PARTS.filter(d => p.sections[d.key]?.text).map(d => `### ${d.label}\n${clip(p.sections[d.key].text, 450)}`);
+  let ctx = done.join('\n\n');
+  if (ctx.length > 6000) ctx = `${ctx.slice(0, 6000)}…`;
+  return `I am working on ${who}, called "${p.title}". Today is ${today()}.\nThe idea: ${clip(p.idea || p.title, 1500)}\n${ctx ? `\nWhat we have worked out so far (short extracts):\n${ctx}\n` : ''}`;
 }
 /** The request Nexora gets for one part of the plan. */
 export function draftPrompt(p: Plan, key: string) {
   const d = partDef(key)!;
-  return `${about(p)}\nNow write the ${d.label.toLowerCase()} for this ${p.kind === 'existing' ? 'plan' : 'idea'}, using ${d.method}: ${d.ask}. Keep it practical and about 250–450 words. ${RULE}`;
+  return `Write the ${d.label.toLowerCase()} for the ${p.kind === 'existing' ? 'plan' : 'business idea'} below, using ${d.method}: ${d.ask}. Keep it practical and about 300–550 words. ${RULE}\n\n${about(p)}`;
 }
 
-type OrderRow = { created_at: string; status: string; payment_status?: string; total: number | null; refunded_amount?: number | null; currency?: string | null; line_items?: { name?: string; qty?: number }[] | null };
+type OrderRow = { created_at: string; status: string; payment_status?: string; total: number | null; refunded_amount?: number | null; currency?: string | null; items?: string | null; line_items?: { name?: string; qty?: number }[] | null };
 export type Snapshot = { currency: string; orders: number; sales: number; paid: number; prevOrders: number; prevSales: number; top: { name: string; qty: number }[] } | null;
 /** The business's real results for the last 30 days against the 30 before (worked out here, so Nexora quotes them instead of recalculating). */
 export async function loadSnapshot(): Promise<Snapshot> {
   const since = new Date(Date.now() - 60 * 86400000).toISOString();
-  const { data } = await supabase.from('orders').select('created_at,status,payment_status,total,refunded_amount,currency,line_items').gte('created_at', since).limit(2000);
+  const { data } = await supabase.from('orders').select('created_at,status,payment_status,total,refunded_amount,currency,items,line_items').gte('created_at', since).limit(2000);
   const rows = ((data ?? []) as OrderRow[]).filter(o => o.status !== 'cancelled');
   if (!rows.length) return null;
   const cut = Date.now() - 30 * 86400000;
@@ -125,7 +128,10 @@ export async function loadSnapshot(): Promise<Snapshot> {
   const net = (o: OrderRow) => Math.max(0, Number(o.total || 0) - Number(o.refunded_amount || 0));
   const sum = (l: OrderRow[]) => Math.round(l.reduce((n, o) => n + net(o), 0) * 100) / 100;
   const counts: Record<string, number> = {};
-  for (const o of cur) for (const l of (Array.isArray(o.line_items) ? o.line_items : [])) if (l?.name) counts[l.name] = (counts[l.name] || 0) + (Number(l.qty) || 1);
+  for (const o of cur) {
+    const lines = Array.isArray(o.line_items) && o.line_items.length ? o.line_items : o.items ? [{ name: o.items.slice(0, 60), qty: 1 }] : [];
+    for (const l of lines) if (l?.name) counts[l.name] = (counts[l.name] || 0) + (Number(l.qty) || 1);
+  }
   const curr: Record<string, number> = {};
   for (const o of rows) curr[o.currency || 'NGN'] = (curr[o.currency || 'NGN'] || 0) + 1;
   return {
@@ -145,7 +151,7 @@ export function snapshotText(s: Snapshot) {
 export function updatePrompt(p: Plan, key: string, snap: Snapshot) {
   const d = partDef(key)!;
   const learn = p.learnings.slice(-15).map(l => `- ${new Date(l.at).toLocaleDateString()} (${LEARNING_KIND[l.kind]}): ${l.text}`).join('\n');
-  return `${about(p)}\nUpdate the ${d.label.toLowerCase()} using what the business has learned.\n\nThe current ${d.label.toLowerCase()}:\n${clip(p.sections[key]?.text || '(not written yet)', 3000)}\n\nWhat we have learned from customers and results:\n${learn || '- (nothing written down yet)'}\n\nThe latest results (already calculated: quote them exactly, do not recalculate): ${snapshotText(snap)}\n\nStart with a short "What changed" list (2–4 points, each saying what you changed and which lesson or result caused it), then give the full updated ${d.label.toLowerCase()} using ${d.method}. Keep what still holds. About 250–450 words. ${RULE}`;
+  return `Update the ${d.label.toLowerCase()} of the plan below using what the business has learned. Start with a short "What changed" list (2–4 points, each saying what you changed and which lesson or result caused it), then give the full updated ${d.label.toLowerCase()} using ${d.method}. Keep what still holds. About 300–550 words. ${RULE}\n\n${about(p)}\nThe current ${d.label.toLowerCase()}:\n${clip(p.sections[key]?.text || '(not written yet)', 3000)}\n\nWhat we have learned from customers and results:\n${learn || '- (nothing written down yet)'}\n\nThe latest results (already calculated: quote them exactly, do not recalculate): ${snapshotText(snap)}`;
 }
 
 // ---- Saving ----
@@ -189,6 +195,7 @@ export const newLearningId = () => Math.random().toString(36).slice(2, 10);
 export async function writePart(prompt: string) {
   let text = '';
   try { text = (await askNexora(prompt)).text.trim(); } catch { text = ''; }
+  text = text.replace(/<br\s*\/?>/gi, ' ').replace(/<\/?(p|div|span)[^>]*>/gi, '').trim();
   if (/Open Profile, then Plans & billing/.test(text)) throw new Error(text.split('\n')[0]);
   if (!text || /all available ai services failed/i.test(text)) throw new Error('Nexora’s AI is busy right now. Please try again in a few minutes.');
   return text;

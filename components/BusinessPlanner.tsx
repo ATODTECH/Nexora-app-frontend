@@ -42,7 +42,8 @@ function PlanList({ onOpen, flash, wide }: { onOpen: (id: string) => void; flash
   const [plans, setPlans] = useState<Plan[] | null>(null);
   const [f, setF] = useState<{ title: string; idea: string; kind: PlanKind }>({ title: '', idea: '', kind: 'new' });
   const [busy, setBusy] = useState(false);
-  useEffect(() => { loadPlans().then(setPlans, e => { flash((e as Error).message); setPlans([]); }); }, [flash]);
+  // Load once: flash is not a stable function, so it must not re-run this.
+  useEffect(() => { loadPlans().then(setPlans, e => { flash((e as Error).message); setPlans([]); }); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const start = async () => {
     setBusy(true);
     try { const p = await createPlan(f); onOpen(p.id); } catch (e) { flash((e as Error).message); }
@@ -124,7 +125,7 @@ function PlanView({ id, userId, flash, callFn, wide, onClose }: {
       ref.current = p; setPlan(p);
       if (p) { const i = PLAN_STEPS.findIndex(st => st.parts.some(d => !p.sections[d.key]?.text)); setStep(i < 0 ? 4 : i); }
     }, e => { flash((e as Error).message); setPlan(null); });
-  }, [id, flash]);
+  }, [id]); // eslint-disable-line react-hooks/exhaustive-deps -- load when the plan changes, not when flash changes
 
   const apply = useCallback(async (fn: (p: Plan) => Parameters<typeof patchPlan>[1]) => {
     const cur = ref.current; if (!cur) return;
@@ -136,7 +137,7 @@ function PlanView({ id, userId, flash, callFn, wide, onClose }: {
     for (const [i, key] of keys.entries()) {
       if (stopRef.current) break;
       setWork(keys.length > 1 ? `Writing ${partDef(key)!.label} (${i + 1} of ${keys.length})…` : `Writing ${partDef(key)!.label}…`);
-      try { const text = await writePart(draftPrompt(ref.current!, key)); await apply(p => withPart(p, key, text, 'ai', 'Redrafted by Nexora')); }
+      try { const text = await writePart(draftPrompt(ref.current!, key)); await apply(p => withPart(p, key, text, 'ai', 'Replaced by a new draft from Nexora')); }
       catch (e) { flash((e as Error).message); break; }
     }
     setWork(null);
@@ -237,7 +238,7 @@ function PlanView({ id, userId, flash, callFn, wide, onClose }: {
         <Text style={s.tiny}>Use # for headings, - for bullet points and **bold**.</Text>
         <Btn label="Save" disabled={!edit?.text.trim()} onPress={async () => {
           if (!edit) return;
-          try { await apply(p => withPart(p, edit.key, edit.text.trim(), 'you', 'Edited by you')); setEdit(null); flash('Saved'); } catch (e) { flash((e as Error).message); }
+          try { await apply(p => withPart(p, edit.key, edit.text.trim(), 'you', 'Replaced when you edited it')); setEdit(null); flash('Saved'); } catch (e) { flash((e as Error).message); }
         }} />
       </Sheet>
 
@@ -258,7 +259,7 @@ function PlanView({ id, userId, flash, callFn, wide, onClose }: {
       </Sheet>
 
       <Versions plan={plan} partKey={versions} onClose={() => setVersions(null)}
-        onRestore={async v => { try { await apply(p => withPart(p, v.key, v.text, 'you', 'Replaced by an earlier version')); setVersions(null); flash('Earlier version restored'); } catch (e) { flash((e as Error).message); } }} />
+        onRestore={async v => { try { await apply(p => withPart(p, v.key, v.text, 'you', 'Replaced when you restored an earlier version')); setVersions(null); flash('Earlier version restored'); } catch (e) { flash((e as Error).message); } }} />
 
       <Sheet visible={!!goal} title="Track a goal" onClose={() => setGoal(null)}>
         {goal && (
@@ -343,7 +344,7 @@ function LearnStep({ plan, current, apply, busy, setWork, stopRef, flash, openVe
       setWork(`Updating ${partDef(key)!.label} (${i + 1} of ${keys.length})…`);
       try {
         const out = await writePart(updatePrompt(current() ?? plan, key, sn ?? null));
-        await apply(p => withPart(p, key, out, 'update', 'Before the update from what we learned'));
+        await apply(p => withPart(p, key, out, 'update', 'Replaced by the update from what you learned'));
         n++;
       } catch (e) { flash((e as Error).message); break; }
     }
