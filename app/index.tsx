@@ -25,6 +25,7 @@ import { NoAccess } from '../components/NoAccess';
 import { SuggestionSlider } from '../components/SuggestionSlider';
 import { BrainAssistant } from '../components/BrainAssistant';
 import { BusinessPlanner } from '../components/BusinessPlanner';
+import { SocialPublisher } from '../components/SocialPublisher';
 import { savePrompt } from '../lib/brainAssistant';
 import { openPaystackPopup } from '../lib/paystackPopup';
 import * as WebBrowser from 'expo-web-browser';
@@ -744,6 +745,10 @@ const STATUS_BADGE_STYLE: Record<ConversationStatus, { bg: string; color: string
   'AI Low confidence': { bg: '#FDEFE0', color: '#C2760C' },
   'Human attention': { bg: '#FDEDED', color: '#D32F2F' },
 };
+// What each status is called on screen (Figma Inbox, 3 Nov 2026).
+const STATUS_LABEL: Record<ConversationStatus, string> = {
+  'AI can handle': 'AI handled', 'Needs Information': 'Needs Information', 'AI Low confidence': 'AI Low confidence', 'Human attention': 'Approval Required',
+};
 const PLATFORM_ICON: Record<Conversation['platform'], string> = {
   Whatsapp: 'logo-whatsapp', Facebook: 'logo-facebook', Instagram: 'logo-instagram', Email: 'mail', SMS: 'chatbox',
 };
@@ -1162,7 +1167,7 @@ function BrandIcon({ platform, size = 36, ring = false }: { platform: Conversati
   );
 }
 
-type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'campaigns'|'automations'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules'|'opportunities'|'opportunityDetail'|'settings'|'quickActions'|'activityLog'|'approvals'|'brainAssistant'|'businessPlanner';
+type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'campaigns'|'automations'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules'|'opportunities'|'opportunityDetail'|'settings'|'quickActions'|'activityLog'|'approvals'|'brainAssistant'|'businessPlanner'|'socialPublisher';
 type KnowledgeCategory='products'|'services'|'operations'|'policies'|'faqs';
 type KnowledgeField={label:string;value:string};
 // ---- Brain AI tools (company guide, 29 Oct 2026): organised tools instead of one crowded screen ----
@@ -1693,6 +1698,7 @@ const BRAIN_NAV_OPEN_KEY = 'nexora-nav-brain-open';
 const SPECIAL_FEATURES: { k: string; icon: string; label: string; screens: string[] }[] = [
   { k: 'assistant', icon: 'sparkles-outline', label: 'AI Business Brain and Assistant', screens: ['brainAssistant'] },
   { k: 'planner', icon: 'bulb-outline', label: 'Business Idea Development and Planning', screens: ['businessPlanner'] },
+  { k: 'publisher', icon: 'share-social-outline', label: 'Social Media Connection and Multi-Platform Publishing', screens: ['socialPublisher'] },
 ];
 const SPECIAL_OPEN_KEY = 'nexora-nav-special-open';
 let specialOpenMem = false;
@@ -3878,13 +3884,13 @@ function HomeScreenInner(){
   const [channelRows, setChannelRows] = useState<Record<string, { ai_behavior?: Record<string, boolean>; ai_permissions?: Record<string, boolean>; connected?: boolean; handle?: string; connected_at?: string | null }>>({});
   const pendingEventRef = useRef<{ title: string; with_whom: string; event_date: string; start_time: string } | null>(null);
   const [activeConversationId, setActiveConversationId] = useState('');
-  const [inboxListFilter, setInboxListFilter] = useState<'All' | 'Unread' | 'Need attention'>('All');
+  const [inboxListFilter, setInboxListFilter] = useState<'All' | 'Handled' | 'Need attention'>('All');
   // NEW: Customers CRM state
   const [customerListFilter, setCustomerListFilter] = useState<'All' | 'New' | 'VIP' | 'Active'>('All');
   const [activeCustomerId, setActiveCustomerId] = useState<string | null>(null);
   const [customerProfileTab, setCustomerProfileTab] = useState<'Overview' | 'Order'>('Overview');
   const [historyFilter, setHistoryFilter] = useState<'All' | 'Messages' | 'Calls' | 'Orders'>('All');
-  const [inboxPlatformFilter, setInboxPlatformFilter] = useState<'All' | 'Whatsapp' | 'Facebook' | 'Instagram' | 'Email'>('All');
+  const [inboxPlatformFilter, setInboxPlatformFilter] = useState<'All' | 'Whatsapp' | 'Facebook' | 'Instagram' | 'Email' | 'SMS'>('All');
   const [inboxModal, setInboxModal] = useState<null | 'takeover' | 'sending' | 'failed' | 'offline' | 'menu'>(null);
   // What to retry from the "Message failed" sheet, and the platform's reason.
   const inboxRetryRef = useRef<null | (() => void)>(null);
@@ -3949,6 +3955,7 @@ function HomeScreenInner(){
       if (screen === 'approvals') { if (approvalsFromRef.current === 'settings') setScreen('settings'); else goTab('home'); return true; }
       if (screen === 'brainAssistant') { goTab('brain'); return true; }
       if (screen === 'businessPlanner') { goTab('home'); return true; }
+      if (screen === 'socialPublisher') { goTab('home'); return true; }
       if (screen === 'opportunityDetail') { setScreen('opportunities'); return true; }
       if (screen === 'opportunities') { marketBackRef.current(); return true; }
       if ((screen === 'explore' || screen === 'trends' || screen === 'community') && exploreBackRef.current) { exploreBackRef.current(); return true; }
@@ -6056,7 +6063,7 @@ function HomeScreenInner(){
   const [avatarBusy, setAvatarBusy] = useState(false);
   const [team, setTeam] = useState<TeamRow[] | null>(null);
   const [logins, setLogins] = useState<LoginRow[] | null>(null);
-  const [bizEdit, setBizEdit] = useState<null | { id: string; name: string; industry: string; country: string; saving: boolean }>(null);
+  const [bizEdit, setBizEdit] = useState<null | { id: string; name: string; industry: string; country: string; business_type: string; description: string; website: string; phone: string; saving: boolean }>(null);
   const [personalName, setPersonalName] = useState('');
   const [pwForm, setPwForm] = useState({ pw: '', pw2: '', saving: false, error: '' });
   const [mfa, setMfa] = useState<null | { loading: boolean; factorId: string; enabled: boolean }>(null);
@@ -6157,14 +6164,20 @@ function HomeScreenInner(){
   };
   const loadBizForm = async () => {
     if (!userId) return;
-    const { data } = await supabase.from('businesses').select('id,name,industry,country').eq('owner_id', userId).maybeSingle();
-    setBizEdit(data ? { id: data.id, name: data.name ?? '', industry: data.industry ?? '', country: data.country ?? '', saving: false } : null);
+    const { data } = await supabase.from('businesses').select('id,name,industry,country,business_type,description,website,phone').eq('owner_id', userId).maybeSingle();
+    setBizEdit(data ? { id: data.id, name: data.name ?? '', industry: data.industry ?? '', country: data.country ?? '', business_type: data.business_type ?? '', description: data.description ?? '', website: data.website ?? '', phone: data.phone ?? '', saving: false } : null);
   };
   const saveBizForm = async () => {
     if (!bizEdit || bizEdit.saving) return;
     if (!bizEdit.name.trim()) { flash('Add your business name.'); return; }
+    let website = bizEdit.website.trim();
+    if (website && !/^https?:\/\//i.test(website)) website = `https://${website}`;
+    if (website && !/^https?:\/\/[^\s.]+\.[^\s]+$/i.test(website)) { flash('Check the website address.'); return; }
     setBizEdit({ ...bizEdit, saving: true });
-    const { error } = await supabase.from('businesses').update({ name: bizEdit.name.trim(), industry: bizEdit.industry.trim(), country: bizEdit.country.trim(), updated_at: new Date().toISOString() }).eq('id', bizEdit.id);
+    const { error } = await supabase.from('businesses').update({
+      name: bizEdit.name.trim(), industry: bizEdit.industry.trim(), country: bizEdit.country.trim(), business_type: bizEdit.business_type.trim() || null,
+      description: bizEdit.description.trim().slice(0, 1000) || null, website: website || null, phone: bizEdit.phone.trim().slice(0, 40) || null, updated_at: new Date().toISOString(),
+    }).eq('id', bizEdit.id);
     setBizEdit(f => f && { ...f, saving: false });
     if (error) { flash("Couldn't save your business details."); return; }
     loadWorkspaceInfo().catch(() => {});
@@ -8323,6 +8336,7 @@ function HomeScreenInner(){
           case 'billing': openBilling(() => goTab('home')); break;
           case 'assistant': setScreen('brainAssistant'); break;
           case 'planner': setScreen('businessPlanner'); break;
+          case 'publisher': setScreen('socialPublisher'); break;
           case 'trends': openTrends(); break;
           case 'explore': openExplore(); break;
           case 'network': openNetwork(); break;
@@ -10475,40 +10489,6 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
       const twoCol = IS_WEB && hookWidth >= 1100;
       const planName = workspace ? (plans.find(p => p.key === workspace.plan)?.name ?? workspace.plan) : '';
       const planSub = workspace ? (workspace.plan === 'free' ? 'Free plan \u00b7 upgrade any time' : `${planName} \u00b7 ${workspace.subscription_status.replace('_', ' ')}`) : 'Set up your company';
-      const row = (o: { icon: string; label: string; sub?: string; onPress: () => void; color?: string }, last = false) => (
-        <Pressable key={o.label} onPress={o.onPress} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 13, borderBottomWidth: last ? 0 : 1, borderBottomColor: '#EEF1F4' }}>
-          <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}>
-            <Ionicons name={o.icon as any} size={18} color={o.color || '#1E56A0'} />
-          </View>
-          <View style={{ flex: 1, minWidth: 0 }}>
-            <Text style={styles.attentionTitle}>{o.label}</Text>
-            {!!o.sub && <Text style={styles.attentionSubtitle} numberOfLines={1}>{o.sub}</Text>}
-          </View>
-          <Ionicons name="chevron-forward" size={16} color="#8A97A6" />
-        </Pressable>
-      );
-      const section = (title: string, children: React.ReactNode) => (
-        <View style={twoCol ? { flexBasis: '48%', flexGrow: 1, minWidth: 0 } : { width: '100%' }}>
-          <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>{title}</Text>
-          <View style={[styles.detailCard, { paddingVertical: 6 }]}>{children}</View>
-        </View>
-      );
-      const nexoraLinks = [
-        { icon: 'link-outline', label: 'Connected channels', sub: `${LIVE_CHANNELS.filter(k => connectedChannels[k]).length} of ${LIVE_CHANNELS.length} connected`, onPress: openConnectChannels },
-        { icon: 'qr-code-outline', label: 'AI shop link', sub: 'Your public page where customers chat with Nexora', onPress: () => { openStorefront().catch(() => {}); } },
-        { icon: 'bulb-outline', label: 'What Nexora learned', sub: 'Confirm facts picked up from your chats', onPress: openLearned },
-        { icon: 'git-branch-outline', label: 'What Nexora decides for you', sub: autonomy && !autonomy.notSetUp ? `${autonomy.rules_on || 0} rule${autonomy.rules_on === 1 ? '' : 's'} on${autonomy.rate !== null ? ` \u00b7 ${autonomy.rate}% handled without you` : ''}` : 'Decisions you taught Nexora', onPress: () => openRules() },
-        { icon: 'call-outline', label: 'When Nexora needs you', sub: alertCfg?.phone_verified && alertCfg?.call_enabled && alertCfg?.call_when !== 'never' ? `Calls ${alertCfg.phone}${alertCfg.call_when === 'all' ? ' about anything' : ' when it\'s urgent'}` : 'Let Nexora call you about things it can\'t handle', onPress: () => openOwnerAlerts() },
-      ];
-      const communityLinks = [
-        { icon: 'chatbubbles-outline', label: 'Community', sub: commMe ? `${commMe.level} \u00b7 ${commMe.points} pts` : 'Ask other business owners, share wins', onPress: openCommunity },
-        { icon: 'people-outline', label: 'Partner profile', sub: 'What you offer and what you need', onPress: () => { openNetwork().catch(() => {}); } },
-      ];
-      const helpLinks = [
-        { icon: 'shield-checkmark-outline', label: 'Privacy policy', onPress: openPrivacy },
-        { icon: 'document-text-outline', label: 'Terms of use', onPress: openTerms },
-        { icon: 'help-buoy-outline', label: 'Contact support', sub: SUPPORT_EMAIL, onPress: () => { Linking.openURL(`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('Nexora AI support')}`).catch(() => flash(`Email us at ${SUPPORT_EMAIL}`)); } },
-      ];
       const isFree = !workspace || workspace.plan === 'free';
       const roleLabel = workspace?.role === 'staff' ? 'Team member' : 'Business Owner';
       const prefRow = (o: { icon: string; title: string; sub: string; onPress: () => void }) => (
@@ -10615,11 +10595,9 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                 </View>
               </Modal>
               {prefRow({ icon: 'card-outline', title: 'Plans & billing', sub: planSub, onPress: () => openBilling(() => goTab('profile')) })}
-              <View style={{ flexDirection: twoCol ? 'row' : 'column', flexWrap: 'wrap', columnGap: 20 }}>
-                {section('Your Nexora', nexoraLinks.map((o, i) => row(o, i === nexoraLinks.length - 1)))}
-                {section('Community', communityLinks.map((o, i) => row(o, i === communityLinks.length - 1)))}
-                {section('Help & legal', helpLinks.map((o, i) => row(o, i === helpLinks.length - 1)))}
-              </View>
+              {/* "Your Nexora", "Community" and "Help & legal" lists removed to follow the Figma Profile flow (company feedback 3 Nov 2026).
+                  Each item lives in its Figma place: channels under Connected apps; learned, decisions and support under App preferences;
+                  calls under Notifications; privacy and terms under Security & Privacy → Data & Privacy; shop link, partners and community in the menu. */}
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 22, alignItems: 'center' }}>
               <Pressable onPress={handleLogout} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 18, height: 44, borderRadius: 12, borderWidth: 1, borderColor: '#D5DEE8', backgroundColor: '#FFFFFF' }}>
                 <Ionicons name="log-out-outline" size={18} color="#0B1220" />
@@ -10640,12 +10618,13 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
     if (mainTab === 'inbox') {
       const listCounts = {
         All: conversations.length,
-        Unread: conversations.filter(c => c.unread > 0).length,
-        'Need attention': conversations.filter(c => c.status === 'Needs Information' || c.status === 'Human attention').length,
+        // Figma Inbox (3 Nov 2026): All · Handled (by Nexora) · Need attention (needs information, approval or low confidence).
+        Handled: conversations.filter(c => c.status === 'AI can handle').length,
+        'Need attention': conversations.filter(c => c.status !== 'AI can handle').length,
       };
       const q = inboxSearch.trim().toLowerCase();
       const filtered = conversations
-        .filter(c => inboxListFilter === 'All' ? true : inboxListFilter === 'Unread' ? c.unread > 0 : (c.status === 'Needs Information' || c.status === 'Human attention'))
+        .filter(c => inboxListFilter === 'All' ? true : inboxListFilter === 'Handled' ? c.status === 'AI can handle' : c.status !== 'AI can handle')
         .filter(c => inboxPlatformFilter === 'All' ? true : c.platform === inboxPlatformFilter)
         .filter(c => !q || c.name.toLowerCase().includes(q) || c.lastMessage.toLowerCase().includes(q) || (c.handle ?? '').toLowerCase().includes(q));
       const anyConnected = LIVE_CHANNELS.some(k => connectedChannels[k]);
@@ -10698,14 +10677,14 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
             />
           </View>
           <View style={[styles.filterRow, { paddingHorizontal: 16 }]}>
-            {(['All', 'Unread', 'Need attention'] as const).map(f => (
+            {(['All', 'Handled', 'Need attention'] as const).map(f => (
               <Pressable key={f} onPress={() => setInboxListFilter(f)} style={[styles.filterChip, inboxListFilter === f && styles.filterChipActive]}>
                 <Text style={[styles.filterChipText, inboxListFilter === f && styles.filterChipTextActive]}>{f} ({listCounts[f]})</Text>
               </Pressable>
             ))}
           </View>
-          <View style={styles.platformChipRow}>
-            {(['All', 'Whatsapp', 'Facebook', 'Instagram', 'Email'] as const).map(p => {
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0 }} contentContainerStyle={[styles.platformChipRow, { gap: 10, justifyContent: 'flex-start' }]}>
+            {(['All', 'Whatsapp', 'Facebook', 'Instagram', 'Email', 'SMS'] as const).map(p => {
               const active = inboxPlatformFilter === p;
               // Each platform's brand color (WhatsApp green, Instagram pink,
               // Facebook blue) should show all the time, like the truth
@@ -10722,7 +10701,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                 </Pressable>
               );
             })}
-          </View>
+          </ScrollView>
           <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingTop: 8 }]}>
             {!!inboxError && <Text style={[styles.attentionSubtitle, { color: '#D64545', marginBottom: 8 }]}>{inboxError}</Text>}
             {filtered.length === 0 && (
@@ -10757,7 +10736,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                   <Text style={styles.attentionSubtitle} numberOfLines={1}>{c.lastMessage}</Text>
                   <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4, gap: 8 }}>
                     <View style={[styles.conversationStatusPill, { backgroundColor: STATUS_BADGE_STYLE[c.status].bg }]}>
-                      <Text style={[styles.conversationStatusPillText, { color: STATUS_BADGE_STYLE[c.status].color }]}>{c.status}</Text>
+                      <Text style={[styles.conversationStatusPillText, { color: STATUS_BADGE_STYLE[c.status].color }]}>{STATUS_LABEL[c.status]}</Text>
                     </View>
                     {c.blocked && <Text style={{ fontSize: 11, color: '#D64545', fontWeight: '600' }}>Blocked</Text>}
                     {!!c.aiSuggestion && !c.blocked && <Text style={{ fontSize: 11, color: '#1E56A0', fontWeight: '600' }}>Reply ready</Text>}
@@ -12300,6 +12279,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
       onSaved={() => { goTab('brain'); openSavedLib().catch(() => {}); }}
       onTrain={c => openKnowledgeList(c as KnowledgeCategory)} />;
   }
+  if (screen === 'socialPublisher') return <SocialPublisher userId={userId ?? ''} flash={flash} topInset={insets.top} wide={isDesktopWeb} onBack={() => goTab('home')} />;
   if (screen === 'businessPlanner') return <BusinessPlanner userId={userId ?? ''} flash={flash} callFn={callFn} topInset={insets.top} wide={isDesktopWeb} onBack={() => goTab('home')} />;
   if (screen === 'approvals') return <Approvals userId={userId ?? ''} approver={access.can('approvals_manage')} isOwner={access.isOwner} callFn={callFn} flash={flash}
     onBack={() => { if (approvalsFromRef.current === 'settings') setScreen('settings'); else goTab('home'); }} onOpenRules={() => openSettings('team')} topInset={insets.top} />;
@@ -17017,7 +16997,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
     const field = (lbl: string, value: string, onChange: (t: string) => void, extra: any = {}) => (
       <View key={lbl} style={{ marginBottom: 12 }}>
         <Text style={styles.detailFieldLabel}>{lbl}</Text>
-        <TextInput value={value} onChangeText={onChange} placeholderTextColor="#A5AFBB" style={[styles.editInput, { backgroundColor: '#FFFFFF', borderColor: '#D5DEE8' }]} {...extra} />
+        <TextInput value={value} onChangeText={onChange} placeholderTextColor="#A5AFBB" {...extra} style={[styles.editInput, { backgroundColor: '#FFFFFF', borderColor: '#D5DEE8' }, extra.style]} />
       </View>
     );
     const primary = (text: string, onPress: () => void, busy = false, disabled = false) => (
@@ -17063,9 +17043,32 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
         ) : !bizEdit ? <ActivityIndicator color="#1E56A0" style={{ marginTop: 30 }} /> : (
           <>
             <Text style={[styles.attentionSubtitle, { marginBottom: 14 }]}>Nexora uses these to understand your market, find opportunities and reply to customers.</Text>
+            {/* Figma "Business Information": the business card at the top */}
+            <View style={[card, { gap: 14, marginBottom: 6 }]}>
+              <View style={{ width: 60, height: 60, borderRadius: 30, backgroundColor: '#4F7FD0', alignItems: 'center', justifyContent: 'center' }}>
+                <Text style={{ color: '#FFF', fontSize: 20, fontWeight: '700' }}>{(bizEdit.name || '?').trim().split(/\s+/).slice(0, 2).map(w => w[0]?.toUpperCase() ?? '').join('')}</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 16, fontWeight: '600', color: '#0B1220', textTransform: 'uppercase' }} numberOfLines={1}>{bizEdit.name || workspace?.name}</Text>
+                <Text style={{ fontSize: 13, color: '#6B7A8C', marginTop: 3 }} numberOfLines={1}>{[bizEdit.business_type, bizEdit.industry].filter(Boolean).join(' · ') || 'Add your business type and industry'}</Text>
+                <Text style={{ fontSize: 13, color: '#1E9E6D', fontWeight: '600', marginTop: 3 }}>Active</Text>
+              </View>
+            </View>
             {field('Business name', bizEdit.name, t => setBizEdit(f => f && { ...f, name: t }), { maxLength: 120 })}
+            <Text style={{ fontSize: 13, color: '#0B1220', marginTop: 10, marginBottom: 6 }}>Business type</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 4 }}>
+              {['Retail', 'Wholesale', 'Retail and wholesale', 'Services', 'Manufacturing', 'Online store', 'Food and drink', 'Other'].map(t => (
+                <Pressable key={t} onPress={() => setBizEdit(f => f && { ...f, business_type: f.business_type === t ? '' : t })} accessibilityRole="radio" accessibilityState={{ checked: bizEdit.business_type === t }}
+                  style={[styles.filterChip, { marginBottom: 0 }, bizEdit.business_type === t && styles.filterChipActive]}>
+                  <Text style={[styles.filterChipText, bizEdit.business_type === t && styles.filterChipTextActive]}>{t}</Text>
+                </Pressable>
+              ))}
+            </View>
             {field('Industry', bizEdit.industry, t => setBizEdit(f => f && { ...f, industry: t }), { maxLength: 80, placeholder: 'e.g. Phone accessories, Fashion, Food' })}
-            {field('Country', bizEdit.country, t => setBizEdit(f => f && { ...f, country: t }), { maxLength: 60, placeholder: 'e.g. United States' })}
+            {field('Country', bizEdit.country, t => setBizEdit(f => f && { ...f, country: t }), { maxLength: 60, placeholder: 'e.g. Nigeria' })}
+            {field('Business description', bizEdit.description, t => setBizEdit(f => f && { ...f, description: t }), { maxLength: 1000, multiline: true, placeholder: 'e.g. We sell quality gadgets and tech accessories at affordable prices.', style: { minHeight: 90, textAlignVertical: 'top', paddingTop: 10 } })}
+            {field('Website', bizEdit.website, t => setBizEdit(f => f && { ...f, website: t }), { maxLength: 200, autoCapitalize: 'none', keyboardType: 'url', placeholder: 'www.yourbusiness.com' })}
+            {field('Business phone', bizEdit.phone, t => setBizEdit(f => f && { ...f, phone: t }), { maxLength: 40, keyboardType: 'phone-pad', placeholder: '+234 …' })}
             {primary('Save', saveBizForm, bizEdit.saving)}
             {label('More about your business')}
             {row({ icon: 'school-outline', title: 'Train AI', sub: 'Products, services, policies and FAQs', onPress: () => openFeature('operations') })}
@@ -17085,6 +17088,8 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
             {label('Nexora')}
             {row({ icon: 'bulb-outline', title: 'What Nexora learned', sub: 'Confirm facts picked up from your chats', onPress: openLearned })}
             {row({ icon: 'git-branch-outline', title: 'What Nexora decides for you', sub: 'Decisions you taught Nexora', onPress: () => openRules(backToSettings('preferences')) })}
+            {label('Help')}
+            {row({ icon: 'help-buoy-outline', title: 'Contact support', sub: SUPPORT_EMAIL, onPress: () => { Linking.openURL(`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('Nexora AI support')}`).catch(() => flash(`Email us at ${SUPPORT_EMAIL}`)); } })}
           </>
         );
         break;
@@ -17125,6 +17130,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
             {toggle({ icon: 'cube-outline', title: 'Manage inventory', sub: 'Confirm stock and availability from your knowledge', value: ai.manage_inventory, onChange: v => { saveOwnerPrefs({ ai: { manage_inventory: v } }); } })}
             {toggle({ icon: 'receipt-outline', title: 'Handle refunds', sub: 'Within your refund policy and rules', value: ai.handle_refunds, onChange: v => { saveOwnerPrefs({ ai: { handle_refunds: v } }); } })}
             {row({ icon: 'git-branch-outline', title: 'What Nexora decides for you', sub: 'Your rules for refunds, discounts and more', onPress: () => openRules(backToSettings('aiPerms')) })}
+            {row({ icon: 'bulb-outline', title: 'What Nexora learned', sub: 'Confirm facts picked up from your chats', onPress: openLearned })}
             {row({ icon: 'link-outline', title: 'Per-channel permissions', sub: 'WhatsApp, Instagram and Facebook', onPress: openConnectChannels })}
           </>
         );
@@ -17546,7 +17552,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
 
           {!!o.why && (
             <View style={{ marginTop: 16, borderRadius: 14, borderWidth: 1, borderColor: '#EEF1F4', padding: 14 }}>
-              <Text style={{ fontSize: 15, fontWeight: '600', color: '#0B1220' }}>Why NEXORA recommends this</Text>
+              <Text style={{ fontSize: 15, fontWeight: '600', color: '#0B1220' }}>AI Notes</Text>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 10, borderRadius: 12, backgroundColor: '#E9F1F5', padding: 12 }}>
                 <Ionicons name="sparkles" size={20} color="#4FA3E0" />
                 <Text style={{ flex: 1, fontSize: 13, lineHeight: 18, color: '#1A9CC4' }}>{o.why}</Text>
@@ -17815,7 +17821,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
         <StatusBar style="dark" />
         <View style={[styles.knowledgeHeader, headerSafe]}>
           <Pressable onPress={() => goTab('inbox')} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
-          <Text style={styles.knowledgeHeaderTitle}>Connect Apps</Text>
+          <Text style={styles.knowledgeHeaderTitle}>Connect your channels</Text>
           <Pressable onPress={() => loadChannels().then(() => flash('Up to date')).catch(() => flash("Couldn't refresh."))} hitSlop={8} accessibilityLabel="Refresh"><Ionicons name="refresh-outline" size={22} color="#0B1220" /></Pressable>
         </View>
         <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40 }]} keyboardShouldPersistTaps="handled">
@@ -17841,11 +17847,23 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                   <BrandIcon platform={CHANNEL_PLATFORM[ch.key] ?? 'All'} size={42} />
                   <View style={styles.attentionTextWrap}>
                     <Text style={styles.attentionTitle}>{ch.name}</Text>
-                    <Text style={[styles.attentionSubtitle, on && { color: '#1E9E6D' }]} numberOfLines={1}>
-                      {!live ? 'Coming soon' : on ? `Connected${row?.handle ? ` · ${row.handle}` : ''}` : ch.desc}
-                    </Text>
+                    {live && on ? (
+                      // Figma "Connect your channels": a green "Connected" chip, and the handle when known
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#E6F4ED', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 2 }}>
+                          <Ionicons name="checkmark-circle" size={13} color="#1E9E6D" /><Text style={{ fontSize: 12, color: '#1E9E6D', fontWeight: '600' }}>Connected</Text>
+                        </View>
+                        {!!row?.handle && <Text style={[styles.attentionSubtitle, { flexShrink: 1 }]} numberOfLines={1}>{row.handle}</Text>}
+                      </View>
+                    ) : (
+                      <Text style={styles.attentionSubtitle} numberOfLines={1}>{!live ? 'Coming soon' : ch.desc}</Text>
+                    )}
                   </View>
-                  {busy ? <ActivityIndicator color="#1E56A0" /> : live && !on ? (
+                  {busy ? <ActivityIndicator color="#1E56A0" /> : live && on ? (
+                    <Pressable onPress={() => setChannelMenuKey(ch.key)} hitSlop={10} accessibilityRole="button" accessibilityLabel={`${ch.name} options`} style={{ padding: 6 }}>
+                      <Ionicons name="ellipsis-horizontal" size={22} color="#0B1220" />
+                    </Pressable>
+                  ) : live && !on ? (
                     <Pressable
                       disabled={!isOwner}
                       onPress={() => (ch.key === 'whatsapp' ? (requireOwnerBusiness('connect channels') && setWaForm({ phoneNumberId: '', token: '' })) : connectMetaChannel(ch.key))}
@@ -17855,18 +17873,6 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                     </Pressable>
                   ) : null}
                 </View>
-                {live && on && (
-                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
-                    <Pressable onPress={() => { setSettingsChannelKey(ch.key); setScreen('channelSettings'); }} style={[styles.resetButton, { flex: 1, minHeight: 38, borderWidth: 1, borderColor: '#5381BB' }]}>
-                      <Text style={[styles.resetButtonText, { color: '#1E56A0', fontSize: 13 }]}>AI settings</Text>
-                    </Pressable>
-                    {isOwner && (
-                      <Pressable onPress={() => disconnectChannel(ch.key)} style={[styles.resetButton, { flex: 1, minHeight: 38, borderWidth: 1, borderColor: '#F5C2C2', backgroundColor: '#FDECEC' }]}>
-                        <Text style={[styles.resetButtonText, { color: '#B42318', fontSize: 13, fontWeight: '700' }]}>Disconnect</Text>
-                      </Pressable>
-                    )}
-                  </View>
-                )}
               </View>
             );
           })}
@@ -17900,6 +17906,11 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
             </View>
           ))}
           <Text style={[styles.attentionSubtitle, { marginTop: 8 }]}>Facebook and Instagram open Facebook's own login so you approve access there; Nexora never sees your password. Instagram must be a Business or Creator account linked to your Facebook Page.</Text>
+          {/* Figma: how many channels are connected */}
+          <View style={{ marginTop: 14, borderRadius: 14, backgroundColor: '#E3ECF7', height: 50, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
+            <Ionicons name="link" size={20} color="#1E56A0" />
+            <Text style={{ color: '#1E56A0', fontSize: 15, fontWeight: '600' }}>{LIVE_CHANNELS.filter(k => connectedChannels[k]).length} of 5 channels connected</Text>
+          </View>
         </ScrollView>
         <Modal visible={!!siteBox} transparent animationType="fade" onRequestClose={() => setSiteBox(null)} statusBarTranslucent>
           <View style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)', justifyContent: 'center', padding: 16 }}>
@@ -17988,6 +17999,45 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
               {channelBusy === 'whatsapp' ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>Verify and connect</Text>}
             </Pressable>
           </View>
+        </Modal>
+        {/* Figma "inbox-connect channel options": the "..." on a connected channel */}
+        <Modal visible={!!channelMenuKey} transparent animationType="slide" onRequestClose={() => setChannelMenuKey(null)} statusBarTranslucent>
+          <Pressable style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)' }} onPress={() => setChannelMenuKey(null)} accessibilityLabel="Close" />
+          {(() => {
+            const ch = CONNECT_CHANNELS.find(c => c.key === channelMenuKey);
+            if (!ch) return null;
+            const item = (icon: string, title: string, sub: string, onPress: () => void, danger = false) => (
+              <Pressable key={title} onPress={() => { setChannelMenuKey(null); onPress(); }} accessibilityRole="button"
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 16, borderTopWidth: 1, borderTopColor: '#EEF1F4' }}>
+                <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: danger ? '#FDECEC' : '#F2F4F7', alignItems: 'center', justifyContent: 'center' }}>
+                  <Ionicons name={icon as any} size={18} color={danger ? '#D64545' : '#0B1220'} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 15, fontWeight: '600', color: danger ? '#D64545' : '#0B1220' }}>{title}</Text>
+                  <Text style={{ fontSize: 12.5, color: '#6B7A8C', marginTop: 2 }}>{sub}</Text>
+                </View>
+                {!danger && <Ionicons name="chevron-forward" size={18} color="#8A97A6" />}
+              </Pressable>
+            );
+            return (
+              <View style={{ backgroundColor: '#FFF', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 18, paddingBottom: 28 + insets.bottom, width: '100%', maxWidth: 640, alignSelf: 'center' }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+                  <BrandIcon platform={CHANNEL_PLATFORM[ch.key] ?? 'All'} size={42} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 17, fontWeight: '700', color: '#0B1220' }}>{ch.name}</Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4, alignSelf: 'flex-start', backgroundColor: '#E6F4ED', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 2 }}>
+                      <Ionicons name="checkmark-circle" size={13} color="#1E9E6D" /><Text style={{ fontSize: 12, color: '#1E9E6D', fontWeight: '600' }}>Connected</Text>
+                    </View>
+                  </View>
+                  <Pressable onPress={() => setChannelMenuKey(null)} hitSlop={10} accessibilityLabel="Close"><Ionicons name="close" size={22} color="#5C6B7A" /></Pressable>
+                </View>
+                {item('settings-outline', 'Channel settings', 'Manage how NEXORA handles messages', () => { setSettingsChannelKey(ch.key); setScreen('channelSettings'); })}
+                {item('shield-half-outline', 'AI Permissions', 'Control what NEXORA can do automatically', () => { setSettingsChannelKey(ch.key); setScreen('aiPermissions'); })}
+                {item('person-circle-outline', 'View Connection', 'Account details and status', () => { setSettingsChannelKey(ch.key); setScreen('channelSettings'); })}
+                {workspace?.role === 'owner' && item('unlink-outline', 'Disconnect channel', 'Stop receiving messages from this account', () => disconnectChannel(ch.key), true)}
+              </View>
+            );
+          })()}
         </Modal>
       </View>
     );
