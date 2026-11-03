@@ -1688,8 +1688,19 @@ let brainNavBridge: { chats: BrainChatLink[] | null; newChat: () => void; open: 
 const brainNavSubs = new Set<() => void>();
 function setBrainNavBridge(next: typeof brainNavBridge) { brainNavBridge = next; brainNavSubs.forEach(f => f()); }
 const BRAIN_NAV_OPEN_KEY = 'nexora-nav-brain-open';
+// Special features (blueprint capabilities), grouped under one button that starts closed, as on the website:
+// AI Business Brain and Assistant (2.1), Business Idea Development and Planning (2.2).
+const SPECIAL_FEATURES: { k: string; icon: string; label: string; screens: string[] }[] = [
+  { k: 'assistant', icon: 'sparkles-outline', label: 'AI Business Brain and Assistant', screens: ['brainAssistant'] },
+  { k: 'planner', icon: 'bulb-outline', label: 'Business Idea Development and Planning', screens: ['businessPlanner'] },
+];
+const SPECIAL_OPEN_KEY = 'nexora-nav-special-open';
+let specialOpenMem = false;
+const readSpecialOpen = () => { try { const v = (globalThis as any).localStorage?.getItem(SPECIAL_OPEN_KEY); return v == null ? specialOpenMem : v === '1'; } catch { return specialOpenMem; } };
+const saveSpecialOpen = (v: boolean) => { specialOpenMem = v; try { (globalThis as any).localStorage?.setItem(SPECIAL_OPEN_KEY, v ? '1' : '0'); } catch { /* storage blocked */ } };
 function DrawerHost() {
   const [open, setOpen] = useState(false);
+  const [specialOpen, setSpecialOpen] = useState(readSpecialOpen);
   const [, tick] = useState(0);
   useEffect(() => {
     drawerOpenFn = () => setOpen(true);
@@ -1706,9 +1717,6 @@ function DrawerHost() {
     { k: 'network', icon: 'people-outline', label: 'Find partners' },
     { k: 'shop', icon: 'qr-code-outline', label: 'AI shop link' },
     { k: 'billing', icon: 'card-outline', label: 'Plans & billing' },
-    // Special features (blueprint capabilities): AI Business Brain and Assistant (2.1), Business Idea Development and Planning (2.2).
-    { k: 'assistant', icon: 'star-outline', label: 'AI Business Brain and Assistant' },
-    { k: 'planner', icon: 'bulb-outline', label: 'Business Idea Development and Planning' },
   ];
   const go = (k: string) => { setOpen(false); setTimeout(() => drawerBridge.go(k), 60); };
   return (
@@ -1724,6 +1732,22 @@ function DrawerHost() {
                 <Text style={{ fontSize: 15, fontWeight: '600', color: '#0B1220' }}>{it.label}</Text>
               </Pressable>
             ))}
+            <Pressable onPress={() => setSpecialOpen(v => { saveSpecialOpen(!v); return !v; })} accessibilityRole="button" accessibilityLabel="Special features" accessibilityState={{ expanded: specialOpen }}
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 14 }}>
+              <Ionicons name="star-outline" size={22} color="#0B1220" />
+              <Text style={{ flex: 1, fontSize: 15, fontWeight: '600', color: '#0B1220' }}>Special features</Text>
+              <Ionicons name={specialOpen ? 'chevron-up' : 'chevron-down'} size={18} color="#8A97A6" />
+            </Pressable>
+            {specialOpen && (
+              <View style={{ marginLeft: 10, paddingLeft: 14, borderLeftWidth: 1, borderLeftColor: '#E6ECF3', marginBottom: 4 }}>
+                {SPECIAL_FEATURES.map(it => (
+                  <Pressable key={it.k} onPress={() => go(it.k)} accessibilityRole="button" accessibilityLabel={it.label} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10 }}>
+                    <Ionicons name={it.icon as any} size={18} color="#1E56A0" />
+                    <Text style={{ flex: 1, fontSize: 14, fontWeight: '500', color: '#0B1220' }}>{it.label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
             <View style={{ height: 1, backgroundColor: '#EEF1F4', marginVertical: 10 }} />
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 8 }}>
               <Ionicons name={drawerBridge.away ? 'moon' : 'sunny-outline'} size={22} color="#0B1220" />
@@ -1878,6 +1902,9 @@ const WEB_NAV: { label: string; icon: string; key: FeatureKey; pages: string[] }
 ];
 const WEB_SIDEBAR_W = 248;
 function WebSidebar({ active }: { active: string }) {
+  const specialHere = SPECIAL_FEATURES.some(f => f.screens.includes(active));
+  const [specialOpen, setSpecialOpen] = useState(readSpecialOpen);
+  const showSpecial = specialOpen || specialHere;
   // Brain's chats sit in a dropdown that starts closed; the person opens or closes it and the choice is remembered.
   const [brainOpen, setBrainOpen] = useState(() => { try { return (globalThis as any).localStorage?.getItem(BRAIN_NAV_OPEN_KEY) === '1'; } catch { return false; } });
   const [, tick] = useState(0);
@@ -1930,6 +1957,26 @@ function WebSidebar({ active }: { active: string }) {
             </View>
           );
         })}
+        <Pressable onPress={() => setSpecialOpen(v => { saveSpecialOpen(!v); return !v; })} accessibilityRole="button" accessibilityLabel="Special features" accessibilityState={{ expanded: showSpecial }}
+          style={(st: any) => ({ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10, marginBottom: 2, backgroundColor: st.hovered ? 'rgba(255,255,255,0.05)' : 'transparent', cursor: 'pointer' } as any)}>
+          <Ionicons name="star-outline" size={18} color={specialHere ? '#9CC3FF' : '#8FA3BC'} />
+          <Text style={{ flex: 1, color: specialHere ? '#FFFFFF' : '#C9D6E6', fontSize: 14, fontWeight: specialHere ? '700' : '500' }}>Special features</Text>
+          <Ionicons name={showSpecial ? 'chevron-up' : 'chevron-down'} size={15} color="#8FA3BC" />
+        </Pressable>
+        {showSpecial && (
+          <View style={{ marginLeft: 21, paddingLeft: 10, borderLeftWidth: 1, borderLeftColor: 'rgba(255,255,255,0.10)', marginTop: 2, marginBottom: 4 }}>
+            {SPECIAL_FEATURES.map(f => {
+              const on = f.screens.includes(active);
+              return (
+                <Pressable key={f.k} onPress={() => drawerBridge.go(f.k)} accessibilityRole="link" accessibilityLabel={f.label} accessibilityState={{ selected: on }}
+                  style={(st: any) => ({ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8, paddingHorizontal: 8, borderRadius: 8, backgroundColor: on ? 'rgba(127,178,255,0.16)' : st.hovered ? 'rgba(255,255,255,0.05)' : 'transparent', cursor: 'pointer' } as any)}>
+                  <Ionicons name={f.icon as any} size={14} color={on ? '#9CC3FF' : '#7F93AD'} />
+                  <Text style={{ flex: 1, minWidth: 0, color: on ? '#FFFFFF' : '#B8C7DA', fontSize: 13, fontWeight: on ? '700' : '400' }}>{f.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        )}
       </ScrollView>
       {/* Account (replaces a Profile menu item): profile, settings and log out live behind it */}
       <Pressable onPress={() => requestFeature('account')} accessibilityRole="button" accessibilityLabel="Your account"
@@ -10485,12 +10532,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
           <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 120 }} keyboardShouldPersistTaps="handled">
             <View style={{ height: 150 + (insets.top || 24), backgroundColor: '#1E3249', overflow: 'hidden' }}>
               <View style={{ position: 'absolute', left: -120, right: -120, top: 120 + (insets.top || 24), height: 400, borderRadius: 400, backgroundColor: '#F4F6F8', borderTopWidth: 3, borderColor: '#2AA7D6' }} />
-              <View style={{ position: 'absolute', top: (insets.top || 24) + 8, left: 16 }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
-                  <Pressable onPress={() => goTab('home')} hitSlop={10} accessibilityRole="button" accessibilityLabel="Back"><Ionicons name="chevron-back" size={26} color="#FFFFFF" /></Pressable>
-                  {!(IS_WEB && userId && hookWidth >= 1000) && <Pressable onPress={() => drawerOpenFn()} hitSlop={10} accessibilityLabel="Open menu"><Ionicons name="menu-outline" size={26} color="#FFFFFF" /></Pressable>}
-                </View>
-              </View>
+              {/* No back or menu button at the top left of Profile (company feedback 3 Nov 2026) */}
               <View style={{ position: 'absolute', top: (insets.top || 24) + 8, right: 16 }}>
                 <Pressable onPress={() => openSettings('security')} hitSlop={10} accessibilityLabel="Security and privacy"><Ionicons name="shield-checkmark-outline" size={24} color="#FFFFFF" /></Pressable>
               </View>
@@ -11224,7 +11266,6 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                   <ScrollView contentContainerStyle={{ paddingHorizontal: 18, paddingTop: 24, paddingBottom: 16 }}>
                     <Text style={{ fontSize: 15, color: '#0B1220', marginBottom: 6 }}>AI Tools</Text>
                     {([
-                      { label: 'AI Business Brain and Assistant', icon: 'star-outline', onPress: () => { setBrainNav(false); setScreen('brainAssistant'); } },
                       { label: 'AI Images', icon: 'image-outline', onPress: () => { setBrainNav(false); openTruth('createPostHome'); } },
                       { label: 'Business Assistant', icon: 'briefcase-outline', onPress: () => { setBrainNav(false); setAiTool({ tool: null, topic: '', extra: '' }); } },
                       { label: 'Launch plan', icon: 'rocket-outline', onPress: () => { setBrainNav(false); setAiTool({ tool: AI_TOOL_GROUPS.flatMap(g => g.tools).find(t => t.key === 'launch') ?? null, topic: '', extra: '' }); } },
