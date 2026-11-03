@@ -23,6 +23,9 @@ import { AskApproval } from '../components/AskApproval';
 import { ALL_ON, countWaiting, loadPendingFor, loadRules as loadApprovalRules, needsApprovalError, onApprovalsChanged, requestApproval, type Approval, type ApprovalKind, type ApprovalRules } from '../lib/approvals';
 import { NoAccess } from '../components/NoAccess';
 import { SuggestionSlider } from '../components/SuggestionSlider';
+import { BrainAssistant } from '../components/BrainAssistant';
+import { BusinessPlanner } from '../components/BusinessPlanner';
+import { savePrompt } from '../lib/brainAssistant';
 import { openPaystackPopup } from '../lib/paystackPopup';
 import * as WebBrowser from 'expo-web-browser';
 import { accessOf, canOpenScreen, logExport, roleLabel } from '../lib/team';
@@ -1159,14 +1162,14 @@ function BrandIcon({ platform, size = 36, ring = false }: { platform: Conversati
   );
 }
 
-type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'campaigns'|'automations'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules'|'opportunities'|'opportunityDetail'|'settings'|'quickActions'|'activityLog'|'approvals';
+type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'campaigns'|'automations'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules'|'opportunities'|'opportunityDetail'|'settings'|'quickActions'|'activityLog'|'approvals'|'brainAssistant'|'businessPlanner';
 type KnowledgeCategory='products'|'services'|'operations'|'policies'|'faqs';
 type KnowledgeField={label:string;value:string};
 // ---- Brain AI tools (company guide, 29 Oct 2026): organised tools instead of one crowded screen ----
 type AiToolKey = 'description' | 'advert' | 'social' | 'email' | 'blog' | 'video' | 'plan' | 'proposal' | 'persona' | 'pricing' | 'salesScript' | 'launch' | 'summary' | 'brainstorm'
   | 'strategy' | 'sop' | 'report' | 'letter' | 'agenda' | 'minutes' | 'job' | 'policy' | 'compare' | 'proscons' | 'risk';
 type AiTool = { key: AiToolKey; label: string; icon: string; kind: 'content' | 'business' | 'note'; hint: string; extra?: string; build: (topic: string, extra: string) => string };
-const AI_RULE = 'Use what you know about my business from my knowledge base. Do not invent facts, prices, numbers, testimonials or guarantees; where something is missing write [add: ...] so I can fill it in. Use clear headings and plain words.';
+const AI_RULE = 'Use what you know about my business from my knowledge base, and follow the globally proven method for this kind of work (name it briefly, e.g. SMART goals, SWOT, AIDA, a standard SOP format, a weighted decision matrix). Do not invent facts, prices, numbers, testimonials or guarantees; where something is missing write [add: ...] so I can fill it in. Use clear headings and plain words.';
 const AI_TOOL_GROUPS: { title: string; sub: string; icon: string; tools: AiTool[] }[] = [
   { title: 'Content Studio', sub: 'Descriptions, adverts, posts, emails, articles and video scripts', icon: 'create-outline', tools: [
     { key: 'description', label: 'Product description', icon: 'pricetag-outline', kind: 'content', hint: 'Which product or service?', extra: 'Who is it for? (optional)', build: (t, x) => `Write a clear, persuasive product description for "${t}"${x ? ` aimed at ${x}` : ''}: a short title, a 60–120 word description, 4–6 key features and 3 FAQs with answers. ${AI_RULE}` },
@@ -1703,6 +1706,9 @@ function DrawerHost() {
     { k: 'network', icon: 'people-outline', label: 'Find partners' },
     { k: 'shop', icon: 'qr-code-outline', label: 'AI shop link' },
     { k: 'billing', icon: 'card-outline', label: 'Plans & billing' },
+    // Special features (blueprint capabilities): AI Business Brain and Assistant (2.1), Business Idea Development and Planning (2.2).
+    { k: 'assistant', icon: 'star-outline', label: 'AI Business Brain and Assistant' },
+    { k: 'planner', icon: 'bulb-outline', label: 'Business Idea Development and Planning' },
   ];
   const go = (k: string) => { setOpen(false); setTimeout(() => drawerBridge.go(k), 60); };
   return (
@@ -3894,6 +3900,8 @@ function HomeScreenInner(){
       if (screen === 'settings') { settingsBack(); return true; }
       if (screen === 'activityLog') { setScreen('settings'); return true; }
       if (screen === 'approvals') { if (approvalsFromRef.current === 'settings') setScreen('settings'); else goTab('home'); return true; }
+      if (screen === 'brainAssistant') { goTab('brain'); return true; }
+      if (screen === 'businessPlanner') { goTab('home'); return true; }
       if (screen === 'opportunityDetail') { setScreen('opportunities'); return true; }
       if (screen === 'opportunities') { marketBackRef.current(); return true; }
       if ((screen === 'explore' || screen === 'trends' || screen === 'community') && exploreBackRef.current) { exploreBackRef.current(); return true; }
@@ -8266,6 +8274,8 @@ function HomeScreenInner(){
           case 'customers': openCustomers(() => goTab('home')); break;
           case 'channels': openConnectChannels(); break;
           case 'billing': openBilling(() => goTab('home')); break;
+          case 'assistant': setScreen('brainAssistant'); break;
+          case 'planner': setScreen('businessPlanner'); break;
           case 'trends': openTrends(); break;
           case 'explore': openExplore(); break;
           case 'network': openNetwork(); break;
@@ -11161,6 +11171,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                       <Pressable onPress={() => { (async () => { try { if (IS_WEB) { await (globalThis as any).navigator?.clipboard?.writeText(m.text); flash('Copied'); } else Share.share({ message: m.text }).catch(() => {}); } catch { flash("Couldn't copy."); } })(); }} hitSlop={8} accessibilityRole="button" accessibilityLabel="Copy your message"><Ionicons name="copy-outline" size={17} color="#B8C7DA" /></Pressable>
                       <Pressable disabled={aiThinking} onPress={() => { sendChatMessage(m.text).catch(() => {}); }} hitSlop={8} accessibilityRole="button" accessibilityLabel="Ask again"><Ionicons name="refresh" size={17} color="#B8C7DA" /></Pressable>
                       <Pressable onPress={() => { (async () => { const nav = (globalThis as any).navigator; if (IS_WEB && nav?.share) { try { await nav.share({ text: m.text }); } catch { /* cancelled */ } } else if (IS_WEB) { try { await nav?.clipboard?.writeText(m.text); flash('Copied. Paste it anywhere to share.'); } catch { flash("Couldn't share."); } } else Share.share({ message: m.text }).catch(() => {}); })(); }} hitSlop={8} accessibilityRole="button" accessibilityLabel="Share your message"><Ionicons name="share-social-outline" size={17} color="#B8C7DA" /></Pressable>
+                      <Pressable onPress={() => { if (userId) savePrompt(userId, { title: m.text.replace(/\s+/g, ' ').trim().slice(0, 60), content: m.text }).then(() => flash('Saved to your prompts'), e => flash((e as Error).message)); }} hitSlop={8} accessibilityRole="button" accessibilityLabel="Save as a reusable prompt"><Ionicons name="bookmark-outline" size={17} color="#B8C7DA" /></Pressable>
                     </View>
                   )}
                 </View>
@@ -11213,6 +11224,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                   <ScrollView contentContainerStyle={{ paddingHorizontal: 18, paddingTop: 24, paddingBottom: 16 }}>
                     <Text style={{ fontSize: 15, color: '#0B1220', marginBottom: 6 }}>AI Tools</Text>
                     {([
+                      { label: 'AI Business Brain and Assistant', icon: 'star-outline', onPress: () => { setBrainNav(false); setScreen('brainAssistant'); } },
                       { label: 'AI Images', icon: 'image-outline', onPress: () => { setBrainNav(false); openTruth('createPostHome'); } },
                       { label: 'Business Assistant', icon: 'briefcase-outline', onPress: () => { setBrainNav(false); setAiTool({ tool: null, topic: '', extra: '' }); } },
                       { label: 'Launch plan', icon: 'rocket-outline', onPress: () => { setBrainNav(false); setAiTool({ tool: AI_TOOL_GROUPS.flatMap(g => g.tools).find(t => t.key === 'launch') ?? null, topic: '', extra: '' }); } },
@@ -12235,6 +12247,19 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
   }
 
   if (screen === 'activityLog') return <ActivityLog onBack={() => setScreen('settings')} topInset={insets.top} />;
+  if (screen === 'brainAssistant') {
+    const findTool = (k: string) => AI_TOOL_GROUPS.flatMap(g => g.tools).find(t => t.key === k) ?? null;
+    return <BrainAssistant userId={userId ?? ''} flash={flash} topInset={insets.top} wide={isDesktopWeb}
+      onBack={() => goTab('brain')}
+      onAsk={q => { goTab('brain'); setBrainAsk(false); sendChatMessage(q).catch(() => {}); }}
+      onDraft={q => { goTab('brain'); setBrainAsk(false); setChatInput(q); }}
+      onTool={k => { goTab('brain'); setAiTool({ tool: findTool(k), topic: '', extra: '' }); }}
+      onAllTools={() => { goTab('brain'); setAiTool({ tool: null, topic: '', extra: '' }); }}
+      onNewChat={() => { goTab('brain'); setChatMessages([]); setBrainAsk(false); setChatInput(''); }}
+      onSaved={() => { goTab('brain'); openSavedLib().catch(() => {}); }}
+      onTrain={c => openKnowledgeList(c as KnowledgeCategory)} />;
+  }
+  if (screen === 'businessPlanner') return <BusinessPlanner userId={userId ?? ''} flash={flash} callFn={callFn} topInset={insets.top} wide={isDesktopWeb} onBack={() => goTab('home')} />;
   if (screen === 'approvals') return <Approvals userId={userId ?? ''} approver={access.can('approvals_manage')} isOwner={access.isOwner} callFn={callFn} flash={flash}
     onBack={() => { if (approvalsFromRef.current === 'settings') setScreen('settings'); else goTab('home'); }} onOpenRules={() => openSettings('team')} topInset={insets.top} />;
 
