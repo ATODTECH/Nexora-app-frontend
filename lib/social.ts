@@ -49,12 +49,12 @@ export const PLATFORMS: PlatformInfo[] = [
 export const platform = (k: string) => PLATFORMS.find(p => p.key === k) ?? PLATFORMS[0];
 
 export type SocialAccount = { id: string; platform: PlatformKey; mode: 'api' | 'manual'; name: string; handle: string; status: 'connected' | 'needs_reauth' | 'disconnected'; status_note: string; permissions: string[]; connected_at: string };
-export type Media = { url: string; type: string };
+export type Media = { url: string; type: string; duration?: number };
 export type TargetStatus = 'draft' | 'scheduled' | 'queued' | 'publishing' | 'published' | 'failed' | 'needs_manual' | 'skipped';
 export type Target = {
   id: string; post_id: string; account_id: string | null; platform: PlatformKey; account_name: string; body: string; media: Media[]; status: TargetStatus;
   scheduled_at: string | null; published_at: string | null; permalink: string; error: string; attempts: number; history: { at: string; text: string }[];
-  metrics: Record<string, number | string>; metrics_at: string | null;
+  metrics: Record<string, number | string>; metrics_at: string | null; options: Partial<TikTokOptions>;
 };
 export type PostStatus = 'draft' | 'scheduled' | 'queued' | 'publishing' | 'ready' | 'published' | 'partly_published' | 'failed' | 'archived';
 export type SocialPost = { id: string; title: string; body: string; media: Media[]; link: string; cta: string; status: PostStatus; scheduled_at: string | null; created_at: string; updated_at: string; targets: Target[] };
@@ -88,12 +88,47 @@ export async function removeAccount(id: string) {
   const { error } = await supabase.from('social_accounts').delete().eq('id', id);
   if (error) throw new Error(error.message);
 }
-export type Caps = { caps: Record<string, { publish: boolean; note: string; metrics: boolean }>; meta_ready: boolean };
+export type Caps = { caps: Record<string, { publish: boolean; note: string; metrics: boolean }>; meta_ready: boolean; tiktok_ready?: boolean };
 export const loadCaps = () => callFn<Caps>('social-publish', { action: 'capabilities' });
 export async function startMetaLogin() { const r = await callFn<{ url: string }>('social-publish', { action: 'oauth_start' }); return r.url; }
+export async function startTikTokLogin() { const r = await callFn<{ url: string }>('social-publish', { action: 'tiktok_start' }); return r.url; }
+
+// ---------- TikTok (Content Posting API) ----------
+// TikTok requires, on the posting screen: the creator's name, a privacy choice with no default (only the options TikTok
+// returns), comment/duet/stitch off until the creator turns them on (and disabled where the creator has them off), a
+// commercial-content disclosure, the consent line, and a note that processing takes a few minutes. Same as the website.
+export type TikTokOptions = {
+  mode: 'direct' | 'inbox'; privacy_level: string; allow_comment: boolean; allow_duet: boolean; allow_stitch: boolean;
+  disclose: boolean; brand_organic: boolean; brand_content: boolean; consent: boolean;
+};
+export const emptyTikTok = (): TikTokOptions => ({ mode: 'direct', privacy_level: '', allow_comment: false, allow_duet: false, allow_stitch: false, disclose: false, brand_organic: false, brand_content: false, consent: false });
+export type TikTokCreator = {
+  creator_nickname?: string; creator_username?: string; creator_avatar_url?: string; privacy_level_options: string[];
+  comment_disabled: boolean; duet_disabled: boolean; stitch_disabled: boolean; max_video_post_duration_sec?: number;
+};
+export const PRIVACY_LABEL: Record<string, string> = { PUBLIC_TO_EVERYONE: 'Everyone', MUTUAL_FOLLOW_FRIENDS: 'Friends', FOLLOWER_OF_CREATOR: 'Followers', SELF_ONLY: 'Only me' };
+export const TIKTOK_MUSIC_URL = 'https://www.tiktok.com/legal/page/global/music-usage-confirmation/en';
+export const TIKTOK_BRANDED_URL = 'https://www.tiktok.com/legal/page/global/bc-policy/en';
+export const loadTikTokCreator = (accountId: string) => callFn<{ creator: TikTokCreator }>('social-publish', { action: 'tiktok_creator', account_id: accountId }).then(r => r.creator);
+/** What still stops a TikTok post from going out (empty means ready). */
+export function tiktokProblems(o: TikTokOptions | undefined, c: TikTokCreator | null | undefined, media: Media[]): string[] {
+  const x = o ?? emptyTikTok(); const w: string[] = [];
+  const video = media.find(m => m.type.startsWith('video'));
+  if (!video && !media.some(m => m.type.startsWith('image'))) w.push('Add a video or pictures: TikTok posts need one.');
+  if (x.mode === 'direct') {
+    if (!x.privacy_level) w.push('Choose who can see it.');
+    if (x.disclose && !x.brand_organic && !x.brand_content) w.push('You turned on “Disclose commercial content”: say whether it promotes your brand, a third party, or both.');
+    if (x.brand_content && x.privacy_level === 'SELF_ONLY') w.push('Branded content can’t be private: choose another “Who can see it”.');
+    if (video?.duration && c?.max_video_post_duration_sec && video.duration > c.max_video_post_duration_sec) w.push(`This account can post videos up to ${c.max_video_post_duration_sec} seconds; this one is ${Math.round(video.duration)}.`);
+  }
+  if (!x.consent) w.push('Tick the TikTok agreement.');
+  return w;
+}
+/** The options saved with the post (disclosure choices only count when disclosure is on). */
+export const cleanTikTok = (o?: Partial<TikTokOptions>) => { const x = { ...emptyTikTok(), ...o }; return { ...x, brand_organic: x.disclose && x.brand_organic, brand_content: x.disclose && x.brand_content }; };
 
 /** Uploads a picture or video picked on the phone (straight from disk, so large files don't freeze the app). */
-export async function uploadMedia(userId: string, uri: string, type: string): Promise<{ url: string; type: string }> {
+export async function uploadMedia(userId: string, uri: string, type: string, duration?: number): Promise<Media> {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) throw new Error('Please sign in again.');
   const isVideo = type.startsWith('video');
@@ -105,12 +140,12 @@ export async function uploadMedia(userId: string, uri: string, type: string): Pr
   if (Platform.OS === 'web') { const blob = await (await fetch(uri)).blob(); status = (await fetch(target, { method: 'POST', headers, body: blob })).status; }
   else status = (await FileSystem.uploadAsync(target, uri, { httpMethod: 'POST', uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT, headers })).status;
   if (status < 200 || status >= 300) throw new Error(`Upload failed (${status}).`);
-  return { url: supabase.storage.from('chat-uploads').getPublicUrl(path).data.publicUrl, type: ct };
+  return { url: supabase.storage.from('chat-uploads').getPublicUrl(path).data.publicUrl, type: ct, ...(duration ? { duration } : {}) };
 }
 
 // ---------- Posts ----------
 const POST_COLS = 'id,title,body,media,link,cta,status,scheduled_at,created_at,updated_at';
-const TARGET_COLS = 'id,post_id,account_id,platform,account_name,body,media,status,scheduled_at,published_at,permalink,error,attempts,history,metrics,metrics_at';
+const TARGET_COLS = 'id,post_id,account_id,platform,account_name,body,media,status,scheduled_at,published_at,permalink,error,attempts,history,metrics,metrics_at,options';
 export async function loadPosts(): Promise<SocialPost[]> {
   const [p, t] = await Promise.all([
     supabase.from('social_posts').select(POST_COLS).order('updated_at', { ascending: false }).limit(300),
@@ -118,15 +153,16 @@ export async function loadPosts(): Promise<SocialPost[]> {
   ]);
   if (p.error) throw new Error(p.error.message);
   const by = new Map<string, Target[]>();
-  for (const x of (t.data ?? []) as Target[]) by.set(x.post_id, [...(by.get(x.post_id) ?? []), { ...x, history: Array.isArray(x.history) ? x.history : [], media: Array.isArray(x.media) ? x.media : [], metrics: x.metrics ?? {} }]);
+  for (const x of (t.data ?? []) as Target[]) by.set(x.post_id, [...(by.get(x.post_id) ?? []), { ...x, history: Array.isArray(x.history) ? x.history : [], media: Array.isArray(x.media) ? x.media : [], metrics: x.metrics ?? {}, options: x.options ?? {} }]);
   return ((p.data ?? []) as Omit<SocialPost, 'targets'>[]).map(x => ({ ...x, media: Array.isArray(x.media) ? x.media : [], targets: by.get(x.id) ?? [] }));
 }
 
-export type Draft = { id?: string; title: string; body: string; media: Media[]; link: string; cta: string; versions: Record<string, string>; accountIds: string[] };
-export const emptyDraft = (): Draft => ({ title: '', body: '', media: [], link: '', cta: '', versions: {}, accountIds: [] });
+export type Draft = { id?: string; title: string; body: string; media: Media[]; link: string; cta: string; versions: Record<string, string>; accountIds: string[]; tiktok?: Record<string, TikTokOptions> };
+export const emptyDraft = (): Draft => ({ title: '', body: '', media: [], link: '', cta: '', versions: {}, accountIds: [], tiktok: {} });
 export const draftFromPost = (p: SocialPost): Draft => ({
   id: p.id, title: p.title, body: p.body, media: p.media, link: p.link, cta: p.cta,
   versions: Object.fromEntries(p.targets.filter(t => t.account_id).map(t => [t.account_id!, t.body])), accountIds: p.targets.filter(t => t.account_id && t.status !== 'skipped').map(t => t.account_id!),
+  tiktok: Object.fromEntries(p.targets.filter(t => t.account_id && t.platform === 'tiktok').map(t => [t.account_id!, { ...cleanTikTok(t.options), consent: false }])),
 });
 
 /** Saves the post and one copy per chosen account. Copies already published are kept as they are. */
@@ -144,7 +180,7 @@ export async function saveDraft(d: Draft, accounts: SocialAccount[], when?: { st
   if (drop.length) { const del = await supabase.from('social_post_targets').delete().in('id', drop); if (del.error) throw new Error(del.error.message); }
   const rows = d.accountIds.filter(a => !keep.has(a)).map(a => {
     const acc = accounts.find(x => x.id === a)!;
-    return { post_id: id, account_id: a, platform: acc.platform, account_name: acc.name, body: (d.versions[a] ?? adaptLocal(d, acc.platform)).slice(0, 5000), media: d.media, status, scheduled_at: when?.at ?? null, history: [{ at: new Date().toISOString(), text: status === 'draft' ? 'Saved as a draft' : status === 'queued' ? `Added to the queue for ${new Date(when!.at!).toLocaleString()}` : `Scheduled for ${new Date(when!.at!).toLocaleString()}` }] };
+    return { post_id: id, account_id: a, platform: acc.platform, account_name: acc.name, body: (d.versions[a] ?? adaptLocal(d, acc.platform)).slice(0, 5000), media: d.media, status, scheduled_at: when?.at ?? null, options: acc.platform === 'tiktok' && acc.mode === 'api' ? cleanTikTok(d.tiktok?.[a]) : {}, history: [{ at: new Date().toISOString(), text: status === 'draft' ? 'Saved as a draft' : status === 'queued' ? `Added to the queue for ${new Date(when!.at!).toLocaleString()}` : `Scheduled for ${new Date(when!.at!).toLocaleString()}` }] };
   });
   if (rows.length) { const ins = await supabase.from('social_post_targets').insert(rows); if (ins.error) throw new Error(ins.error.message); }
   return id;

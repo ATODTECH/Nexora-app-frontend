@@ -6,8 +6,9 @@ import { Text, TextInput } from '../lib/inter';
 import {
   METRIC_LABEL, PLATFORMS, POST_STATUS, QUEUE_SLOTS, TARGET_STATUS, adaptLocal, adaptWithAI, addManualAccount, checks, deletePost, draftFromPost, emptyDraft,
   loadAccounts, loadCaps, loadPosts, markPublished, nextQueueSlot, platform, publishNow, refreshMetrics, removeAccount, renameAccount, retryTarget, reuse,
-  saveDraft, saveManualMetrics, setArchived, skipTarget, startMetaLogin, totals, uploadMedia,
-  type Caps, type Draft, type PlatformKey, type SocialAccount, type SocialPost, type Target,
+  saveDraft, saveManualMetrics, setArchived, skipTarget, startMetaLogin, startTikTokLogin, totals, uploadMedia,
+  PRIVACY_LABEL, TIKTOK_BRANDED_URL, TIKTOK_MUSIC_URL, emptyTikTok, loadTikTokCreator, tiktokProblems,
+  type Caps, type Draft, type Media, type PlatformKey, type SocialAccount, type SocialPost, type Target, type TikTokCreator, type TikTokOptions,
 } from '../lib/social';
 
 // Social Media Connection and Multi-Platform Publishing (blueprint 2.3), the app's screen. Same data and rules as the
@@ -101,13 +102,25 @@ function Compose({ userId, draft: d, setDraft, accounts, posts, flash, onDone, g
   const chosen = usable.filter(a => d.accountIds.includes(a.id));
   const set = (p: Partial<Draft>) => setDraft({ ...d, ...p });
   const versionOf = (a: SocialAccount) => d.versions[a.id] ?? adaptLocal(d, a.platform);
+  // TikTok accounts Nexora posts to: the creator's current options come from TikTok each time the post screen opens.
+  const ttAccounts = chosen.filter(a => a.platform === 'tiktok' && a.mode === 'api');
+  const ttKey = ttAccounts.map(a => a.id).join(',');
+  const [creators, setCreators] = useState<Record<string, TikTokCreator | string>>({});
+  useEffect(() => {
+    if (!ttKey) return;
+    let live = true;
+    for (const id of ttKey.split(',')) loadTikTokCreator(id).then(c => { if (live) setCreators(m => ({ ...m, [id]: c })); }, e => { if (live) setCreators(m => ({ ...m, [id]: (e as Error).message })); });
+    return () => { live = false; };
+  }, [ttKey]);
+  const ttOf = (id: string) => d.tiktok?.[id] ?? emptyTikTok();
+  const setTt = (id: string, o: TikTokOptions) => set({ tiktok: { ...(d.tiktok ?? {}), [id]: o } });
   const pick = async () => {
     const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images', 'videos'], quality: 0.85, allowsEditing: false });
     if (r.canceled || !r.assets?.[0]) return;
     const a = r.assets[0];
     if ((a.fileSize ?? 0) > 20 * 1024 * 1024) { flash('Choose a file under 20 MB'); return; }
     setBusy('upload');
-    try { const m = await uploadMedia(userId, a.uri, a.type === 'video' ? 'video/mp4' : 'image/jpeg'); set({ media: [...d.media, m] }); } catch (e) { flash((e as Error).message); }
+    try { const m = await uploadMedia(userId, a.uri, a.type === 'video' ? 'video/mp4' : 'image/jpeg', a.type === 'video' && a.duration ? a.duration / 1000 : undefined); set({ media: [...d.media, m] }); } catch (e) { flash((e as Error).message); }
     setBusy('');
   };
   const adapt = async () => {
@@ -120,6 +133,12 @@ function Compose({ userId, draft: d, setDraft, accounts, posts, flash, onDone, g
     flash(r.ai ? 'Nexora adapted the post for each platform' : 'Adapted with Nexora’s platform rules (the AI is busy right now)');
   };
   const finish = async (kind: 'draft' | 'schedule' | 'queue' | 'publish', at?: string) => {
+    if (kind !== 'draft') for (const a of ttAccounts) {
+      const c = creators[a.id];
+      if (typeof c === 'string') { flash(`${a.name}: ${c}`); return; }
+      const w = tiktokProblems(ttOf(a.id), c, d.media);
+      if (w.length) { flash(`${a.name} (TikTok): ${w[0]}`); return; }
+    }
     setBusy(kind);
     try {
       const status = kind === 'schedule' ? 'scheduled' : kind === 'queue' ? 'queued' : 'draft';
@@ -127,8 +146,8 @@ function Compose({ userId, draft: d, setDraft, accounts, posts, flash, onDone, g
       const id = await saveDraft({ ...d, versions: Object.fromEntries(chosen.map(a => [a.id, versionOf(a)])) }, accounts, { status, at: atIso });
       if (kind === 'publish') {
         const r = await publishNow(id);
-        const ok = r.targets.filter(t => t.status === 'published').length, me = r.targets.filter(t => t.status === 'needs_manual').length, bad = r.targets.filter(t => t.status === 'failed');
-        flash([ok ? `Published on ${ok}` : '', me ? `${me} ready for you to post` : '', bad.length ? `${bad.length} failed: ${bad[0].error}` : ''].filter(Boolean).join(' · ') || 'Done');
+        const ok = r.targets.filter(t => t.status === 'published').length, me = r.targets.filter(t => t.status === 'needs_manual').length, bad = r.targets.filter(t => t.status === 'failed'), wait = r.targets.filter(t => t.status === 'publishing').length;
+        flash([ok ? `Published on ${ok}` : '', wait ? `${wait} still processing on TikTok (Nexora checks every few minutes)` : '', me ? `${me} ready for you to post` : '', bad.length ? `${bad.length} failed: ${bad[0].error}` : ''].filter(Boolean).join(' · ') || 'Done');
       } else flash(kind === 'draft' ? 'Saved as a draft' : kind === 'queue' ? `Added to the queue for ${when(atIso)}` : `Scheduled for ${when(atIso)}`);
       setSched(null); setAdapted(null);
       await onDone(kind === 'draft' || kind === 'publish' ? 'posts' : 'calendar');
@@ -193,7 +212,8 @@ function Compose({ userId, draft: d, setDraft, accounts, posts, flash, onDone, g
             </View>
             <TextInput value={text} onChangeText={t => set({ versions: { ...d.versions, [a.id]: t } })} multiline accessibilityLabel={`${a.name} version`} style={[s.input, { minHeight: 90, textAlignVertical: 'top', paddingTop: 10, marginTop: 8 }]} />
             <Text style={[s.tiny, { marginTop: 6 }]}>{p.tip}</Text>
-            {warn.map(w => <View key={w} style={[s.row, { marginTop: 4 }]}><Ionicons name="warning-outline" size={14} color="#B7791F" /><Text style={{ flex: 1, fontSize: 12, color: '#8A5A00' }}>{w}</Text></View>)}
+            {a.platform === 'tiktok' && a.mode === 'api' && <TikTokPanel account={a} creator={creators[a.id]} o={ttOf(a.id)} set={o => setTt(a.id, o)} media={d.media} />}
+            {warn.filter(w => !(a.platform === 'tiktok' && a.mode === 'api' && w.includes('is for video'))).map(w => <View key={w} style={[s.row, { marginTop: 4 }]}><Ionicons name="warning-outline" size={14} color="#B7791F" /><Text style={{ flex: 1, fontSize: 12, color: '#8A5A00' }}>{w}</Text></View>)}
             {d.versions[a.id] !== undefined && <Pressable onPress={() => { const v = { ...d.versions }; delete v[a.id]; set({ versions: v }); }}><Text style={[s.link, { fontSize: 12.5, marginTop: 6 }]}>Reset to the rules version</Text></Pressable>}
           </View>
         );
@@ -222,6 +242,65 @@ function Compose({ userId, draft: d, setDraft, accounts, posts, flash, onDone, g
         </>}
       </Sheet>
     </>
+  );
+}
+
+// ---------- TikTok's required posting choices (Content Posting API rules) ----------
+function Check({ on, label, sub, disabled, onPress, radio }: { on: boolean; label: string; sub?: string; disabled?: boolean; onPress: () => void; radio?: boolean }) {
+  return (
+    <Pressable onPress={onPress} disabled={disabled} accessibilityRole={radio ? 'radio' : 'checkbox'} accessibilityState={{ checked: on, disabled }} style={[s.row, { alignItems: 'flex-start', marginTop: 8, opacity: disabled ? 0.45 : 1 }]}>
+      <Ionicons name={radio ? (on ? 'radio-button-on' : 'radio-button-off') : (on ? 'checkbox' : 'square-outline')} size={20} color={on ? '#1E56A0' : '#8A97A6'} />
+      <View style={{ flex: 1 }}><Text style={{ fontSize: 13.5, color: '#0B1220', fontWeight: sub ? '700' : '500' }}>{label}</Text>{!!sub && <Text style={s.tiny}>{sub}</Text>}</View>
+    </Pressable>
+  );
+}
+function TikTokPanel({ account, creator, o, set, media }: { account: SocialAccount; creator: TikTokCreator | string | undefined; o: TikTokOptions; set: (o: TikTokOptions) => void; media: Media[] }) {
+  const box = { marginTop: 10, borderWidth: 1, borderColor: '#E3E8EF', borderRadius: 12, padding: 12 } as const;
+  if (creator === undefined) return <View style={box}><Text style={s.small}>Checking your TikTok posting options…</Text></View>;
+  if (typeof creator === 'string') return <View style={[box, { backgroundColor: '#FDECEC' }]}><Text style={{ fontSize: 12.5, color: '#B42318' }}>{creator}</Text></View>;
+  const isVideo = media.some(m => m.type.startsWith('video'));
+  const what = isVideo ? 'video' : 'photo';
+  const u = (p: Partial<TikTokOptions>) => set({ ...o, ...p });
+  const problems = tiktokProblems(o, creator, media);
+  return (
+    <View style={box}>
+      <Text style={s.bold}>Posting to TikTok as {creator.creator_nickname || account.name}{creator.creator_username ? <Text style={s.small}> @{creator.creator_username}</Text> : null}</Text>
+      <Check radio on={o.mode === 'direct'} label="Post directly" onPress={() => u({ mode: 'direct' })} />
+      <Check radio on={o.mode === 'inbox'} label="Send to my TikTok inbox (finish in TikTok)" onPress={() => u({ mode: 'inbox' })} />
+      {o.mode === 'direct' && <>
+        <Text style={s.label}>Who can see this {what}</Text>
+        <View style={[s.row, { flexWrap: 'wrap' }]}>
+          {creator.privacy_level_options.map(k => {
+            const off = k === 'SELF_ONLY' && o.brand_content, on = o.privacy_level === k;
+            return (
+              <Pressable key={k} disabled={off} onPress={() => u({ privacy_level: k })} accessibilityRole="radio" accessibilityState={{ checked: on, disabled: off }} style={[s.pick, on && s.pickOn, off && { opacity: 0.45 }]}>
+                <Text style={[s.pickText, on && { color: '#1E56A0' }]}>{PRIVACY_LABEL[k] ?? k}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        {!o.privacy_level && <Text style={s.tiny}>Nothing is chosen until you pick one.</Text>}
+        {o.brand_content && <Text style={s.tiny}>Branded content visibility can’t be set to private.</Text>}
+        <Text style={s.label}>Allow people to</Text>
+        <Check on={o.allow_comment && !creator.comment_disabled} disabled={creator.comment_disabled} label="Comment" onPress={() => u({ allow_comment: !o.allow_comment })} />
+        {isVideo && <Check on={o.allow_duet && !creator.duet_disabled} disabled={creator.duet_disabled} label="Duet" onPress={() => u({ allow_duet: !o.allow_duet })} />}
+        {isVideo && <Check on={o.allow_stitch && !creator.stitch_disabled} disabled={creator.stitch_disabled} label="Stitch" onPress={() => u({ allow_stitch: !o.allow_stitch })} />}
+        {(creator.comment_disabled || (isVideo && (creator.duet_disabled || creator.stitch_disabled))) && <Text style={s.tiny}>Greyed-out options are turned off in your TikTok privacy settings.</Text>}
+        <Check on={o.disclose} label="Disclose commercial content" sub={`Turn on if this ${what} promotes yourself, a third party, or both.`} onPress={() => u({ disclose: !o.disclose, ...(o.disclose ? { brand_organic: false, brand_content: false } : {}) })} />
+        {o.disclose && <View style={{ marginLeft: 28 }}>
+          <Check on={o.brand_organic} label="Your brand" sub="You are promoting yourself or your own business." onPress={() => u({ brand_organic: !o.brand_organic })} />
+          <Check on={o.brand_content} label="Branded content" sub="You are promoting another brand or a third party." onPress={() => u({ brand_content: !o.brand_content, ...(!o.brand_content && o.privacy_level === 'SELF_ONLY' ? { privacy_level: '' } : {}) })} />
+          {o.brand_organic || o.brand_content
+            ? <Text style={[s.small, { marginTop: 6 }]}>Your {what} will be labeled “{o.brand_content ? 'Paid partnership' : 'Promotional content'}”.</Text>
+            : <Text style={{ marginTop: 6, fontSize: 12, color: '#8A5A00' }}>You need to indicate if your content promotes yourself, a third party, or both.</Text>}
+        </View>}
+      </>}
+      {o.mode === 'inbox' && <Text style={[s.small, { marginTop: 6 }]}>Nexora uploads the {what} to TikTok; you get a notification in TikTok to choose who can see it, edit and post it.</Text>}
+      <Check on={o.consent} label="I agree to TikTok’s terms below" onPress={() => u({ consent: !o.consent })} />
+      <Text style={[s.small, { marginLeft: 28 }]}>By posting, you agree to TikTok’s {o.brand_content && o.mode === 'direct' ? <><Text style={s.link} onPress={() => Linking.openURL(TIKTOK_BRANDED_URL)}>Branded Content Policy</Text> and </> : null}<Text style={s.link} onPress={() => Linking.openURL(TIKTOK_MUSIC_URL)}>Music Usage Confirmation</Text>.</Text>
+      <Text style={[s.tiny, { marginTop: 8 }]}>After publishing, it can take a few minutes for TikTok to process the {what} and show it on your profile.{o.mode === 'direct' ? ' Until TikTok approves Nexora’s app, direct posts are visible only to you.' : ''}</Text>
+      {problems.map(w => <View key={w} style={[s.row, { marginTop: 4 }]}><Ionicons name="warning-outline" size={14} color="#B7791F" /><Text style={{ flex: 1, fontSize: 12, color: '#8A5A00' }}>{w}</Text></View>)}
+    </View>
   );
 }
 
@@ -358,6 +437,8 @@ function Accounts({ accounts, caps, flash, reload }: { accounts: SocialAccount[]
   const [ren, setRen] = useState<SocialAccount | null>(null);
   const [del, setDel] = useState<SocialAccount | null>(null);
   const meta = async () => { try { const u = await startMetaLogin(); Linking.openURL(u).catch(() => {}); flash('Approve access in Facebook, then come back and refresh.'); } catch (e) { flash((e as Error).message); } };
+  const tiktok = async () => { try { const u = await startTikTokLogin(); Linking.openURL(u).catch(() => {}); flash('Approve access in TikTok, then come back and refresh.'); } catch (e) { flash((e as Error).message); } };
+  const canApi = (k: PlatformKey) => caps?.caps?.[k]?.publish ?? platform(k).api;
   return (
     <>
       <View style={s.card}>
@@ -365,9 +446,11 @@ function Accounts({ accounts, caps, flash, reload }: { accounts: SocialAccount[]
         <Text style={s.small}>Add as many as you use, including several on the same platform.</Text>
         <View style={[s.row, { flexWrap: 'wrap' }]}>
           <Btn label="Connect Facebook & Instagram" icon="logo-facebook" onPress={meta} />
+          <Btn soft label="Connect TikTok" icon="logo-tiktok" onPress={tiktok} />
           <Btn soft label="Add an account" icon="add" onPress={() => setAdd({ platform: 'tiktok', name: '', handle: '' })} />
         </View>
         {caps && !caps.meta_ready && <View style={[s.warnBox, { marginTop: 12 }]}><Text style={{ flex: 1, color: '#8A5A00', fontSize: 12.5 }}>Facebook and Instagram login for publishing isn't switched on yet (the Nexora team needs to add the Meta app keys). Until then, add your Pages and accounts with “Add an account” and Nexora prepares each post for you to post.</Text></View>}
+        {caps && !caps.tiktok_ready && <View style={[s.warnBox, { marginTop: 12 }]}><Text style={{ flex: 1, color: '#8A5A00', fontSize: 12.5 }}>TikTok login for publishing isn't switched on yet (the Nexora team needs to add the TikTok app keys). Until then, add TikTok accounts with “Add an account” and post them yourself.</Text></View>}
         {!accounts.length ? <View style={s.empty}><Text style={s.small}>No accounts yet.</Text></View> : accounts.map(a => (
           <View key={a.id} style={s.listRow}>
             <PIcon k={a.platform} size={24} />
@@ -377,7 +460,7 @@ function Accounts({ accounts, caps, flash, reload }: { accounts: SocialAccount[]
               {a.status === 'needs_reauth' && <Text style={{ fontSize: 12, color: '#B42318' }}>{a.status_note || 'Reconnect this account to keep publishing.'}</Text>}
             </View>
             <Pill s={a.status === 'connected' ? { t: 'Connected', bg: '#E6F4ED', fg: '#1E9E6D' } : a.status === 'needs_reauth' ? { t: 'Reconnect', bg: '#FDECEC', fg: '#B42318' } : { t: 'Off', bg: '#F2F4F7', fg: '#5C6B7A' }} />
-            {a.mode === 'api' && a.status !== 'connected' && <Pressable onPress={meta}><Text style={[s.link, { fontSize: 12 }]}>Reconnect</Text></Pressable>}
+            {a.mode === 'api' && a.status !== 'connected' && <Pressable onPress={a.platform === 'tiktok' ? tiktok : meta}><Text style={[s.link, { fontSize: 12 }]}>Reconnect</Text></Pressable>}
             <Pressable onPress={() => setRen(a)} hitSlop={8} accessibilityLabel={`Rename ${a.name}`}><Ionicons name="create-outline" size={18} color="#5C6B7A" /></Pressable>
             <Pressable onPress={() => setDel(a)} hitSlop={8} accessibilityLabel={`Remove ${a.name}`}><Ionicons name="trash-outline" size={18} color="#8A97A6" /></Pressable>
           </View>
@@ -389,7 +472,7 @@ function Accounts({ accounts, caps, flash, reload }: { accounts: SocialAccount[]
           <View key={p.key} style={[s.row, { alignItems: 'flex-start', paddingVertical: 8, borderTopWidth: 1, borderTopColor: '#F1F5F9' }]}>
             <PIcon k={p.key} size={20} />
             <View style={{ flex: 1 }}>
-              <Text style={s.bold}>{p.name} · <Text style={{ color: p.api ? '#1E9E6D' : '#B7791F', fontWeight: '600' }}>{p.api ? 'Nexora posts for you' : 'You post; Nexora prepares it'}</Text></Text>
+              <Text style={s.bold}>{p.name} · <Text style={{ color: canApi(p.key) ? '#1E9E6D' : '#B7791F', fontWeight: '600' }}>{canApi(p.key) ? 'Nexora posts for you' : 'You post; Nexora prepares it'}</Text></Text>
               <Text style={s.small}>{caps?.caps?.[p.key]?.note ?? p.tip}</Text>
             </View>
           </View>
@@ -403,7 +486,7 @@ function Accounts({ accounts, caps, flash, reload }: { accounts: SocialAccount[]
           <TextInput value={add.name} onChangeText={t => setAdd({ ...add, name: t })} maxLength={120} placeholder="e.g. Jekamix Gadgets" placeholderTextColor="#A5AFBB" style={s.input} />
           <Text style={s.label}>Handle (optional)</Text>
           <TextInput value={add.handle} onChangeText={t => setAdd({ ...add, handle: t })} maxLength={120} autoCapitalize="none" placeholder="@yourhandle" placeholderTextColor="#A5AFBB" style={s.input} />
-          <Text style={[s.tiny, { marginTop: 8 }]}>{platform(add.platform).api ? 'For Nexora to post on Facebook or Instagram for you, use “Connect Facebook & Instagram” instead. Added here, you post it yourself.' : 'Nexora prepares each post for this account and reminds you to post it.'}</Text>
+          <Text style={[s.tiny, { marginTop: 8 }]}>{add.platform === 'tiktok' ? 'For Nexora to post on TikTok for you, use “Connect TikTok” instead. Added here, you post it yourself.' : platform(add.platform).api ? 'For Nexora to post on Facebook or Instagram for you, use “Connect Facebook & Instagram” instead. Added here, you post it yourself.' : 'Nexora prepares each post for this account and reminds you to post it.'}</Text>
           <Btn label="Add account" disabled={!add.name.trim()} onPress={async () => { try { await addManualAccount(add); setAdd(null); flash('Account added'); await reload(); } catch (e) { flash((e as Error).message); } }} />
         </>}
       </Sheet>
