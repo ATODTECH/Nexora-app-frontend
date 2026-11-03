@@ -56,12 +56,12 @@ export type Target = {
   scheduled_at: string | null; published_at: string | null; permalink: string; error: string; attempts: number; history: { at: string; text: string }[];
   metrics: Record<string, number | string>; metrics_at: string | null;
 };
-export type PostStatus = 'draft' | 'scheduled' | 'queued' | 'publishing' | 'published' | 'partly_published' | 'failed' | 'archived';
+export type PostStatus = 'draft' | 'scheduled' | 'queued' | 'publishing' | 'ready' | 'published' | 'partly_published' | 'failed' | 'archived';
 export type SocialPost = { id: string; title: string; body: string; media: Media[]; link: string; cta: string; status: PostStatus; scheduled_at: string | null; created_at: string; updated_at: string; targets: Target[] };
 
 const GREY = { bg: '#F2F4F7', fg: '#5C6B7A' }, BLUE = { bg: '#EAF1FB', fg: '#1E56A0' }, AMBER = { bg: '#FDF3E1', fg: '#B7791F' }, GREEN = { bg: '#E6F4ED', fg: '#1E9E6D' }, RED = { bg: '#FDECEC', fg: '#B42318' };
 export const POST_STATUS: Record<PostStatus, { t: string; bg: string; fg: string }> = {
-  draft: { t: 'Draft', ...GREY }, scheduled: { t: 'Scheduled', ...BLUE }, queued: { t: 'In queue', ...BLUE }, publishing: { t: 'Publishing', ...AMBER },
+  draft: { t: 'Draft', ...GREY }, scheduled: { t: 'Scheduled', ...BLUE }, queued: { t: 'In queue', ...BLUE }, publishing: { t: 'Publishing', ...AMBER }, ready: { t: 'Ready for you to post', ...AMBER },
   published: { t: 'Published', ...GREEN }, partly_published: { t: 'Partly published', ...AMBER }, failed: { t: 'Failed', ...RED }, archived: { t: 'Archived', ...GREY },
 };
 export const TARGET_STATUS: Record<TargetStatus, { t: string; bg: string; fg: string }> = {
@@ -193,8 +193,8 @@ export async function settlePost(postId: string) {
   const s: TargetStatus[] = (ts ?? []).map(t => t.status as TargetStatus).filter(x => x !== 'skipped');
   if (!s.length) return;
   const all = (k: TargetStatus) => s.every(x => x === k), any = (k: TargetStatus) => s.includes(k);
-  const next: PostStatus = all('published') ? 'published' : any('publishing') ? 'publishing' : any('published') ? 'partly_published' : all('failed') ? 'failed'
-    : any('scheduled') ? 'scheduled' : any('queued') ? 'queued' : any('needs_manual') || any('failed') ? 'partly_published' : (post.status as PostStatus);
+  const next: PostStatus = all('published') ? 'published' : any('publishing') ? 'publishing' : any('published') ? 'partly_published'
+    : any('scheduled') ? 'scheduled' : any('queued') ? 'queued' : any('needs_manual') ? 'ready' : any('failed') ? 'failed' : (post.status as PostStatus);
   if (next !== post.status) await supabase.from('social_posts').update({ status: next }).eq('id', postId);
 }
 export async function setArchived(p: SocialPost, archived: boolean) {
@@ -207,7 +207,7 @@ export async function deletePost(id: string) {
   if (error) throw new Error(error.message);
 }
 /** Reuse: a new draft with the same words, pictures and accounts. */
-export const reuse = (p: SocialPost): Draft => ({ ...draftFromPost(p), id: undefined, title: `${p.title || 'Post'} (again)`.slice(0, 120) });
+export const reuse = (p: SocialPost): Draft => ({ ...draftFromPost(p), id: undefined, title: `Again: ${p.title || 'Post'}`.slice(0, 120) });
 
 // ---------- Adapting one post for each platform ----------
 const tagsOf = (t: string) => t.match(/#[\p{L}\p{N}_]+/gu) ?? [];
@@ -228,9 +228,15 @@ export function adaptLocal(d: Pick<Draft, 'body' | 'link' | 'cta'>, k: PlatformK
     const short = base.replace(/\s+/g, ' ');
     out = `${short.length > room ? `${short.slice(0, Math.max(20, room - 1)).replace(/\s\S*$/, '')}…` : short}${tail ? ` ${tail}` : ''}${tags[0] ? ` ${tags[0]}` : ''}`;
   }
-  if (k === 'tiktok') { const first = base.split(/(?<=[.!?])\s/)[0]; out = `${first.slice(0, 140)}${cta ? ` ${cta}` : ''}${tags.length ? ` ${tags.join(' ')}` : ''}`; }
+  if (k === 'tiktok') {
+    // A hook for the video: the opening sentences, up to about 150 characters.
+    let hook = '';
+    for (const sentence of base.replace(/\s+/g, ' ').split(/(?<=[.!?])\s/)) { if (hook && (hook + ' ' + sentence).length > 150) break; hook = hook ? `${hook} ${sentence}` : sentence; }
+    out = `${hook.slice(0, 150)}${cta ? ` ${cta}` : ''}${tags.length ? ` ${tags.join(' ')}` : ''}`;
+  }
   if (k === 'youtube') { const lines = base.split('\n'); out = `${lines[0].slice(0, 100)}\n\n${[lines.slice(1).join('\n').trim() || base, cta, link].filter(Boolean).join('\n\n')}`; }
-  return out.slice(0, p.limit);
+  // X is already sized above (a link counts as 23 characters there), so it must not be cut again.
+  return k === 'x' ? out : out.slice(0, p.limit);
 }
 /** Warnings for one platform's copy: too long, missing picture or video, links that won't be clickable. */
 export function checks(k: PlatformKey, text: string, media: Media[]): string[] {
