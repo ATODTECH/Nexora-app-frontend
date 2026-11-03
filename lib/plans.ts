@@ -197,8 +197,22 @@ export async function writePart(prompt: string) {
   try { text = (await askNexora(prompt)).text.trim(); } catch { text = ''; }
   text = text.replace(/<br\s*\/?>/gi, ' ').replace(/<\/?(p|div|span)[^>]*>/gi, '').trim();
   if (/Open Profile, then Plans & billing/.test(text)) throw new Error(text.split('\n')[0]);
-  if (!text || /all available ai services failed/i.test(text)) throw new Error('Nexora’s AI is busy right now. Please try again in a few minutes.');
+  if (!text || /all available ai services failed/i.test(text)) throw new Error(BUSY);
   return text;
+}
+
+const BUSY = 'Nexora’s AI is busy right now. Please try again in a few minutes.';
+/** writePart, but when the AI's per-minute limit is reached it waits and tries again (up to 3 more times), telling the screen how long. */
+export async function writePartPatient(prompt: string, onWait: (seconds: number) => void, stopped: () => boolean = () => false) {
+  for (let attempt = 0; ; attempt++) {
+    try { return await writePart(prompt); }
+    catch (e) {
+      if ((e as Error).message !== BUSY || attempt >= 3 || stopped()) throw e;
+      const secs = 30 + attempt * 15;
+      for (let left = secs; left > 0 && !stopped(); left--) { onWait(left); await new Promise(r => setTimeout(r, 1000)); }
+      if (stopped()) throw e;
+    }
+  }
 }
 
 /** How far the plan has got: parts written out of all parts. */

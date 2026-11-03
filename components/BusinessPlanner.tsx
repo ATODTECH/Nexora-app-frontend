@@ -5,7 +5,7 @@ import { Text, TextInput } from '../lib/inter';
 import { supabase } from '../lib/supabase';
 import {
   ALL_PARTS, LEARNING_KIND, PLAN_STEPS, UPDATE_DEFAULT, createPlan, deletePlan, draftPrompt, loadPlan, loadPlans, loadSnapshot, newLearningId, partDef,
-  patchPlan, planMarkdown, progress, snapshotText, updatePrompt, withPart, writePart,
+  patchPlan, planMarkdown, progress, snapshotText, updatePrompt, withPart, writePartPatient,
   type Learning, type Plan, type PlanKind, type PlanVersion, type Snapshot, type StepDef,
 } from '../lib/plans';
 
@@ -137,7 +137,11 @@ function PlanView({ id, userId, flash, callFn, wide, onClose }: {
     for (const [i, key] of keys.entries()) {
       if (stopRef.current) break;
       setWork(keys.length > 1 ? `Writing ${partDef(key)!.label} (${i + 1} of ${keys.length})…` : `Writing ${partDef(key)!.label}…`);
-      try { const text = await writePart(draftPrompt(ref.current!, key)); await apply(p => withPart(p, key, text, 'ai', 'Replaced by a new draft from Nexora')); }
+      const note = keys.length > 1 ? `Writing ${partDef(key)!.label} (${i + 1} of ${keys.length})…` : `Writing ${partDef(key)!.label}…`;
+      try {
+        const text = await writePartPatient(draftPrompt(ref.current!, key), secs => setWork(`${note} The AI’s free per-minute limit was reached; trying again in ${secs} s.`), () => stopRef.current);
+        await apply(p => withPart(p, key, text, 'ai', 'Replaced by a new draft from Nexora'));
+      }
       catch (e) { flash((e as Error).message); break; }
     }
     setWork(null);
@@ -194,7 +198,7 @@ function PlanView({ id, userId, flash, callFn, wide, onClose }: {
           <Text style={s.muted}>{cur.sub}</Text>
           {cur.key !== 'learn' && (work ? <Btn soft label="Stop after this part" icon="stop-circle-outline" onPress={() => { stopRef.current = true; }} />
             : missing.length > 1 ? <Btn label={`Draft the ${missing.length} missing parts`} icon="sparkles" onPress={() => draft(missing)} /> : null)}
-          {!!work && <View style={s.working}><ActivityIndicator size="small" color="#1E56A0" /><Text style={s.workingText}>{work} This can take up to a minute.</Text></View>}
+          {!!work && <View style={s.working}><ActivityIndicator size="small" color="#1E56A0" /><Text style={s.workingText}>{work}{work.includes('trying again') ? '' : ' This can take up to a minute.'}</Text></View>}
         </View>
 
         {cur.key !== 'learn' ? cur.parts.map(d => {
@@ -343,7 +347,8 @@ function LearnStep({ plan, current, apply, busy, setWork, stopRef, flash, openVe
       if (stopRef.current) break;
       setWork(`Updating ${partDef(key)!.label} (${i + 1} of ${keys.length})…`);
       try {
-        const out = await writePart(updatePrompt(current() ?? plan, key, sn ?? null));
+        const out = await writePartPatient(updatePrompt(current() ?? plan, key, sn ?? null),
+          secs => setWork(`Updating ${partDef(key)!.label} (${i + 1} of ${keys.length})… The AI’s free per-minute limit was reached; trying again in ${secs} s.`), () => stopRef.current);
         await apply(p => withPart(p, key, out, 'update', 'Replaced by the update from what you learned'));
         n++;
       } catch (e) { flash((e as Error).message); break; }
