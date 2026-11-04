@@ -39,7 +39,7 @@ export type Advice = { title: string; evidence: string; action: string; confiden
 
 const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 export const emptyBrief = (kind: Kind = 'promotion'): Brief => ({ kind, goal: '', products: [], channels: ['whatsapp', 'instagram', 'facebook'], audience: kind === 'reengage' ? 'inactive' : 'all', start: iso(new Date()), end: iso(new Date(Date.now() + 13 * 86400000)), budget: '', offer: 'auto', offer_value: '', notes: '' });
-const briefBody = (b: Brief) => ({ ...b, budget: Number(b.budget) || null, offer_value: Number(b.offer_value) || null });
+const briefBody = (b: Brief) => ({ ...b, budget: Number(b.budget) || null, offer_value: Number(b.offer_value) || null, tz: -new Date().getTimezoneOffset() });
 
 export const loadContext = () => callFn<Context>('nexora-campaigns', { action: 'context' }, 45000);
 export const generatePlan = (b: Brief) => callFn<{ plan: Plan }>('nexora-campaigns', { action: 'generate', brief: briefBody(b) }, 120000).then(r => r.plan);
