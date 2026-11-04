@@ -11,6 +11,8 @@ const WebView: any = Platform.OS === 'web' ? null : require('react-native-webvie
 import{StatusBar}from'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import{supabase}from'../lib/supabase';
+import { installErrorReporter } from '../lib/errorReporter';
+installErrorReporter();
 // Inter on every screen (Figma font): drop-in Text and TextInput that turn fontWeight into the matching Inter file.
 import { Text, TextInput, interFamily, useInterFonts } from '../lib/inter';
 import { LEVEL_COLORS, STOCK_ALERT_LABEL, STOCK_LABEL, currentStockField, stockInfo, stockOf } from '../lib/products';
