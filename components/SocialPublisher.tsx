@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Image, Linking, Modal, Pressable, ScrollView, Share, StyleSheet, View } from 'react-native';
+import { AutopilotCard } from './AutopilotCard';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { Text, TextInput } from '../lib/inter';
@@ -15,10 +16,10 @@ import {
 // website's /publish: accounts, write once and adapt per platform, draft / schedule / queue / publish, history and retry,
 // a calendar and performance.
 const TITLE = 'Social Media Connection and Multi-Platform Publishing';
-type Tab = 'create' | 'posts' | 'calendar' | 'accounts' | 'performance';
+type Tab = 'create' | 'posts' | 'calendar' | 'accounts' | 'performance' | 'autopilot';
 const TABS: { k: Tab; label: string; icon: string }[] = [
   { k: 'create', label: 'Create', icon: 'create-outline' }, { k: 'posts', label: 'Posts', icon: 'list-outline' }, { k: 'calendar', label: 'Calendar', icon: 'calendar-outline' },
-  { k: 'accounts', label: 'Accounts', icon: 'people-outline' }, { k: 'performance', label: 'Performance', icon: 'bar-chart-outline' },
+  { k: 'accounts', label: 'Accounts', icon: 'people-outline' }, { k: 'performance', label: 'Performance', icon: 'bar-chart-outline' }, { k: 'autopilot', label: 'Autopilot', icon: 'rocket-outline' },
 ];
 const ICON: Record<PlatformKey, { name: string; color: string }> = {
   facebook: { name: 'logo-facebook', color: '#1877F2' }, instagram: { name: 'logo-instagram', color: '#C13584' }, tiktok: { name: 'logo-tiktok', color: '#0B1220' },
@@ -85,6 +86,7 @@ export function SocialPublisher({ userId, onBack, flash, topInset = 0, wide = fa
           {tab === 'calendar' && <Calendar posts={posts} />}
           {tab === 'accounts' && <Accounts accounts={accounts} caps={caps} flash={flash} reload={reload} />}
           {tab === 'performance' && <Performance posts={posts} flash={flash} reload={reload} />}
+          {tab === 'autopilot' && <AutopilotCard job="social_autopilot" flash={flash} choices={{ accounts: accounts.filter(a => a.status !== 'disconnected').map(a => ({ id: a.id, name: a.name, platform: a.platform })) }} />}
         </ScrollView>
       )}
     </View>

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, Share, StyleSheet, View } from 'react-native';
+import { AutopilotCard } from './AutopilotCard';
 import { Ionicons } from '@expo/vector-icons';
 import { Text, TextInput } from '../lib/inter';
 import { supabase } from '../lib/supabase';
@@ -52,6 +53,8 @@ function PlanList({ onOpen, flash, wide }: { onOpen: (id: string) => void; flash
   return (
     <ScrollView contentContainerStyle={[s.body, wide && s.wide]} keyboardShouldPersistTaps="handled">
       <Text style={s.muted}>From an early idea to a concept, plans and a launch, then keep the plan up to date as you learn.</Text>
+      {/* Plans against real results: charts, a 6-month estimate and market research online, now or on autopilot */}
+      <AutopilotCard job="plan_review" flash={flash} choices={{ plans: (plans ?? []).map(p => ({ id: p.id, title: p.title })) }} />
       <View style={s.card}>
         <Head icon="bulb-outline" title="Start from an idea" sub="A sentence or two is enough. Nexora turns it into a concept and a plan, step by step." />
         <View style={[s.row, { marginTop: 14 }]}>

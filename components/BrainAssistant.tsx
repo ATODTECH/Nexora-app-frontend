@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { AutopilotCard } from './AutopilotCard';
 import { Ionicons } from '@expo/vector-icons';
 import { Text, TextInput } from '../lib/inter';
 import {
@@ -57,6 +58,8 @@ export function BrainAssistant({ userId, onBack, onAsk, onDraft, onTool, onAllTo
       </View>
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40, gap: 14, width: '100%', maxWidth: wide ? 1100 : undefined, alignSelf: 'center' }} keyboardShouldPersistTaps="handled">
         <Text style={s.muted}>Answers, documents, workflows and decisions, from your own business knowledge and globally proven methods.</Text>
+        {/* Your business at a glance: charts, photos and market news, run now or on autopilot */}
+        <AutopilotCard job="weekly_briefing" flash={flash} />
         <View style={s.askBox}>
           <Ionicons name="sparkles" size={18} color="#D98BE8" />
           <TextInput value={ask} onChangeText={setAsk} onSubmitEditing={submit} returnKeyType="send" placeholder="Ask anything about your business…" placeholderTextColor="#8A97A6" accessibilityLabel="Ask Nexora" style={s.askInput} />

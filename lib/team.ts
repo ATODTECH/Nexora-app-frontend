@@ -130,7 +130,7 @@ const SCREEN_NEEDS: Record<string, Perm[] | 'owner'> = {
   campaigns: ['marketing_view'], broadcast: ['inbox_manage'],
   activityLog: ['team_manage'],
   insights: 'owner', automations: 'owner', rules: 'owner', ownerAlerts: 'owner', learned: 'owner', storefront: 'owner', connectChannels: 'owner',
-  channelSettings: 'owner', aiPermissions: 'owner', brainGallery: 'owner', brainAssistant: 'owner', businessPlanner: 'owner', socialPublisher: 'owner', 'tab:brain': 'owner', quickActions: 'owner',
+  channelSettings: 'owner', aiPermissions: 'owner', brainGallery: 'owner', brainAssistant: 'owner', businessPlanner: 'owner', socialPublisher: 'owner', websiteIntegration: 'owner', 'tab:brain': 'owner', quickActions: 'owner',
 };
 export function canOpenScreen(a: Access, screen: string, mainTab?: string): boolean {
   if (a.isOwner) return true;
