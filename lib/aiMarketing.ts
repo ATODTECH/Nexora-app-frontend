@@ -24,15 +24,19 @@ export const CHANNELS: { k: string; label: string; social?: boolean; message?: b
 export const channelLabel = (k: string) => CHANNELS.find(c => c.k === k)?.label ?? k;
 
 export type Brief = { kind: Kind; goal: string; products: string[]; channels: string[]; audience: string; start: string; end: string; budget: string; offer: 'auto' | 'none' | 'percent' | 'amount' | 'free_delivery' | 'bundle'; offer_value: string; notes: string };
-export type Step = { day: number; channel: string; title: string; copy_a: string; copy_b: string; cta: string };
+export type Step = { day: number; channel: string; title: string; copy_a: string; copy_b: string; cta: string; image?: string | null };
+export type Research = { country: string; dates: { date: string; name: string; kind: 'holiday' | 'shopping'; days: number }[]; trends: { term: string; traffic: string; url: string; relevant: boolean }[];
+  news: { title: string; url: string; source: string; date: string }[]; competitors: string[]; sources: { title: string; url: string }[]; at: string };
+export type BestTime = { enough: boolean; events: number; day: string; hour: number; label: string; rows: string[]; cols: string[]; grid: number[][] };
 export type Plan = {
   ideas: { name: string; angle: string; why: string }[]; name: string; summary: string; offer: { type: 'percent' | 'amount' | 'none'; value: number | null; code: string; min_order: number | null; text: string };
-  cta: string; audience: string; audience_note: string; steps: Step[]; ai: boolean; tips: string[]; note?: string;
+  cta: string; audience: string; audience_note: string; steps: Step[]; ai: boolean; tips: string[]; note?: string; research?: Research; best_time?: BestTime;
 };
 export type Audience = { key: string; label: string; count: number };
 export type Context = { business: { name: string; currency: string; shop: boolean; websites: string[] }; products: { id: string; name: string; price: string; stock: string; image: string | null }[]; best_sellers: { name: string; qty: number }[]; audiences: { total: number; opted_out: number; list: Audience[] }; links: { shop: string; website: string } };
-export type Touch = { id: string; campaign_id: string; channel: string; title: string; body: string; variant: string; cta: string; src: string; scheduled_at: string | null; audience: { key?: string }; status: 'planned' | 'scheduled' | 'sent' | 'shared' | 'done' | 'skipped'; sent_count: number; social_post_id: string | null; history: { at: string; text: string }[] };
-export type Campaign = { id: string; name: string; kind: Kind; goal: string; status: 'draft' | 'scheduled' | 'active' | 'ended'; src: string; coupon_code: string | null; discount_type: string | null; discount_value: number | null; starts_at: string | null; ends_at: string | null; budget: number | null; cta: string; audience: { key?: string }; plan: { summary?: string; ideas?: Plan['ideas']; tips?: string[]; offer_text?: string; ai?: boolean; audience_note?: string }; created_at: string };
+export type Touch = { id: string; campaign_id: string; channel: string; title: string; body: string; variant: string; cta: string; src: string; scheduled_at: string | null; audience: { key?: string }; status: 'planned' | 'scheduled' | 'sent' | 'shared' | 'done' | 'skipped'; sent_count: number; image: string | null; social_post_id: string | null; history: { at: string; text: string }[] };
+export type Campaign = { id: string; name: string; kind: Kind; goal: string; status: 'draft' | 'scheduled' | 'active' | 'ended'; src: string; coupon_code: string | null; discount_type: string | null; discount_value: number | null; starts_at: string | null; ends_at: string | null; budget: number | null; cta: string; audience: { key?: string }; plan: { summary?: string; ideas?: Plan['ideas']; tips?: string[]; offer_text?: string; ai?: boolean; audience_note?: string; best_time?: string;
+    online?: { dates?: { date: string; name: string }[]; trends?: string[]; competitors?: string[]; sources?: { title: string; url: string }[] } }; created_at: string };
 export type ChannelResult = { channel: string; src: string; visits: number; enquiries: number; chats: number; orders: number; sales: number; sent: number; engagement: number };
 export type Result = { id: string; name: string; kind: Kind; status: string; totals: { visits: number; enquiries: number; chats: number; orders: number; paid_orders: number; sales: number; sent: number; engagement: number; coupon_uses: number; conversion: number | null; cost_per_order: number | null; return_on_spend: number | null }; channels: ChannelResult[]; daily: { day: string; visits: number; orders: number }[]; touches: number; touches_done: number };
 export type Advice = { title: string; evidence: string; action: string; confidence: 'strong' | 'early'; href?: string };
@@ -41,6 +45,7 @@ const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart
 export const emptyBrief = (kind: Kind = 'promotion'): Brief => ({ kind, goal: '', products: [], channels: ['whatsapp', 'instagram', 'facebook'], audience: kind === 'reengage' ? 'inactive' : 'all', start: iso(new Date()), end: iso(new Date(Date.now() + 13 * 86400000)), budget: '', offer: 'auto', offer_value: '', notes: '' });
 const briefBody = (b: Brief) => ({ ...b, budget: Number(b.budget) || null, offer_value: Number(b.offer_value) || null, tz: -new Date().getTimezoneOffset() });
 
+export const loadResearch = (products: string[] = [], deep = false) => callFn<{ research: Research; best_time: BestTime }>('nexora-campaigns', { action: 'research', products, deep, tz: -new Date().getTimezoneOffset() }, deep ? 60000 : 30000);
 export const loadContext = () => callFn<Context>('nexora-campaigns', { action: 'context' }, 45000);
 export const generatePlan = (b: Brief) => callFn<{ plan: Plan }>('nexora-campaigns', { action: 'generate', brief: briefBody(b) }, 120000).then(r => r.plan);
 export const createCampaign = (plan: Plan, b: Brief, launch: boolean) => callFn<{ campaign: Campaign }>('nexora-campaigns', { action: 'create', plan, brief: briefBody(b), launch }, 45000).then(r => r.campaign);

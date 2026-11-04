@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Linking, Modal, Pressable, ScrollView, Share, StyleSheet, View, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Alert, Image, Linking, Modal, Pressable, ScrollView, Share, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Text, TextInput } from '../lib/inter';
 import { AutopilotCard, ChartCard, ChoiceChip } from './AutopilotCard';
 import {
-  CHANNELS, KINDS, addTouch, channelLabel, copyB, createCampaign, deleteCampaign, deleteTouch, emptyBrief, fillCopy, generatePlan, loadAdvice, loadCampaigns, loadContext,
+  CHANNELS, KINDS, addTouch, loadResearch, channelLabel, copyB, createCampaign, deleteCampaign, deleteTouch, emptyBrief, fillCopy, generatePlan, loadAdvice, loadCampaigns, loadContext,
   loadResults, loadTouches, sendTouch, setCampaignStatus, touchLink, touchToSocial, updateTouch,
-  type Advice, type Brief, type Campaign, type Context, type Plan, type Result, type Touch,
+  type Advice, type BestTime, type Brief, type Campaign, type Context, type Plan, type Research, type Result, type Touch,
 } from '../lib/aiMarketing';
 
 // AI Marketing and Campaign Management (blueprint 2.5), the app's screen. Same data and rules as the website's /marketing.
@@ -78,11 +78,51 @@ export function AIMarketing({ onBack, flash, goTo, topInset = 0, wide = false }:
   );
 }
 
+const Thumb = ({ src, size = 56 }: { src?: string | null; size?: number }) => (src ? <Image source={{ uri: src }} style={{ width: size, height: size, borderRadius: 12, backgroundColor: '#F2F4F7' }} /> : null);
+// What is happening outside Nexora: holidays and shopping days, Google search trends, competitor offers, news, best time.
+function OnlineNow({ r, bt, onDate, title = 'What’s happening online' }: { r: Research | null; bt: BestTime | null; onDate?: (d: Research['dates'][number]) => void; title?: string }) {
+  const { width } = useWindowDimensions();
+  if (!r) return <View style={[s.card, s.row, { gap: 8 }]}><ActivityIndicator color="#1E56A0" /><Text style={s.small}>Checking holidays, Google search trends and news…</Text></View>;
+  return (
+    <View style={[s.card, { gap: 10 }]}>
+      <View style={[s.row, { gap: 6 }]}><Ionicons name="globe-outline" size={18} color="#1E56A0" /><Text style={[s.h, { flex: 1, marginBottom: 0 }]}>{title}</Text><Text style={s.tiny}>{r.country} · live</Text></View>
+      {!!r.dates.length && <>
+        <Text style={s.label}>Coming up (plan 1–2 weeks ahead)</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>{r.dates.slice(0, 8).map(d => (
+          <Pressable key={d.date + d.name} disabled={!onDate} onPress={() => onDate?.(d)} style={{ width: 118, borderRadius: 12, borderWidth: 1, borderColor: d.kind === 'shopping' ? '#BFD3EE' : '#E3E8EF', backgroundColor: d.kind === 'shopping' ? '#EEF4FC' : '#FFF', padding: 8 }}>
+            <Text style={{ fontSize: 11, fontWeight: '800', color: '#1E56A0' }}>{new Date(`${d.date}T12:00:00`).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}</Text>
+            <Text style={[s.bold, { fontSize: 12.5 }]} numberOfLines={2}>{d.name}</Text><Text style={s.tiny}>{d.days === 0 ? 'today' : `in ${d.days} days`}</Text>
+          </Pressable>
+        ))}</ScrollView>
+      </>}
+      {!!r.trends.length && <>
+        <Text style={s.label}>Searched most today (Google Trends)</Text>
+        <View style={s.wrap}>{r.trends.slice(0, 10).map(t => (
+          <Pressable key={t.term} onPress={() => Linking.openURL(t.url).catch(() => {})} style={{ borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4, backgroundColor: t.relevant ? '#E6F4ED' : '#F2F4F7' }}>
+            <Text style={{ fontSize: 12, fontWeight: '600', color: t.relevant ? '#1E9E6D' : '#26313D' }}>{t.term}{t.traffic ? ` · ${t.traffic}` : ''}</Text>
+          </Pressable>
+        ))}</View>
+      </>}
+      {!!r.competitors.length && <><Text style={s.label}>What others are offering now (web search)</Text>{r.competitors.map(c => <Text key={c} style={s.small}>• {c}</Text>)}</>}
+      {!!r.news.length && <><Text style={s.label}>Market news</Text>{r.news.slice(0, 3).map(n => <Pressable key={n.url} onPress={() => Linking.openURL(n.url).catch(() => {})}><Text style={[s.link, { fontSize: 12.5 }]} numberOfLines={2}>{n.title}</Text></Pressable>)}</>}
+      {bt?.enough && <ChartCard w={Math.min(width, 1100) - 60} cur="" c={{ type: 'heatmap', title: `Best time to reach customers: ${bt.label}`, rows: bt.rows, cols: bt.cols, grid: bt.grid }} />}
+    </View>
+  );
+}
+
 function Studio({ ctx, kind, flash, onSaved }: { ctx: Context | null; kind: Brief['kind']; flash: (t: string) => void; onSaved: (id: string) => Promise<void> }) {
   const [b, setB] = useState<Brief>(() => emptyBrief(kind));
   const [plan, setPlan] = useState<Plan | null>(null);
   const [busy, setBusy] = useState<'' | 'gen' | 'save'>('');
+  const [web, setWeb] = useState<{ research: Research; best_time: BestTime } | null>(null);
+  useEffect(() => { let live = true; loadResearch().then(r => { if (live) setWeb(r); }, () => {}); return () => { live = false; }; }, []);
   const set = (p: Partial<Brief>) => setB({ ...b, ...p });
+  const planFor = (d: Research['dates'][number]) => {
+    const dayAt = new Date(`${d.date}T12:00:00`), start = new Date(Math.max(Date.now(), dayAt.getTime() - 10 * 86400000));
+    const iso = (x: Date) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
+    setB({ ...b, kind: 'event', goal: `${d.name} campaign`, start: iso(start), end: iso(dayAt) });
+    flash(`Set up for ${d.name}`);
+  };
   const toggle = (k: 'channels' | 'products', v: string) => set({ [k]: b[k].includes(v) ? b[k].filter(x => x !== v) : [...b[k], v] } as Partial<Brief>);
   const gen = async () => {
     if (!b.channels.length) { flash('Choose at least one channel'); return; }
@@ -124,6 +164,7 @@ function Studio({ ctx, kind, flash, onSaved }: { ctx: Context | null; kind: Brie
         <View style={{ marginTop: 14 }}><Btn label={busy === 'gen' ? 'Nexora is planning…' : 'Create campaign plan'} icon="sparkles" onPress={gen} busy={busy === 'gen'} /></View>
         <Text style={[s.tiny, { marginTop: 6 }]}>Nexora uses your real products, prices, best sellers and past results, and never invents prices or claims.</Text>
       </View>
+      {!plan && <OnlineNow r={web?.research ?? null} bt={web?.best_time ?? null} onDate={planFor} />}
       {plan && <>
         {!!plan.note && <View style={[s.card, { backgroundColor: '#FDF3E1', borderColor: '#F5DFB5' }]}><Text style={[s.small, { color: '#8A5A12' }]}>{plan.note}</Text></View>}
         {plan.ideas.map((x, i) => (
@@ -142,12 +183,14 @@ function Studio({ ctx, kind, flash, onSaved }: { ctx: Context | null; kind: Brie
           {plan.steps.map((x, i) => (
             <View key={i} style={{ marginTop: 10, borderTopWidth: i ? 1 : 0, borderTopColor: '#EEF1F4', paddingTop: i ? 10 : 0 }}>
               <Text style={s.bold}>Day {x.day + 1} · {channelLabel(x.channel)}</Text><Text style={s.tiny}>{x.title}</Text>
-              <TextInput value={x.copy_a} onChangeText={v => setStep(i, v)} multiline style={[s.input, { marginTop: 6, minHeight: 80, paddingTop: 10, fontSize: 13 }]} />
+              <View style={[s.row, { gap: 8, marginTop: 6, alignItems: 'flex-start' }]}><Thumb src={x.image} size={64} /><TextInput value={x.copy_a} onChangeText={v => setStep(i, v)} multiline style={[s.input, { flex: 1, minHeight: 80, paddingTop: 10, fontSize: 13 }]} /></View>
               {!!x.copy_b && x.copy_b !== x.copy_a && <Pressable onPress={() => setPlan({ ...plan, steps: plan.steps.map((y, j) => (j === i ? { ...y, copy_a: y.copy_b, copy_b: y.copy_a } : y)) })}><Text style={[s.link, { marginTop: 4 }]}>Use copy B instead</Text></Pressable>}
             </View>
           ))}
           <Text style={[s.tiny, { marginTop: 8 }]}>{'{link}'} becomes each touch’s own tracked link; {'{name}'} the customer’s first name.</Text>
         </View>
+        {plan.research && <OnlineNow r={plan.research} bt={plan.best_time ?? null} title="What Nexora used from online" />}
+        {!!plan.research?.sources.length && <View style={s.card}><Text style={s.h}>Sources</Text>{plan.research.sources.map(x => <Pressable key={x.url} onPress={() => Linking.openURL(x.url).catch(() => {})}><Text style={[s.link, { fontSize: 12 }]} numberOfLines={1}>{x.title}</Text></Pressable>)}</View>}
         {!!plan.tips.length && <View style={s.card}><Text style={s.h}>Tips</Text>{plan.tips.map(t => <Text key={t} style={[s.small, { marginTop: 4 }]}>• {t}</Text>)}</View>}
         <View style={{ gap: 8 }}>
           <Btn label={busy === 'save' ? 'Saving…' : 'Save and launch'} icon="rocket-outline" onPress={() => save(true)} busy={busy === 'save'} />
@@ -195,6 +238,8 @@ function Detail({ c, touches, result, cur, back, flash, reload }: { c: Campaign;
         <View style={[s.row, { gap: 8 }]}><Text style={[s.h, { flex: 1 }]}>{c.name}</Text><Pill t={c.status} /></View>
         <Text style={s.tiny}>{KINDS.find(k => k.k === c.kind)?.label} · {day(c.starts_at)} – {day(c.ends_at)}{c.coupon_code ? ` · code ${c.coupon_code}` : ''}{c.budget ? ` · budget ${money(c.budget, cur)}` : ''}</Text>
         {!!c.plan?.summary && <Text style={[s.small, { marginTop: 4 }]}>{c.plan.summary}</Text>}
+        {!!c.plan?.best_time && <Text style={[s.tiny, { marginTop: 4 }]}>Sends around: {c.plan.best_time}</Text>}
+        {!!c.plan?.online?.sources?.length && <Text style={[s.tiny, { marginTop: 2 }]}>Online sources used: {c.plan.online.sources.length}</Text>}
         <View style={[s.wrap, { marginTop: 10 }]}>
           {c.status === 'draft' && <Btn label="Launch" icon="rocket-outline" onPress={() => run('st', () => setCampaignStatus(c.id, 'active'), 'Campaign launched')} busy={busy === 'st'} />}
           {(c.status === 'active' || c.status === 'scheduled') && <Btn label="End campaign" soft onPress={() => run('st', () => setCampaignStatus(c.id, 'ended'), 'Campaign ended')} busy={busy === 'st'} />}
@@ -214,7 +259,7 @@ function Detail({ c, touches, result, cur, back, flash, reload }: { c: Campaign;
         return (
           <View key={t.id} style={s.card}>
             <View style={[s.row, { gap: 8 }]}><Text style={[s.link, { fontSize: 12 }]}>{day(t.scheduled_at)}</Text><Text style={[s.bold, { flex: 1 }]} numberOfLines={1}>{channelLabel(t.channel)} · {t.title}</Text><Pill t={t.status} /></View>
-            <Text style={[s.small, { marginTop: 6 }]} numberOfLines={5}>{t.body}</Text>
+            <View style={[s.row, { gap: 8, marginTop: 6, alignItems: 'flex-start' }]}><Thumb src={t.image} /><Text style={[s.small, { flex: 1 }]} numberOfLines={5}>{t.body}</Text></View>
             <View style={[s.wrap, { marginTop: 8 }]}>
               {t.channel === 'email' && <Btn soft label={t.status === 'sent' ? `Sent to ${t.sent_count}` : 'Send emails'} icon="mail-outline" disabled={t.status === 'sent'} busy={busy === t.id} onPress={() => run(t.id, async () => { const r = await sendTouch(t.id); flash(r.message); })} />}
               {(t.channel === 'whatsapp' || t.channel === 'sms') && <Btn soft label="Prepare messages" icon="logo-whatsapp" busy={busy === t.id} onPress={async () => { setBusy(t.id); try { const r = await sendTouch(t.id); setPeople({ t, list: r.recipients ?? [] }); await reload(); } catch (e) { flash((e as Error).message); } setBusy(''); }} />}

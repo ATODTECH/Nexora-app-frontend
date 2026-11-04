@@ -67,8 +67,12 @@ export const JOBS: Record<Job, { name: string; what: string; modes: { k: Mode; l
     modes: [{ k: 'report', label: 'Check and report', hint: 'Failed deliveries are retried automatically' }], defaults: { frequency: 'daily', hour: 7 },
   },
   campaign_review: {
-    name: 'Campaign review', what: 'Measures every campaign from its tracked links and orders, gives advice backed by your own numbers, and can draft a win-back campaign for customers who stopped buying.',
-    modes: [{ k: 'report', label: 'Only report', hint: 'Results and advice' }, { k: 'draft', label: 'Also draft a win-back campaign', hint: 'Waits for you to check and launch it' }],
+    name: 'Campaign review', what: 'Measures every campaign from its tracked links and orders, checks upcoming holidays, Google search trends and competitor offers online, gives advice backed by your numbers, and can run your campaigns for you.',
+    modes: [
+      { k: 'report', label: 'Only report', hint: 'Results, advice, online dates and trends' },
+      { k: 'draft', label: 'Also draft a win-back campaign', hint: 'Waits for you to check and launch it' },
+      { k: 'auto', label: 'Run my campaigns for me', hint: 'Posts and emails go out on their dates; WhatsApp stays with you' },
+    ],
     defaults: { frequency: 'weekly', weekday: 1, hour: 9 },
   },
 };
