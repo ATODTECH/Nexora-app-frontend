@@ -20,7 +20,7 @@ export { callFn as callNexora };
 // and writes a visual report: figures, charts, real photos, short findings, next steps and online sources.
 // The engine is the nexora-autopilot function; the website has the same rules in src/lib/autopilot.ts.
 
-export type Job = 'weekly_briefing' | 'plan_review' | 'social_autopilot' | 'website_watch';
+export type Job = 'weekly_briefing' | 'plan_review' | 'social_autopilot' | 'website_watch' | 'campaign_review';
 export type Mode = 'report' | 'draft' | 'auto';
 export type Autopilot = {
   id?: string; job: Job; enabled: boolean; frequency: 'daily' | 'weekly' | 'monthly'; weekday: number; day_of_month: number; hour: number;
@@ -65,6 +65,11 @@ export const JOBS: Record<Job, { name: string; what: string; modes: { k: Mode; l
   website_watch: {
     name: 'Website watch', what: 'Checks every connected website online (speed, SEO, health), retries failed deliveries and shows visits, enquiries and orders.',
     modes: [{ k: 'report', label: 'Check and report', hint: 'Failed deliveries are retried automatically' }], defaults: { frequency: 'daily', hour: 7 },
+  },
+  campaign_review: {
+    name: 'Campaign review', what: 'Measures every campaign from its tracked links and orders, gives advice backed by your own numbers, and can draft a win-back campaign for customers who stopped buying.',
+    modes: [{ k: 'report', label: 'Only report', hint: 'Results and advice' }, { k: 'draft', label: 'Also draft a win-back campaign', hint: 'Waits for you to check and launch it' }],
+    defaults: { frequency: 'weekly', weekday: 1, hour: 9 },
   },
 };
 export const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];

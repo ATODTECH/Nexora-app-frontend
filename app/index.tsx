@@ -29,6 +29,7 @@ import { BrainAssistant } from '../components/BrainAssistant';
 import { BusinessPlanner } from '../components/BusinessPlanner';
 import { SocialPublisher } from '../components/SocialPublisher';
 import { WebsiteIntegration } from '../components/WebsiteIntegration';
+import { AIMarketing } from '../components/AIMarketing';
 import { savePrompt } from '../lib/brainAssistant';
 import { openPaystackPopup } from '../lib/paystackPopup';
 import * as WebBrowser from 'expo-web-browser';
@@ -1170,7 +1171,7 @@ function BrandIcon({ platform, size = 36, ring = false }: { platform: Conversati
   );
 }
 
-type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'campaigns'|'automations'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules'|'opportunities'|'opportunityDetail'|'settings'|'quickActions'|'activityLog'|'approvals'|'brainAssistant'|'businessPlanner'|'socialPublisher'|'websiteIntegration';
+type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'campaigns'|'automations'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules'|'opportunities'|'opportunityDetail'|'settings'|'quickActions'|'activityLog'|'approvals'|'brainAssistant'|'businessPlanner'|'socialPublisher'|'websiteIntegration'|'aiMarketing';
 type KnowledgeCategory='products'|'services'|'operations'|'policies'|'faqs';
 type KnowledgeField={label:string;value:string};
 // ---- Brain AI tools (company guide, 29 Oct 2026): organised tools instead of one crowded screen ----
@@ -1703,6 +1704,7 @@ const SPECIAL_FEATURES: { k: string; icon: string; label: string; screens: strin
   { k: 'planner', icon: 'bulb-outline', label: 'Business Idea Development and Planning', screens: ['businessPlanner'] },
   { k: 'publisher', icon: 'share-social-outline', label: 'Social Media Connection and Multi-Platform Publishing', screens: ['socialPublisher'] },
   { k: 'website', icon: 'globe-outline', label: 'Website and Digital Channel Integration', screens: ['websiteIntegration'] },
+  { k: 'marketing', icon: 'megaphone-outline', label: 'AI Marketing and Campaign Management', screens: ['aiMarketing'] },
 ];
 const SPECIAL_OPEN_KEY = 'nexora-nav-special-open';
 let specialOpenMem = false;
@@ -3960,7 +3962,7 @@ function HomeScreenInner(){
       if (screen === 'brainAssistant') { goTab('brain'); return true; }
       if (screen === 'businessPlanner') { goTab('home'); return true; }
       if (screen === 'socialPublisher') { goTab('home'); return true; }
-      if (screen === 'websiteIntegration') { goTab('home'); return true; }
+      if (screen === 'websiteIntegration' || screen === 'aiMarketing') { goTab('home'); return true; }
       if (screen === 'opportunityDetail') { setScreen('opportunities'); return true; }
       if (screen === 'opportunities') { marketBackRef.current(); return true; }
       if ((screen === 'explore' || screen === 'trends' || screen === 'community') && exploreBackRef.current) { exploreBackRef.current(); return true; }
@@ -8343,6 +8345,7 @@ function HomeScreenInner(){
           case 'planner': setScreen('businessPlanner'); break;
           case 'publisher': setScreen('socialPublisher'); break;
           case 'website': setScreen('websiteIntegration'); break;
+          case 'marketing': setScreen('aiMarketing'); break;
           case 'trends': openTrends(); break;
           case 'explore': openExplore(); break;
           case 'network': openNetwork(); break;
@@ -12285,6 +12288,8 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
       onSaved={() => { goTab('brain'); openSavedLib().catch(() => {}); }}
       onTrain={c => openKnowledgeList(c as KnowledgeCategory)} />;
   }
+  if (screen === 'aiMarketing') return <AIMarketing flash={flash} topInset={insets.top} wide={isDesktopWeb} onBack={() => goTab('home')}
+    goTo={h => { const m: Record<string, Screen> = { '/orders': 'orders', '/publish': 'socialPublisher', '/plans': 'businessPlanner', '/website': 'websiteIntegration', '/marketing': 'aiMarketing', '/campaigns': 'campaigns', '/leads': 'leads', '/approvals': 'approvals', '/customers': 'customersLive' }; const to = m[h.split('?')[0]]; if (to) setScreen(to); }} />;
   if (screen === 'websiteIntegration') return <WebsiteIntegration flash={flash} topInset={insets.top} wide={isDesktopWeb} onBack={() => goTab('home')}
     goTo={h => { const m: Record<string, Screen> = { '/orders': 'orders', '/publish': 'socialPublisher', '/plans': 'businessPlanner', '/website': 'websiteIntegration', '/leads': 'leads', '/approvals': 'approvals', '/customers': 'customersLive' }; const to = m[h.split('?')[0]]; if (to) setScreen(to); }} />;
   if (screen === 'socialPublisher') return <SocialPublisher userId={userId ?? ''} flash={flash} topInset={insets.top} wide={isDesktopWeb} onBack={() => goTab('home')} />;
