@@ -1688,78 +1688,147 @@ function HealthGauge({ verified, review, empty, pct, label, labelColor = GAUGE_G
 // hands the drawer what it needs through this small bridge.
 let drawerOpenFn: () => void = () => {};
 let drawerRefresh: () => void = () => {};
-let drawerBridge: { name: string; email: string; away: boolean; go: (k: string) => void; setAway: (v: boolean) => void; signOut: () => void } =
-  { name: '', email: '', away: false, go: () => {}, setAway: () => {}, signOut: () => {} };
+let drawerBridge: { name: string; email: string; away: boolean; active: string; go: (k: string) => void; setAway: (v: boolean) => void; signOut: () => void } =
+  { name: '', email: '', away: false, active: '', go: () => {}, setAway: () => {}, signOut: () => {} };
 // Brain dropdown in the desktop sidebar (company feedback 2 Nov 2026): new chat, recent chats and all chats.
 type BrainChatLink = { key: string; title: string; when: string };
 let brainNavBridge: { chats: BrainChatLink[] | null; newChat: () => void; open: (key: string) => void; all: () => void } =
   { chats: null, newChat: () => {}, open: () => {}, all: () => {} };
 const brainNavSubs = new Set<() => void>();
 function setBrainNavBridge(next: typeof brainNavBridge) { brainNavBridge = next; brainNavSubs.forEach(f => f()); }
-const BRAIN_NAV_OPEN_KEY = 'nexora-nav-brain-open';
-// Special features (blueprint capabilities), grouped under one button that starts closed, as on the website:
-// AI Business Brain and Assistant (2.1), Business Idea Development and Planning (2.2).
-const SPECIAL_FEATURES: { k: string; icon: string; label: string; screens: string[] }[] = [
-  { k: 'assistant', icon: 'sparkles-outline', label: 'AI Business Brain and Assistant', screens: ['brainAssistant'] },
-  { k: 'planner', icon: 'bulb-outline', label: 'Business Idea Development and Planning', screens: ['businessPlanner'] },
-  { k: 'publisher', icon: 'share-social-outline', label: 'Social Media Connection and Multi-Platform Publishing', screens: ['socialPublisher'] },
-  { k: 'website', icon: 'globe-outline', label: 'Website and Digital Channel Integration', screens: ['websiteIntegration'] },
-  { k: 'marketing', icon: 'megaphone-outline', label: 'AI Marketing and Campaign Management', screens: ['aiMarketing'] },
+// The menu (company direction 6 Nov 2026): the same layout as the website, with "Home" first on the app. Every earlier
+// button keeps its name and still opens its screen in one tap; related tools sit underneath it and show while you are in
+// that area (or when you tap its arrow). New areas (Messages, Marketing, Automation, Settings) only open and close.
+// New capabilities go under the area they belong to. `go` keys are handled by drawerBridge.go; `screens` say where you are.
+type MenuLink = { go: string; label: string; screens: string[] };
+type MenuArea = { k: string; icon: string; label: string; go?: string; screens: string[]; items: MenuLink[]; line?: boolean };
+const MENU_AREAS: MenuArea[] = [
+  { k: 'home', icon: 'home-outline', label: 'Home', go: 'home', screens: ['home', 'quickActions'], items: [] },
+  { k: 'brain', icon: 'sparkles-outline', label: 'Brain', go: 'brain', screens: ['brain'], items: [
+    { go: 'assistant', label: 'AI tools and workflows', screens: ['brainAssistant'] },
+    { go: 'saved', label: 'Saved work', screens: [] },
+    { go: 'knowledge', label: 'Knowledge base', screens: ['knowledgeHealth', 'knowledgeList', 'itemDetail', 'itemEdit', 'addKnowledge', 'missingImages'] },
+    { go: 'learned', label: 'What Nexora learned', screens: ['learned'] },
+  ] },
+  { k: 'messages', icon: 'chatbubble-ellipses-outline', label: 'Messages', go: 'inbox', screens: ['inbox', 'inboxChat'], items: [
+    { go: 'approvals', label: 'Approvals', screens: ['approvals'] },
+  ] },
+  { k: 'customers', icon: 'people-outline', label: 'Customers', go: 'customers', screens: ['customersLive', 'customerDetail'], items: [
+    { go: 'leads', label: 'Leads', screens: ['leads', 'leadDetail'] },
+    { go: 'followups', label: 'Follow-ups', screens: ['followups'] },
+    { go: 'schedule', label: 'Tasks and schedule', screens: ['agenda', 'agendaPriority', 'agendaCreate'] },
+  ] },
+  { k: 'orders', icon: 'cube-outline', label: 'Orders', go: 'orders', screens: ['orders'], items: [
+    { go: 'products', label: 'Products and inventory', screens: [] },
+  ] },
+  { k: 'marketing', icon: 'megaphone-outline', label: 'Marketing', screens: [], items: [
+    { go: 'marketing', label: 'Campaigns', screens: ['aiMarketing', 'campaigns'] },
+    { go: 'publisher', label: 'Social publishing', screens: ['socialPublisher'] },
+    { go: 'broadcast', label: 'Broadcasts', screens: ['broadcast'] },
+  ] },
+  { k: 'shop', icon: 'qr-code-outline', label: 'AI shop link', go: 'shop', screens: ['storefront'], items: [
+    { go: 'website', label: 'Websites', screens: ['websiteIntegration'] },
+    { go: 'channels', label: 'WhatsApp and social accounts', screens: ['connectChannels'] },
+  ] },
+  { k: 'automation', icon: 'flash-outline', label: 'Automation', screens: [], items: [
+    { go: 'automations', label: 'Workflows', screens: ['automations'] },
+    { go: 'rules', label: 'What Nexora decides', screens: ['rules'] },
+  ] },
+  { k: 'insights', icon: 'stats-chart-outline', label: 'Business Insights', go: 'insights', screens: ['insights'], items: [
+    { go: 'planner', label: 'Business plans', screens: ['businessPlanner'] },
+    { go: 'trends', label: 'Opportunities', screens: ['trends', 'opportunities', 'opportunityDetail'] },
+  ] },
+  { k: 'market', icon: 'storefront-outline', label: 'Market', go: 'market', screens: ['market', 'explore', 'browser'], items: [
+    { go: 'community', label: 'Community', screens: ['community', 'communityPost'] },
+  ] },
+  { k: 'partners', icon: 'people-circle-outline', label: 'Find partners', go: 'network', screens: ['network'], items: [] },
+  { k: 'billing', icon: 'card-outline', label: 'Plans & billing', go: 'billing', screens: ['billing'], items: [], line: true },
+  { k: 'settings', icon: 'settings-outline', label: 'Settings', screens: [], items: [
+    { go: 'profile', label: 'Business profile', screens: ['profile', 'settings'] },
+    { go: 'ownerAlerts', label: 'Alerts to you', screens: ['ownerAlerts'] },
+    { go: 'activity', label: 'Activity log', screens: ['activityLog'] },
+  ] },
 ];
-const SPECIAL_OPEN_KEY = 'nexora-nav-special-open';
-let specialOpenMem = false;
-const readSpecialOpen = () => { try { const v = (globalThis as any).localStorage?.getItem(SPECIAL_OPEN_KEY); return v == null ? specialOpenMem : v === '1'; } catch { return specialOpenMem; } };
-const saveSpecialOpen = (v: boolean) => { specialOpenMem = v; try { (globalThis as any).localStorage?.setItem(SPECIAL_OPEN_KEY, v ? '1' : '0'); } catch { /* storage blocked */ } };
+const menuAreaOf = (active: string) => MENU_AREAS.find(a => a.screens.includes(active) || a.items.some(i => i.screens.includes(active)))?.k ?? null;
+/** The menu, used by the phone drawer (light) and the computer sidebar (dark). `run` closes the drawer first on phones. */
+function AppMenu({ active, dark, run }: { active: string; dark: boolean; run: (f: () => void) => void }) {
+  const here = menuAreaOf(active);
+  // An area opened or closed by hand stays that way until you move to another screen.
+  const [pick, setPick] = useState<{ at: string; key: string | null } | null>(null);
+  const open = pick && pick.at === active ? pick.key : here;
+  const [, tick] = useState(0);
+  useEffect(() => { const f = () => tick(n => n + 1); brainNavSubs.add(f); return () => { brainNavSubs.delete(f); }; }, []);
+  const c = dark
+    ? { text: '#C9D6E6', strong: '#FFFFFF', icon: '#8FA3BC', iconOn: '#9CC3FF', sub: '#B8C7DA', muted: '#7F93AD', on: 'rgba(127,178,255,0.16)', hover: 'rgba(255,255,255,0.05)', line: 'rgba(255,255,255,0.10)' }
+    : { text: '#0B1220', strong: '#0B1220', icon: '#0B1220', iconOn: '#1E56A0', sub: '#3D4A5A', muted: '#8A97A6', on: '#EAF1FB', hover: '#F4F7FB', line: '#E6ECF3' };
+  const go = (k: string) => run(() => drawerBridge.go(k));
+  const sub = (key: string, label: string, onPress: () => void, sel: boolean, icon?: string) => (
+    <Pressable key={key} onPress={onPress} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected: sel }}
+      style={(st: any) => ({ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: dark ? 7 : 10, paddingHorizontal: 8, borderRadius: 8,
+        backgroundColor: sel ? c.on : st.hovered ? c.hover : 'transparent', cursor: 'pointer' } as any)}>
+      {!!icon && <Ionicons name={icon as any} size={14} color={icon === 'add' ? c.iconOn : c.muted} />}
+      <Text style={{ flex: 1, minWidth: 0, color: sel || icon === 'add' ? c.strong : c.sub, fontSize: dark ? 13 : 14, fontWeight: sel ? '700' : icon === 'add' ? '600' : '400' }} numberOfLines={1}>{label}</Text>
+    </Pressable>
+  );
+  const chats = brainNavBridge.chats;
+  return (
+    <>
+      {MENU_AREAS.map(a => {
+        const inArea = here === a.k, sel = a.screens.includes(active);
+        const more = a.items.length > 0 || a.k === 'brain', shown = more && open === a.k;
+        const toggle = () => setPick({ at: active, key: shown ? null : a.k });
+        return (
+          <View key={a.k} style={a.line ? { borderTopWidth: 1, borderTopColor: c.line, marginTop: 8, paddingTop: 8 } : undefined}>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <Pressable onPress={a.go ? () => go(a.go!) : toggle} accessibilityRole="button" accessibilityLabel={a.label} accessibilityState={{ selected: sel, expanded: !a.go ? shown : undefined }}
+                style={(st: any) => ({ flex: 1, flexDirection: 'row', alignItems: 'center', gap: dark ? 12 : 14, paddingVertical: dark ? 10 : 13, paddingLeft: dark ? 12 : 8, paddingRight: more ? 42 : 12, borderRadius: 10,
+                  backgroundColor: sel ? c.on : st.hovered ? c.hover : 'transparent', cursor: 'pointer' } as any)}>
+                <Ionicons name={a.icon as any} size={dark ? 18 : 22} color={inArea ? c.iconOn : c.icon} />
+                <Text style={{ flex: 1, color: inArea ? c.strong : c.text, fontSize: dark ? 14 : 15, fontWeight: inArea ? '700' : dark ? '500' : '600' }}>{a.label}</Text>
+              </Pressable>
+              {more && (
+                <Pressable onPress={toggle} hitSlop={6} accessibilityRole="button" accessibilityLabel={`${shown ? 'Hide' : 'Show'} more under ${a.label}`} accessibilityState={{ expanded: shown }}
+                  style={(st: any) => ({ position: 'absolute', right: 4, width: 32, height: 32, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: st.hovered ? c.hover : 'transparent', cursor: 'pointer' } as any)}>
+                  <Ionicons name={shown ? 'chevron-up' : 'chevron-down'} size={15} color={c.muted} />
+                </Pressable>
+              )}
+            </View>
+            {shown && (
+              <View style={{ marginLeft: dark ? 21 : 18, paddingLeft: 10, borderLeftWidth: 1, borderLeftColor: c.line, marginTop: 2, marginBottom: 4 }}>
+                {a.k === 'brain' && (
+                  <>
+                    {sub('new-chat', 'New chat', () => run(() => brainNavBridge.newChat()), false, 'add')}
+                    {chats?.slice(0, 5).map(ch => sub(`chat-${ch.key}`, ch.title, () => run(() => brainNavBridge.open(ch.key)), false, 'chatbubble-outline'))}
+                    {!!chats?.length && sub('all-chats', 'All chats', () => run(() => brainNavBridge.all()), false, 'time-outline')}
+                    <View style={{ height: 1, backgroundColor: c.line, marginVertical: 4, marginHorizontal: 8 }} />
+                  </>
+                )}
+                {a.items.map(i => sub(i.go, i.label, () => go(i.go), i.screens.includes(active)))}
+              </View>
+            )}
+          </View>
+        );
+      })}
+    </>
+  );
+}
 function DrawerHost() {
   const [open, setOpen] = useState(false);
-  const [specialOpen, setSpecialOpen] = useState(readSpecialOpen);
   const [, tick] = useState(0);
   useEffect(() => {
     drawerOpenFn = () => setOpen(true);
     drawerRefresh = () => tick(n => n + 1);
     return () => { drawerOpenFn = () => {}; drawerRefresh = () => {}; };
   }, []);
-  const items: { k: string; icon: string; label: string }[] = [
-    { k: 'home', icon: 'home-outline', label: 'Home' },
-    // Inbox, Train AI and Schedule open from the Home screen, so they aren't repeated here.
-    { k: 'market', icon: 'storefront-outline', label: 'Market' },
-    { k: 'insights', icon: 'stats-chart-outline', label: 'Business Insights' },
-    { k: 'orders', icon: 'cube-outline', label: 'Orders' },
-    { k: 'customers', icon: 'people-outline', label: 'Customers' },
-    { k: 'network', icon: 'people-outline', label: 'Find partners' },
-    { k: 'shop', icon: 'qr-code-outline', label: 'AI shop link' },
-    { k: 'billing', icon: 'card-outline', label: 'Plans & billing' },
-  ];
-  const go = (k: string) => { setOpen(false); setTimeout(() => drawerBridge.go(k), 60); };
+  const run = (f: () => void) => { setOpen(false); setTimeout(f, 60); };
   return (
     <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)} statusBarTranslucent>
       <View style={{ flex: 1, flexDirection: 'row' }}>
         <View style={{ width: 296, backgroundColor: '#FFF', paddingTop: 64, paddingHorizontal: 20, paddingBottom: 28 }}>
           <NexoraLockup letter={17} />
-          <Text style={{ fontSize: 12, color: '#8A97A6', marginTop: 10 }} numberOfLines={1}>{drawerBridge.name || 'AI Business Manager'}{drawerBridge.email ? `  \u00b7  ${drawerBridge.email}` : ''}</Text>
+          <Text style={{ fontSize: 12, color: '#8A97A6', marginTop: 10 }} numberOfLines={1}>{drawerBridge.name || 'AI Business Manager'}{drawerBridge.email ? `  ·  ${drawerBridge.email}` : ''}</Text>
           <ScrollView style={{ marginTop: 18 }} showsVerticalScrollIndicator={false}>
-            {items.map(it => (
-              <Pressable key={it.k} onPress={() => go(it.k)} accessibilityRole="button" accessibilityLabel={it.label} style={{ flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 14 }}>
-                <Ionicons name={it.icon as any} size={22} color="#0B1220" />
-                <Text style={{ fontSize: 15, fontWeight: '600', color: '#0B1220' }}>{it.label}</Text>
-              </Pressable>
-            ))}
-            <Pressable onPress={() => setSpecialOpen(v => { saveSpecialOpen(!v); return !v; })} accessibilityRole="button" accessibilityLabel="Special features" accessibilityState={{ expanded: specialOpen }}
-              style={{ flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 14 }}>
-              <Ionicons name="star-outline" size={22} color="#0B1220" />
-              <Text style={{ flex: 1, fontSize: 15, fontWeight: '600', color: '#0B1220' }}>Special features</Text>
-              <Ionicons name={specialOpen ? 'chevron-up' : 'chevron-down'} size={18} color="#8A97A6" />
-            </Pressable>
-            {specialOpen && (
-              <View style={{ marginLeft: 10, paddingLeft: 14, borderLeftWidth: 1, borderLeftColor: '#E6ECF3', marginBottom: 4 }}>
-                {SPECIAL_FEATURES.map(it => (
-                  <Pressable key={it.k} onPress={() => go(it.k)} accessibilityRole="button" accessibilityLabel={it.label} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10 }}>
-                    <Ionicons name={it.icon as any} size={18} color="#1E56A0" />
-                    <Text style={{ flex: 1, fontSize: 14, fontWeight: '500', color: '#0B1220' }}>{it.label}</Text>
-                  </Pressable>
-                ))}
-              </View>
-            )}
+            {open && <AppMenu active={drawerBridge.active} dark={false} run={run} />}
             <View style={{ height: 1, backgroundColor: '#EEF1F4', marginVertical: 10 }} />
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 8 }}>
               <Ionicons name={drawerBridge.away ? 'moon' : 'sunny-outline'} size={22} color="#0B1220" />
@@ -1897,98 +1966,16 @@ function useWebShell() {
   useEffect(() => { webShellSubs.add(setV); return () => { webShellSubs.delete(setV); }; }, []);
   return v;
 }
-// Desktop sidebar (web, signed in): one click to every part of Nexora.
-const WEB_NAV: { label: string; icon: string; key: FeatureKey; pages: string[] }[] = [
-  { label: 'Home', icon: 'home-outline', key: 'home', pages: ['home'] },
-  { label: 'Brain', icon: 'sparkles-outline', key: 'knowledge', pages: ['brain'] },
-  // Inbox, Schedule and Train AI open from Home (its cards and Quick actions), so they aren't listed here.
-  // Market also holds Leads, Customers, Trending, Find online and Community (its tiles), so they aren't listed separately.
-  // Campaigns and Automations open from Home (Quick actions), so they aren't listed either (company feedback 2 Nov 2026).
-  { label: 'Market', icon: 'storefront-outline', key: 'market', pages: ['market', 'opportunities', 'opportunityDetail', 'leads', 'leadDetail', 'trends', 'explore', 'browser', 'community', 'communityPost'] },
-  { label: 'Insights', icon: 'stats-chart-outline', key: 'analytics', pages: ['insights'] },
-  { label: 'Orders', icon: 'bag-handle-outline', key: 'orders', pages: ['orders'] },
-  { label: 'Customers', icon: 'people-outline', key: 'customers', pages: ['customersLive', 'customerDetail'] },
-  { label: 'Find partners', icon: 'people-circle-outline', key: 'partners', pages: ['network'] },
-  { label: 'AI shop link', icon: 'qr-code-outline', key: 'shop', pages: ['storefront'] },
-  { label: 'Plans & billing', icon: 'card-outline', key: 'billing', pages: ['billing'] },
-];
+// Desktop sidebar (web, signed in): the same menu as the phone drawer.
 const WEB_SIDEBAR_W = 248;
 function WebSidebar({ active }: { active: string }) {
-  const specialHere = SPECIAL_FEATURES.some(f => f.screens.includes(active));
-  const [specialOpen, setSpecialOpen] = useState(readSpecialOpen);
-  const showSpecial = specialOpen || specialHere;
-  // Brain's chats sit in a dropdown that starts closed; the person opens or closes it and the choice is remembered.
-  const [brainOpen, setBrainOpen] = useState(() => { try { return (globalThis as any).localStorage?.getItem(BRAIN_NAV_OPEN_KEY) === '1'; } catch { return false; } });
-  const [, tick] = useState(0);
-  useEffect(() => { const f = () => tick(n => n + 1); brainNavSubs.add(f); return () => { brainNavSubs.delete(f); }; }, []);
-  const toggleBrain = () => setBrainOpen(v => { try { (globalThis as any).localStorage?.setItem(BRAIN_NAV_OPEN_KEY, v ? '0' : '1'); } catch { /* storage blocked */ } return !v; });
-  const subRow = (icon: string, label: string, onPress: () => void, strong: boolean, key?: string) => (
-    <Pressable key={key ?? label} onPress={onPress} accessibilityRole="button" accessibilityLabel={label}
-      style={(st: any) => ({ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 7, paddingHorizontal: 8, borderRadius: 8, backgroundColor: st.hovered ? 'rgba(255,255,255,0.05)' : 'transparent', cursor: 'pointer' } as any)}>
-      <Ionicons name={icon as any} size={14} color={strong ? '#9CC3FF' : '#7F93AD'} />
-      <Text style={{ flex: 1, minWidth: 0, color: strong ? '#E6EEF8' : '#B8C7DA', fontSize: 13, fontWeight: strong ? '600' : '400' }} numberOfLines={1}>{label}</Text>
-    </Pressable>
-  );
   return (
     <View style={{ width: WEB_SIDEBAR_W, backgroundColor: '#0B1220', borderRightWidth: 1, borderRightColor: 'rgba(255,255,255,0.06)', paddingTop: 24, paddingHorizontal: 14 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 10, marginBottom: 26 }}>
         <NexoraLockup letter={15} light />
       </View>
       <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 24 }}>
-        {WEB_NAV.map(item => {
-          const on = item.pages.includes(active);
-          const drop = item.key === 'knowledge';
-          const row = (
-            <Pressable key={item.key} onPress={() => requestFeature(item.key)} accessibilityRole="link" accessibilityState={{ selected: on }}
-              style={(st: any) => ({ flex: drop ? 1 : undefined, flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10, marginBottom: drop ? 0 : 2,
-                backgroundColor: on ? 'rgba(127,178,255,0.16)' : st.hovered ? 'rgba(255,255,255,0.05)' : 'transparent', cursor: 'pointer' } as any)}>
-              <Ionicons name={item.icon as any} size={18} color={on ? '#9CC3FF' : '#8FA3BC'} />
-              <Text style={{ color: on ? '#FFFFFF' : '#C9D6E6', fontSize: 14, fontWeight: on ? '700' : '500' }}>{item.label}</Text>
-              {on && !drop && <View style={{ marginLeft: 'auto', width: 6, height: 6, borderRadius: 3, backgroundColor: '#7FB2FF' }} />}
-            </Pressable>
-          );
-          if (!drop) return row;
-          return (
-            <View key={item.key} style={{ marginBottom: 2 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                {row}
-                <Pressable onPress={toggleBrain} accessibilityRole="button" accessibilityLabel={brainOpen ? 'Hide Brain chats' : 'Show Brain chats'} accessibilityState={{ expanded: brainOpen }}
-                  style={(st: any) => ({ position: 'absolute', right: 4, width: 30, height: 30, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: st.hovered ? 'rgba(255,255,255,0.08)' : 'transparent', cursor: 'pointer' } as any)}>
-                  <Ionicons name={brainOpen ? 'chevron-up' : 'chevron-down'} size={15} color="#8FA3BC" />
-                </Pressable>
-              </View>
-              {brainOpen && (
-                <View style={{ marginLeft: 21, paddingLeft: 10, borderLeftWidth: 1, borderLeftColor: 'rgba(255,255,255,0.10)', marginTop: 2, marginBottom: 4 }}>
-                  {subRow('add', 'New chat', () => brainNavBridge.newChat(), true)}
-                  {brainNavBridge.chats === null ? null
-                    : !brainNavBridge.chats.length ? <Text style={{ color: '#7F93AD', fontSize: 12.5, paddingVertical: 6, paddingHorizontal: 8 }}>Your chats will show here</Text>
-                    : brainNavBridge.chats.map(c => subRow('chatbubble-outline', c.title, () => brainNavBridge.open(c.key), false, c.key))}
-                  {!!brainNavBridge.chats?.length && subRow('time-outline', 'All chats', () => brainNavBridge.all(), true)}
-                </View>
-              )}
-            </View>
-          );
-        })}
-        <Pressable onPress={() => setSpecialOpen(v => { saveSpecialOpen(!v); return !v; })} accessibilityRole="button" accessibilityLabel="Special features" accessibilityState={{ expanded: showSpecial }}
-          style={(st: any) => ({ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10, marginBottom: 2, backgroundColor: st.hovered ? 'rgba(255,255,255,0.05)' : 'transparent', cursor: 'pointer' } as any)}>
-          <Ionicons name="star-outline" size={18} color={specialHere ? '#9CC3FF' : '#8FA3BC'} />
-          <Text style={{ flex: 1, color: specialHere ? '#FFFFFF' : '#C9D6E6', fontSize: 14, fontWeight: specialHere ? '700' : '500' }}>Special features</Text>
-          <Ionicons name={showSpecial ? 'chevron-up' : 'chevron-down'} size={15} color="#8FA3BC" />
-        </Pressable>
-        {showSpecial && (
-          <View style={{ marginLeft: 21, paddingLeft: 10, borderLeftWidth: 1, borderLeftColor: 'rgba(255,255,255,0.10)', marginTop: 2, marginBottom: 4 }}>
-            {SPECIAL_FEATURES.map(f => {
-              const on = f.screens.includes(active);
-              return (
-                <Pressable key={f.k} onPress={() => drawerBridge.go(f.k)} accessibilityRole="link" accessibilityLabel={f.label} accessibilityState={{ selected: on }}
-                  style={(st: any) => ({ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8, paddingHorizontal: 8, borderRadius: 8, backgroundColor: on ? 'rgba(127,178,255,0.16)' : st.hovered ? 'rgba(255,255,255,0.05)' : 'transparent', cursor: 'pointer' } as any)}>
-                  <Ionicons name={f.icon as any} size={14} color={on ? '#9CC3FF' : '#7F93AD'} />
-                  <Text style={{ flex: 1, minWidth: 0, color: on ? '#FFFFFF' : '#B8C7DA', fontSize: 13, fontWeight: on ? '700' : '400' }}>{f.label}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        )}
+        <AppMenu active={active} dark run={f => f()} />
       </ScrollView>
       {/* Account (replaces a Profile menu item): profile, settings and log out live behind it */}
       <Pressable onPress={() => requestFeature('account')} accessibilityRole="button" accessibilityLabel="Your account"
@@ -8324,7 +8311,7 @@ function HomeScreenInner(){
   // "replied" inside the app and never reached the customer, so it's gone.
   useEffect(() => {
     drawerBridge = {
-      name: fullName, email: userEmail, away: awayMode, setAway, signOut: handleLogout,
+      name: fullName, email: userEmail, away: awayMode, setAway, signOut: handleLogout, active: screen === 'main' ? mainTab : screen,
       go: (k: string) => {
         switch (k) {
           case 'home': setHomeCommandExpanded(false); goTab('home'); break;
@@ -8354,6 +8341,14 @@ function HomeScreenInner(){
           case 'campaigns': openCampaigns(); break;
           case 'automations': openAutomations(); break;
           case 'insights': openInsights(); break;
+          case 'saved': goTab('brain'); openSavedLib().catch(() => {}); break;
+          case 'knowledge': setScreen('knowledgeHealth'); break;
+          case 'learned': openLearned(); break;
+          case 'approvals': openApprovals('home'); break;
+          case 'followups': openFollowups().catch(() => {}); break;
+          case 'products': openKnowledgeList('products'); break;
+          case 'broadcast': openBroadcast(); break;
+          case 'activity': setScreen('activityLog'); break;
         }
       },
     };
@@ -10350,7 +10345,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
   const renderBottomNav = () => {
     if (IS_WEB && userId && hookWidth >= 1000) return null;   // the desktop sidebar replaces the phone tab bar
     // Five tabs, as in the design: Home, Inbox, Brain, Market, Profile. The active one becomes a dark pill with its name.
-    const tabs: [MainTab, string, string][] = [['home', 'home-outline', 'Home'], ['inbox', 'chatbubble-ellipses-outline', 'Inbox'], ['brain', 'sparkles-outline', 'Brain'], ['market', 'storefront-outline', 'Market'], ['profile', 'person-circle-outline', 'Profile']];
+    const tabs: [MainTab, string, string][] = [['home', 'home-outline', 'Home'], ['inbox', 'chatbubble-ellipses-outline', 'Messages'], ['brain', 'sparkles-outline', 'Brain'], ['market', 'storefront-outline', 'Market'], ['profile', 'person-circle-outline', 'Profile']];
     const unreadN = conversations.filter(c => c.unread > 0).length;
     return (
       <View style={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 10 + insets.bottom, backgroundColor: 'transparent' }}>
@@ -10644,7 +10639,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
             {/* Back to Home (Inbox is also in the bottom bar). */}
             <Pressable onPress={() => goTab('home')} hitSlop={10} accessibilityRole="button" accessibilityLabel="Back" style={{ marginRight: 8 }}><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
             <View style={{ flex: 1 }}>
-              <Text style={styles.knowledgeHeaderTitle}>Inbox</Text>
+              <Text style={styles.knowledgeHeaderTitle}>Messages</Text>
             </View>
             {/* Entry point into the social-media reference gallery (all 21
                 files in the Supabase 'social-media' bucket: Inbox-1..14,
@@ -10940,7 +10935,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                     )) : (
                       <>
                         <Text style={[styles.detailFieldLabel, { marginTop: 14 }]}>{aiTool.tool.hint}</Text>
-                        <TextInput value={aiTool.topic} onChangeText={v => setAiTool(x => x && { ...x, topic: v })} multiline={aiTool.tool.key === 'summary'} maxLength={aiTool.tool.key === 'summary' ? 8000 : 300} style={[styles.editInput, aiTool.tool.key === 'summary' && { minHeight: 140, textAlignVertical: 'top', paddingTop: 10 }]} placeholderTextColor="#A5AFBB" placeholder={aiTool.tool.key === 'summary' ? 'Paste here…' : 'Type here…'} />
+                        <TextInput value={aiTool.topic} onChangeText={v => setAiTool(x => x && { ...x, topic: v })} multiline={(aiTool.tool.key === 'summary' || aiTool.tool.key === 'minutes')} maxLength={(aiTool.tool.key === 'summary' || aiTool.tool.key === 'minutes') ? 8000 : 300} style={[styles.editInput, (aiTool.tool.key === 'summary' || aiTool.tool.key === 'minutes') && { minHeight: 140, textAlignVertical: 'top', paddingTop: 10 }]} placeholderTextColor="#A5AFBB" placeholder={(aiTool.tool.key === 'summary' || aiTool.tool.key === 'minutes') ? 'Paste here…' : 'Type here…'} />
                         {!!aiTool.tool.extra && (
                           <>
                             <Text style={[styles.detailFieldLabel, { marginTop: 10 }]}>{aiTool.tool.extra}</Text>
@@ -11542,7 +11537,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
           { label: 'Insights', icon: 'stats-chart-outline', onPress: () => openInsights() },
         ] },
         { title: 'Customers', items: [
-          { label: 'Inbox', icon: 'chatbubbles-outline', onPress: () => goTab('inbox') },
+          { label: 'Messages', icon: 'chatbubbles-outline', onPress: () => goTab('inbox') },
           { label: 'Customers', icon: 'people-outline', onPress: () => openCustomers(() => goTab('home')) },
           { label: 'Leads', icon: 'person-add-outline', onPress: () => openLeads() },
           { label: 'Follow-ups', icon: 'paper-plane-outline', onPress: () => { openFollowups().catch(() => {}); } },
