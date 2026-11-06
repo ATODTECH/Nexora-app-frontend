@@ -29,6 +29,7 @@ import { BrainAssistant } from '../components/BrainAssistant';
 import { BusinessPlanner } from '../components/BusinessPlanner';
 import { SocialPublisher } from '../components/SocialPublisher';
 import { WebsiteIntegration } from '../components/WebsiteIntegration';
+import { AIReception } from '../components/AIReception';
 import { AIMarketing } from '../components/AIMarketing';
 import { savePrompt } from '../lib/brainAssistant';
 import { openPaystackPopup } from '../lib/paystackPopup';
@@ -1171,7 +1172,7 @@ function BrandIcon({ platform, size = 36, ring = false }: { platform: Conversati
   );
 }
 
-type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'campaigns'|'automations'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules'|'opportunities'|'opportunityDetail'|'settings'|'quickActions'|'activityLog'|'approvals'|'brainAssistant'|'businessPlanner'|'socialPublisher'|'websiteIntegration'|'aiMarketing';
+type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'campaigns'|'automations'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules'|'opportunities'|'opportunityDetail'|'settings'|'quickActions'|'activityLog'|'approvals'|'brainAssistant'|'businessPlanner'|'socialPublisher'|'websiteIntegration'|'aiMarketing'|'aiReception';
 type KnowledgeCategory='products'|'services'|'operations'|'policies'|'faqs';
 type KnowledgeField={label:string;value:string};
 // ---- Brain AI tools (company guide, 29 Oct 2026): organised tools instead of one crowded screen ----
@@ -1712,6 +1713,7 @@ const MENU_AREAS: MenuArea[] = [
   ] },
   { k: 'messages', icon: 'chatbubble-ellipses-outline', label: 'Messages', go: 'inbox', screens: ['inbox', 'inboxChat'], items: [
     { go: 'approvals', label: 'Approvals', screens: ['approvals'] },
+    { go: 'reception', label: 'AI Reception (calls)', screens: ['aiReception'] },
   ] },
   { k: 'customers', icon: 'people-outline', label: 'Customers', go: 'customers', screens: ['customersLive', 'customerDetail'], items: [
     { go: 'leads', label: 'Leads', screens: ['leads', 'leadDetail'] },
@@ -3950,6 +3952,7 @@ function HomeScreenInner(){
       if (screen === 'businessPlanner') { goTab('home'); return true; }
       if (screen === 'socialPublisher') { goTab('home'); return true; }
       if (screen === 'websiteIntegration' || screen === 'aiMarketing') { goTab('home'); return true; }
+      if (screen === 'aiReception') { goTab('inbox'); return true; }
       if (screen === 'opportunityDetail') { setScreen('opportunities'); return true; }
       if (screen === 'opportunities') { marketBackRef.current(); return true; }
       if ((screen === 'explore' || screen === 'trends' || screen === 'community') && exploreBackRef.current) { exploreBackRef.current(); return true; }
@@ -8349,6 +8352,7 @@ function HomeScreenInner(){
           case 'products': openKnowledgeList('products'); break;
           case 'broadcast': openBroadcast(); break;
           case 'activity': setScreen('activityLog'); break;
+          case 'reception': setScreen('aiReception'); break;
         }
       },
     };
@@ -12285,6 +12289,8 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
   }
   if (screen === 'aiMarketing') return <AIMarketing flash={flash} topInset={insets.top} wide={isDesktopWeb} onBack={() => goTab('home')}
     goTo={h => { const m: Record<string, Screen> = { '/orders': 'orders', '/publish': 'socialPublisher', '/plans': 'businessPlanner', '/website': 'websiteIntegration', '/marketing': 'aiMarketing', '/campaigns': 'campaigns', '/leads': 'leads', '/approvals': 'approvals', '/customers': 'customersLive' }; const to = m[h.split('?')[0]]; if (to) setScreen(to); }} />;
+  if (screen === 'aiReception') return <AIReception flash={flash} topInset={insets.top} wide={isDesktopWeb} onBack={() => goTab('inbox')}
+    goTo={h => { const m: Record<string, Screen> = { '/schedule': 'agenda', '/customers': 'customersLive', '/approvals': 'approvals' }; const to = m[h.split('?')[0]]; if (to) setScreen(to); }} />;
   if (screen === 'websiteIntegration') return <WebsiteIntegration flash={flash} topInset={insets.top} wide={isDesktopWeb} onBack={() => goTab('home')}
     goTo={h => { const m: Record<string, Screen> = { '/orders': 'orders', '/publish': 'socialPublisher', '/plans': 'businessPlanner', '/website': 'websiteIntegration', '/leads': 'leads', '/approvals': 'approvals', '/customers': 'customersLive' }; const to = m[h.split('?')[0]]; if (to) setScreen(to); }} />;
   if (screen === 'socialPublisher') return <SocialPublisher userId={userId ?? ''} flash={flash} topInset={insets.top} wide={isDesktopWeb} onBack={() => goTab('home')} />;
