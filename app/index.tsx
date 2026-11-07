@@ -31,6 +31,7 @@ import { SocialPublisher } from '../components/SocialPublisher';
 import { WebsiteIntegration } from '../components/WebsiteIntegration';
 import { AIReception } from '../components/AIReception';
 import { CRMScreen } from '../components/CRM';
+import { ShopMore } from '../components/ShopMore';
 import { AIMarketing } from '../components/AIMarketing';
 import { savePrompt } from '../lib/brainAssistant';
 import { openPaystackPopup } from '../lib/paystackPopup';
@@ -1921,6 +1922,7 @@ function WebDialogHost() {
 }
 // App-wide toast, callable from anywhere (including module-level helpers).
 let pushToast: (msg: string) => void = () => {};
+const flashToast = (msg: string) => pushToast(msg);
 function ToastHost() {
   const [msg, setMsg] = useState('');
   useEffect(() => {
@@ -4856,7 +4858,7 @@ function HomeScreenInner(){
   };
 
   // ======================= Supabase backend =============================
-  const flash = (msg: string) => pushToast(msg);
+  const flash = flashToast;   // stable: screens that reload on [flash] don't reload on every render
   const withLongTimeout = <T,>(promise: Promise<T>, message: string, ms = 90000): Promise<T> =>
     Promise.race([promise, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(message)), ms))]);
 
@@ -16410,7 +16412,8 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                 ))}
               </View>
 
-              <Text style={[styles.attentionSubtitle, { marginTop: 12 }]}>Your shop shows products and services from Train AI that are Verified or Need review, with their photos, prices and stock, plus your FAQs and policies. Drafts stay private. Chats are answered only from this information.</Text>
+              {!!myShop && <ShopMore shop={myShop} shopUrl={shopUrl} callFn={callFn} flash={flash} onSaved={sv => { setMyShop(sv as MyShop); setShopForm(sv as MyShop); }} />}
+              <Text style={[styles.attentionSubtitle, { marginTop: 12 }]}>Your shop shows products and services from Train AI that are Verified or Need review, with their photos, prices and stock, plus your FAQs and policies. Drafts, hidden items and facts Nexora learned from chats stay private. Chats are answered only from this information.</Text>
               <Pressable onPress={() => openFeature('operations')} style={{ marginTop: 10 }}><Text style={{ color: '#1E56A0', fontWeight: '700' }}>Add or edit products in Train AI ›</Text></Pressable>
             </>
           )}
