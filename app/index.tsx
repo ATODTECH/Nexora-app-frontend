@@ -1754,6 +1754,9 @@ const MENU_AREAS: MenuArea[] = [
     { go: 'activity', label: 'Activity log', screens: ['activityLog'] },
   ] },
 ];
+// Shown at the bottom of the menu so you can tell which build is on a phone. Update RELEASE with each new build.
+const APP_RELEASE = '2.8 · 7 Nov 2026';
+const APP_RELEASE_LABEL = `Nexora ${Constants.expoConfig?.version ?? ''} · Release ${APP_RELEASE}`;
 const menuAreaOf = (active: string) => MENU_AREAS.find(a => a.screens.includes(active) || a.items.some(i => i.screens.includes(active)))?.k ?? null;
 /** The menu, used by the phone drawer (light) and the computer sidebar (dark). `run` closes the drawer first on phones. */
 function AppMenu({ active, dark, run }: { active: string; dark: boolean; run: (f: () => void) => void }) {
@@ -1786,15 +1789,20 @@ function AppMenu({ active, dark, run }: { active: string; dark: boolean; run: (f
           <View key={a.k} style={a.line ? { borderTopWidth: 1, borderTopColor: c.line, marginTop: 8, paddingTop: 8 } : undefined}>
             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
               <Pressable onPress={a.go ? () => go(a.go!) : toggle} accessibilityRole="button" accessibilityLabel={a.label} accessibilityState={{ selected: sel, expanded: !a.go ? shown : undefined }}
-                style={(st: any) => ({ flex: 1, flexDirection: 'row', alignItems: 'center', gap: dark ? 12 : 14, paddingVertical: dark ? 10 : 13, paddingLeft: dark ? 12 : 8, paddingRight: more ? 42 : 12, borderRadius: 10,
+                style={(st: any) => ({ flex: 1, flexDirection: 'row', alignItems: 'center', gap: dark ? 12 : 14, paddingVertical: dark ? 10 : 13, paddingLeft: dark ? 12 : 8, paddingRight: more ? (dark ? 42 : 64) : 12, borderRadius: 10,
                   backgroundColor: sel ? c.on : st.hovered ? c.hover : 'transparent', cursor: 'pointer' } as any)}>
                 <Ionicons name={a.icon as any} size={dark ? 18 : 22} color={inArea ? c.iconOn : c.icon} />
                 <Text style={{ flex: 1, color: inArea ? c.strong : c.text, fontSize: dark ? 14 : 15, fontWeight: inArea ? '700' : dark ? '500' : '600' }}>{a.label}</Text>
               </Pressable>
               {more && (
-                <Pressable onPress={toggle} hitSlop={6} accessibilityRole="button" accessibilityLabel={`${shown ? 'Hide' : 'Show'} more under ${a.label}`} accessibilityState={{ expanded: shown }}
-                  style={(st: any) => ({ position: 'absolute', right: 4, width: 32, height: 32, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: st.hovered ? c.hover : 'transparent', cursor: 'pointer' } as any)}>
-                  <Ionicons name={shown ? 'chevron-up' : 'chevron-down'} size={15} color={c.muted} />
+                <Pressable onPress={toggle} hitSlop={8} accessibilityRole="button" accessibilityLabel={`${shown ? 'Hide' : 'Show'} ${a.items.length} more under ${a.label}`} accessibilityState={{ expanded: shown }}
+                  style={(st: any) => (dark
+                    ? { position: 'absolute', right: 4, width: 32, height: 32, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: st.hovered ? c.hover : 'transparent', cursor: 'pointer' }
+                    // Phones: a soft blue pill ("3 ⌄") so it's clear there is more under this item.
+                    : { position: 'absolute', right: 2, height: 30, minWidth: 52, paddingHorizontal: 10, borderRadius: 15, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4,
+                        backgroundColor: shown ? '#DCE8F7' : '#EEF3FA', borderWidth: 1, borderColor: shown ? '#B9CFEC' : '#DCE6F2' }) as any}>
+                  {!dark && <Text style={{ fontSize: 12.5, fontWeight: '700', color: '#1E56A0' }}>{a.k === 'brain' ? a.items.length + 1 : a.items.length}</Text>}
+                  <Ionicons name={shown ? 'chevron-up' : 'chevron-down'} size={dark ? 15 : 16} color={dark ? c.muted : '#1E56A0'} />
                 </Pressable>
               )}
             </View>
@@ -1834,6 +1842,7 @@ function DrawerHost() {
           <Text style={{ fontSize: 12, color: '#8A97A6', marginTop: 10 }} numberOfLines={1}>{drawerBridge.name || 'AI Business Manager'}{drawerBridge.email ? `  ·  ${drawerBridge.email}` : ''}</Text>
           <ScrollView style={{ marginTop: 18 }} showsVerticalScrollIndicator={false}>
             {open && <AppMenu active={drawerBridge.active} dark={false} run={run} />}
+            <Text style={{ fontSize: 11, color: '#A3AEBB', marginTop: 10, marginLeft: 8 }}>{APP_RELEASE_LABEL}</Text>
             <View style={{ height: 1, backgroundColor: '#EEF1F4', marginVertical: 10 }} />
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 8 }}>
               <Ionicons name={drawerBridge.away ? 'moon' : 'sunny-outline'} size={22} color="#0B1220" />
