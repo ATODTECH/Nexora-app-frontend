@@ -1756,7 +1756,7 @@ const MENU_AREAS: MenuArea[] = [
   ] },
 ];
 // Shown at the bottom of the menu so you can tell which build is on a phone. Update RELEASE with each new build.
-const APP_RELEASE = '2.8 · 7 Nov 2026';
+const APP_RELEASE = '2.9 · 7 Nov 2026';
 const APP_RELEASE_LABEL = `Nexora ${Constants.expoConfig?.version ?? ''} · Release ${APP_RELEASE}`;
 const menuAreaOf = (active: string) => MENU_AREAS.find(a => a.screens.includes(active) || a.items.some(i => i.screens.includes(active)))?.k ?? null;
 /** The menu, used by the phone drawer (light) and the computer sidebar (dark). `run` closes the drawer first on phones. */

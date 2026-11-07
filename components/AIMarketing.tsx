@@ -266,7 +266,7 @@ function Detail({ c, touches, result, cur, back, flash, reload }: { c: Campaign;
             <View style={[s.wrap, { marginTop: 8 }]}>
               {t.channel === 'email' && <Btn soft label={t.status === 'sent' ? `Sent to ${t.sent_count}` : 'Send emails'} icon="mail-outline" disabled={t.status === 'sent'} busy={busy === t.id} onPress={() => run(t.id, async () => { const r = await sendTouch(t.id); flash(r.message); })} />}
               {(t.channel === 'whatsapp' || t.channel === 'sms') && <Btn soft label="Prepare messages" icon="logo-whatsapp" busy={busy === t.id} onPress={async () => { setBusy(t.id); try { const r = await sendTouch(t.id); setPeople({ t, list: r.recipients ?? [] }); await reload(); } catch (e) { flash((e as Error).message); } setBusy(''); }} />}
-              {ch?.social && <Btn soft label={t.social_post_id ? 'In Social Publishing' : 'To Social Publishing'} icon="share-social-outline" disabled={!!t.social_post_id} busy={busy === `s${t.id}`} onPress={() => run(`s${t.id}`, async () => { const r = await touchToSocial(t.id); flash(r.message); })} />}
+              {ch?.social && <Btn soft label={t.social_post_id ? 'In Social posts' : 'Send to Social posts'} icon="share-social-outline" disabled={!!t.social_post_id} busy={busy === `s${t.id}`} onPress={() => run(`s${t.id}`, async () => { const r = await touchToSocial(t.id); flash(r.message); })} />}
               <Btn soft label="Share with link" icon="share-outline" onPress={() => shareCopy(t)} />
               <Btn soft label="Edit" icon="create-outline" onPress={() => setEdit(t)} />
               {t.status !== 'done' && <Btn soft label="Mark done" icon="checkmark" onPress={() => run(`d${t.id}`, () => updateTouch(t, { status: 'done' }, 'Marked done'), 'Marked done')} />}
