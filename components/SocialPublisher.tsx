@@ -15,11 +15,11 @@ import {
 // Social Media Connection and Multi-Platform Publishing (blueprint 2.3), the app's screen. Same data and rules as the
 // website's /publish: accounts, write once and adapt per platform, draft / schedule / queue / publish, history and retry,
 // a calendar and performance.
-const TITLE = 'Social Media Connection and Multi-Platform Publishing';
+const TITLE = 'Social posts';
 type Tab = 'create' | 'posts' | 'calendar' | 'accounts' | 'performance' | 'autopilot';
 const TABS: { k: Tab; label: string; icon: string }[] = [
   { k: 'create', label: 'Create', icon: 'create-outline' }, { k: 'posts', label: 'Posts', icon: 'list-outline' }, { k: 'calendar', label: 'Calendar', icon: 'calendar-outline' },
-  { k: 'accounts', label: 'Accounts', icon: 'people-outline' }, { k: 'performance', label: 'Performance', icon: 'bar-chart-outline' }, { k: 'autopilot', label: 'Autopilot', icon: 'rocket-outline' },
+  { k: 'accounts', label: 'Accounts', icon: 'people-outline' }, { k: 'performance', label: 'Results', icon: 'bar-chart-outline' }, { k: 'autopilot', label: 'Autopilot', icon: 'rocket-outline' },
 ];
 const ICON: Record<PlatformKey, { name: string; color: string }> = {
   facebook: { name: 'logo-facebook', color: '#1877F2' }, instagram: { name: 'logo-instagram', color: '#C13584' }, tiktok: { name: 'logo-tiktok', color: '#0B1220' },

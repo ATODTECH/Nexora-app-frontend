@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, Share, StyleSheet, View } from 'react-native';
 import { AutopilotCard } from './AutopilotCard';
+import { MoreDetails } from './MoreDetails';
 import { Ionicons } from '@expo/vector-icons';
 import { Text, TextInput } from '../lib/inter';
 import { supabase } from '../lib/supabase';
@@ -12,7 +13,7 @@ import {
 
 // Business Idea Development and Planning (blueprint 2.2), the app's screen. Same steps, prompts and data as the
 // website's /plans: idea → customers and market → plans → offer and launch → learn and update.
-const TITLE = 'Business Idea Development and Planning';
+const TITLE = 'Business plans';
 const STEP_ICON: Record<string, string> = { idea: 'bulb-outline', concept: 'people-outline', plans: 'document-text-outline', launch: 'rocket-outline', learn: 'trending-up-outline' };
 const LEARN_STEP: StepDef = { key: 'learn', n: 5, title: 'Learn and update', sub: 'Write down what customers and results show, and update the plan', parts: [] };
 const STEPS = [...PLAN_STEPS, LEARN_STEP];
@@ -52,9 +53,7 @@ function PlanList({ onOpen, flash, wide }: { onOpen: (id: string) => void; flash
   };
   return (
     <ScrollView contentContainerStyle={[s.body, wide && s.wide]} keyboardShouldPersistTaps="handled">
-      <Text style={s.muted}>From an early idea to a concept, plans and a launch, then keep the plan up to date as you learn.</Text>
-      {/* Plans against real results: charts, a 6-month estimate and market research online, now or on autopilot */}
-      <AutopilotCard job="plan_review" flash={flash} choices={{ plans: (plans ?? []).map(p => ({ id: p.id, title: p.title })) }} />
+      <Text style={s.muted}>Turn an idea into a simple plan, and Nexora keeps it up to date.</Text>
       <View style={s.card}>
         <Head icon="bulb-outline" title="Start from an idea" sub="A sentence or two is enough. Nexora turns it into a concept and a plan, step by step." />
         <View style={[s.row, { marginTop: 14 }]}>
@@ -103,6 +102,10 @@ function PlanList({ onOpen, flash, wide }: { onOpen: (id: string) => void; flash
           );
         })}
       </View>
+      {/* Plans against real results: charts, a 6-month estimate and market research online, now or on autopilot. Folded so the screen starts simple. */}
+      <MoreDetails label="Show the plan review (sales against your plans, 6-month estimate)">
+        <AutopilotCard job="plan_review" flash={flash} choices={{ plans: (plans ?? []).map(p => ({ id: p.id, title: p.title })) }} />
+      </MoreDetails>
     </ScrollView>
   );
 }

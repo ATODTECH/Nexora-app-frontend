@@ -3,17 +3,18 @@ import { ActivityIndicator, Alert, Linking, Pressable, ScrollView, Share, StyleS
 import { Ionicons } from '@expo/vector-icons';
 import { Text, TextInput } from '../lib/inter';
 import { AutopilotCard, ChartCard, ChoiceChip } from './AutopilotCard';
+import { MoreDetails } from './MoreDetails';
 import {
   KIND_LABEL, PLATFORMS, VIA_LABEL, checkSite, createSite, deleteSite, health, loadEvents, loadSites, loadStats, platformInfo, retryEvent, rotate, setSigning,
   settingsOf, siteSecrets, successRate, testSite, updateSite, type Links, type Method, type Platform, type Site, type SiteEvent, type SiteSettings, type SiteStat,
 } from '../lib/website';
 
 // Website and Digital Channel Integration (blueprint 2.4), the app's screen. Same data and rules as the website's /website.
-const TITLE = 'Website and Digital Channel Integration';
+const TITLE = 'Your websites';
 type Tab = 'overview' | 'websites' | 'activity' | 'help' | 'autopilot';
 const TABS: { k: Tab; label: string; icon: string }[] = [
-  { k: 'overview', label: 'Overview', icon: 'bar-chart-outline' }, { k: 'websites', label: 'Websites', icon: 'globe-outline' }, { k: 'activity', label: 'Sync history', icon: 'list-outline' },
-  { k: 'help', label: 'Troubleshoot', icon: 'help-buoy-outline' }, { k: 'autopilot', label: 'Autopilot', icon: 'rocket-outline' },
+  { k: 'overview', label: 'Overview', icon: 'bar-chart-outline' }, { k: 'websites', label: 'Websites', icon: 'globe-outline' }, { k: 'activity', label: 'History', icon: 'list-outline' },
+  { k: 'help', label: 'Fix a problem', icon: 'help-buoy-outline' }, { k: 'autopilot', label: 'Autopilot', icon: 'rocket-outline' },
 ];
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const ago = (iso: string | null) => { if (!iso) return 'never'; const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`; };
@@ -77,15 +78,18 @@ function Overview({ sites, events, stats, go }: { sites: Site[]; events: SiteEve
   const tiles = [['Visits · 7 days', total('views', 23).toLocaleString()], ['Enquiries · 30 days', total('enquiries').toLocaleString()], ['Website orders · 30 days', total('orders').toLocaleString()], ['Sync success · 7 days', rate === null ? '—' : `${rate}%`]];
   return (
     <>
-      <View style={[s.row, { flexWrap: 'wrap', gap: 8 }]}>{tiles.map(([l, v]) => <View key={l} style={s.kpi}><Text style={s.tiny}>{l}</Text><Text style={{ fontSize: 20, fontWeight: '800', color: '#0B1220' }}>{v}</Text></View>)}</View>
-      <ChartCard w={w} cur="" c={{ type: 'line', title: 'Visits, enquiries and orders · 30 days', unit: 'count', x: days.map(d => `${+d.slice(8)} ${MON[+d.slice(5, 7) - 1]}`), series: [{ name: 'Visits', values: days.map(d => on('views', d)) }, { name: 'Enquiries', values: days.map(d => on('enquiries', d)) }, { name: 'Orders', values: days.map(d => on('orders', d)) }] }} />
-      <ChartCard w={w} cur="" c={{ type: 'funnel', title: 'From visit to order · 30 days', steps: [{ label: 'Visits', value: total('views') }, { label: 'Enquiries', value: total('enquiries') }, { label: 'Orders', value: total('orders') }] }} />
-      {!!Object.keys(sources).length && <ChartCard w={w} cur="" c={{ type: 'donut', title: 'Where visitors come from', items: Object.entries(sources).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([label, value]) => ({ label, value })) }} />}
-      <ChartCard w={w} cur="" c={{ type: 'bar', title: 'Health of each website (out of 100)', unit: 'count', items: sites.map(x => ({ label: x.name.slice(0, 14), value: health(x, events).score })) }} />
+      <View style={[s.row, { flexWrap: 'wrap', gap: 8 }]}>{tiles.slice(0, 3).map(([l, v]) => <View key={l} style={s.kpi}><Text style={s.tiny}>{l}</Text><Text style={{ fontSize: 20, fontWeight: '800', color: '#0B1220' }}>{v}</Text></View>)}</View>
       <View style={s.card}>
         <View style={s.row}><Text style={[s.bold, { flex: 1 }]}>Latest activity</Text><Pressable onPress={() => go('activity')}><Text style={s.link}>See all</Text></Pressable></View>
         {events.filter(e => e.kind !== 'page_view').slice(0, 5).map(e => <EventRow key={e.id} e={e} site={sites.find(x => x.id === e.connection_id)} />)}
       </View>
+      <MoreDetails>
+        <View style={[s.row, { flexWrap: 'wrap', gap: 8 }]}>{tiles.slice(3).map(([l, v]) => <View key={l} style={s.kpi}><Text style={s.tiny}>{l}</Text><Text style={{ fontSize: 20, fontWeight: '800', color: '#0B1220' }}>{v}</Text></View>)}</View>
+        <ChartCard w={w} cur="" c={{ type: 'line', title: 'Visits, enquiries and orders · 30 days', unit: 'count', x: days.map(d => `${+d.slice(8)} ${MON[+d.slice(5, 7) - 1]}`), series: [{ name: 'Visits', values: days.map(d => on('views', d)) }, { name: 'Enquiries', values: days.map(d => on('enquiries', d)) }, { name: 'Orders', values: days.map(d => on('orders', d)) }] }} />
+        <ChartCard w={w} cur="" c={{ type: 'funnel', title: 'From visit to order · 30 days', steps: [{ label: 'Visits', value: total('views') }, { label: 'Enquiries', value: total('enquiries') }, { label: 'Orders', value: total('orders') }] }} />
+        {!!Object.keys(sources).length && <ChartCard w={w} cur="" c={{ type: 'donut', title: 'Where visitors come from', items: Object.entries(sources).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([label, value]) => ({ label, value })) }} />}
+        <ChartCard w={w} cur="" c={{ type: 'bar', title: 'Health of each website (out of 100)', unit: 'count', items: sites.map(x => ({ label: x.name.slice(0, 14), value: health(x, events).score })) }} />
+      </MoreDetails>
     </>
   );
 }

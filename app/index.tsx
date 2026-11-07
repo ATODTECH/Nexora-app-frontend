@@ -1716,7 +1716,7 @@ const MENU_AREAS: MenuArea[] = [
   ] },
   { k: 'messages', icon: 'chatbubble-ellipses-outline', label: 'Messages', go: 'inbox', screens: ['inbox', 'inboxChat'], items: [
     { go: 'approvals', label: 'Approvals', screens: ['approvals'] },
-    { go: 'reception', label: 'AI Reception (calls)', screens: ['aiReception'] },
+    { go: 'reception', label: 'Calls and chats', screens: ['aiReception'] },
   ] },
   { k: 'customers', icon: 'people-outline', label: 'Customers', go: 'customers', screens: ['customersLive', 'customerDetail'], items: [
     { go: 'leads', label: 'Leads', screens: ['leads', 'leadDetail'] },
@@ -1729,7 +1729,7 @@ const MENU_AREAS: MenuArea[] = [
   ] },
   { k: 'marketing', icon: 'megaphone-outline', label: 'Marketing', screens: [], items: [
     { go: 'marketing', label: 'Campaigns', screens: ['aiMarketing', 'campaigns'] },
-    { go: 'publisher', label: 'Social publishing', screens: ['socialPublisher'] },
+    { go: 'publisher', label: 'Social posts', screens: ['socialPublisher'] },
     { go: 'broadcast', label: 'Broadcasts', screens: ['broadcast'] },
   ] },
   { k: 'shop', icon: 'qr-code-outline', label: 'AI shop link', go: 'shop', screens: ['storefront'], items: [
@@ -11914,13 +11914,28 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
         { label: 'Train AI', icon: 'brain', mci: true, onPress: () => handleCommandCenterPress('Train AI') },
         { label: 'Connect Apps', icon: 'extension-puzzle', onPress: () => handleCommandCenterPress('Connect Apps') },
         { label: 'Schedule', icon: 'calendar', onPress: () => handleCommandCenterPress('Schedule') },
-        { label: 'Create Post', icon: 'create', onPress: () => handleCommandCenterPress('Create Post') },
+        { label: 'Automate', icon: 'git-branch', onPress: () => openAutomations() },
+        { label: 'Team & Access', icon: 'people-circle', onPress: () => openSettings('team', { exit: () => openQuickActions(quickBackRef.current) }) },
+        { label: 'Approvals', icon: 'checkmark-done-circle', onPress: () => openApprovals('home') },
+      ] },
+      // Every capability (2.1 to 2.9) has a tile here, so anything in Nexora can be found from one screen.
+      { title: 'Run your business', tiles: [
+        { label: 'Orders', icon: 'bag-handle', onPress: () => openOrders('All') },
+        { label: 'Products & stock', icon: 'cube', onPress: () => setScreen('inventory') },
+        { label: 'Customers', icon: 'people-outline', onPress: () => openCustomers(() => openQuickActions(quickBackRef.current)) },
+        { label: 'Leads', icon: 'person-add', onPress: () => openLeads() },
+        { label: 'Sales pipeline', icon: 'funnel', onPress: () => { setScreen('crm'); loadContacts().catch(() => {}); } },
+        { label: 'Calls and chats', icon: 'call', onPress: () => setScreen('aiReception') },
+        { label: 'Business plans', icon: 'map', onPress: () => setScreen('businessPlanner') },
       ] },
       { title: 'Marketing & Growth', tiles: [
         { label: 'Biz insights', icon: 'stats-chart', onPress: () => openInsights() },
-        { label: 'Social posts', icon: 'color-wand', onPress: tool('social') },
-        { label: 'Campaign', icon: 'megaphone', onPress: () => openCampaigns() },
+        { label: 'Create Post', icon: 'create', onPress: () => handleCommandCenterPress('Create Post') },
+        { label: 'Social posts', icon: 'color-wand', onPress: () => setScreen('socialPublisher') },
+        { label: 'Campaign', icon: 'megaphone', onPress: () => setScreen('aiMarketing') },
+        { label: 'Broadcasts', icon: 'chatbubbles', onPress: () => openBroadcast() },
         { label: 'AI Shop Link', icon: 'storefront', onPress: () => { openStorefront().catch(() => {}); } },
+        { label: 'Websites', icon: 'globe-outline', onPress: () => setScreen('websiteIntegration') },
       ] },
       { title: 'Discovery and opportunity', tiles: [
         { label: 'Trending', icon: 'trending-up', onPress: openTrends },
@@ -11929,9 +11944,8 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
         { label: 'Find Online', icon: 'globe', onPress: () => openExplore() },
       ] },
       { title: 'AI Tools', tiles: [
-        { label: 'AI Employees', icon: 'people-circle', onPress: () => openSettings('team', { exit: () => openQuickActions(quickBackRef.current) }) },
         { label: 'Video Script', icon: 'videocam', onPress: tool('video') },
-        { label: 'Business Plan', icon: 'map', onPress: tool('plan') },
+        { label: 'Plan writer', icon: 'map', onPress: tool('plan') },
         { label: 'Launch Plan', icon: 'rocket', onPress: tool('launch') },
         { label: 'Summarize', icon: 'reader', onPress: tool('summary') },
         { label: 'Brainstorm', icon: 'bulb', onPress: tool('brainstorm') },
@@ -11952,10 +11966,6 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
       ] },
       { title: 'Your business', tiles: [
         { label: 'Daily briefing', icon: 'sunny', onPress: () => { setBriefingOpen(true); setQaBriefing(true); if (!briefing || briefing.day !== localIsoDate()) loadBriefing().catch(() => {}); } },
-        { label: 'Leads', icon: 'person-add', onPress: () => openLeads() },
-        { label: 'Customers', icon: 'people-outline', onPress: () => openCustomers(() => openQuickActions(quickBackRef.current)) },
-        { label: 'Orders', icon: 'bag-handle', onPress: () => openOrders('All') },
-        { label: 'Automations', icon: 'git-branch', onPress: () => openAutomations() },
         { label: 'Saved work', icon: 'bookmark', onPress: () => { setMainTab('brain'); setScreen('main'); openSavedLib().catch(() => {}); } },
         { label: 'Chat history', icon: 'chatbubbles', onPress: () => { setMainTab('brain'); setScreen('main'); openChatHistory().catch(() => {}); } },
       ] },

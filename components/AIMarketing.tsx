@@ -3,6 +3,7 @@ import { ActivityIndicator, Alert, Image, Linking, Modal, Pressable, ScrollView,
 import { Ionicons } from '@expo/vector-icons';
 import { Text, TextInput } from '../lib/inter';
 import { AutopilotCard, ChartCard, ChoiceChip } from './AutopilotCard';
+import { MoreDetails } from './MoreDetails';
 import {
   CHANNELS, KINDS, addTouch, loadResearch, channelLabel, copyB, createCampaign, deleteCampaign, deleteTouch, emptyBrief, fillCopy, generatePlan, loadAdvice, loadCampaigns, loadContext,
   loadResults, loadTouches, sendTouch, setCampaignStatus, touchLink, touchToSocial, updateTouch,
@@ -10,11 +11,11 @@ import {
 } from '../lib/aiMarketing';
 
 // AI Marketing and Campaign Management (blueprint 2.5), the app's screen. Same data and rules as the website's /marketing.
-const TITLE = 'AI Marketing and Campaign Management';
+const TITLE = 'Campaigns';
 type Tab = 'studio' | 'campaigns' | 'calendar' | 'audiences' | 'results' | 'advice' | 'autopilot';
 const TABS: { k: Tab; label: string; icon: string }[] = [
-  { k: 'studio', label: 'AI Studio', icon: 'sparkles-outline' }, { k: 'campaigns', label: 'Campaigns', icon: 'list-outline' }, { k: 'calendar', label: 'Calendar', icon: 'calendar-outline' },
-  { k: 'audiences', label: 'Audiences', icon: 'people-outline' }, { k: 'results', label: 'Results', icon: 'bar-chart-outline' }, { k: 'advice', label: 'Advice', icon: 'bulb-outline' },
+  { k: 'studio', label: 'Create', icon: 'sparkles-outline' }, { k: 'campaigns', label: 'Campaigns', icon: 'list-outline' }, { k: 'calendar', label: 'Calendar', icon: 'calendar-outline' },
+  { k: 'audiences', label: 'Audiences', icon: 'people-outline' }, { k: 'results', label: 'Results', icon: 'bar-chart-outline' }, { k: 'advice', label: 'Tips', icon: 'bulb-outline' },
   { k: 'autopilot', label: 'Autopilot', icon: 'rocket-outline' },
 ];
 const STATUS: Record<string, [string, string]> = { draft: ['#F2F4F7', '#5C6B7A'], scheduled: ['#EEF4FC', '#1E56A0'], active: ['#E6F4ED', '#1E9E6D'], ended: ['#F2F4F7', '#8A97A6'], planned: ['#F2F4F7', '#5C6B7A'], sent: ['#E6F4ED', '#1E9E6D'], shared: ['#E6F4ED', '#1E9E6D'], done: ['#E6F4ED', '#1E9E6D'], skipped: ['#F2F4F7', '#8A97A6'] };
@@ -95,17 +96,19 @@ function OnlineNow({ r, bt, onDate, title = 'What’s happening online' }: { r: 
           </Pressable>
         ))}</ScrollView>
       </>}
-      {!!r.trends.length && <>
-        <Text style={s.label}>Searched most today (Google Trends)</Text>
-        <View style={s.wrap}>{r.trends.slice(0, 10).map(t => (
-          <Pressable key={t.term} onPress={() => Linking.openURL(t.url).catch(() => {})} style={{ borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4, backgroundColor: t.relevant ? '#E6F4ED' : '#F2F4F7' }}>
-            <Text style={{ fontSize: 12, fontWeight: '600', color: t.relevant ? '#1E9E6D' : '#26313D' }}>{t.term}{t.traffic ? ` · ${t.traffic}` : ''}</Text>
-          </Pressable>
-        ))}</View>
-      </>}
-      {!!r.competitors.length && <><Text style={s.label}>What others are offering now (web search)</Text>{r.competitors.map(c => <Text key={c} style={s.small}>• {c}</Text>)}</>}
-      {!!r.news.length && <><Text style={s.label}>Market news</Text>{r.news.slice(0, 3).map(n => <Pressable key={n.url} onPress={() => Linking.openURL(n.url).catch(() => {})}><Text style={[s.link, { fontSize: 12.5 }]} numberOfLines={2}>{n.title}</Text></Pressable>)}</>}
-      {bt?.enough && <ChartCard w={Math.min(width, 1100) - 60} cur="" c={{ type: 'heatmap', title: `Best time to reach customers: ${bt.label}`, rows: bt.rows, cols: bt.cols, grid: bt.grid }} />}
+      <MoreDetails label="Show trends, news and the best time to post">
+        {!!r.trends.length && <>
+          <Text style={s.label}>Searched most today (Google Trends)</Text>
+          <View style={s.wrap}>{r.trends.slice(0, 10).map(t => (
+            <Pressable key={t.term} onPress={() => Linking.openURL(t.url).catch(() => {})} style={{ borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4, backgroundColor: t.relevant ? '#E6F4ED' : '#F2F4F7' }}>
+              <Text style={{ fontSize: 12, fontWeight: '600', color: t.relevant ? '#1E9E6D' : '#26313D' }}>{t.term}{t.traffic ? ` · ${t.traffic}` : ''}</Text>
+            </Pressable>
+          ))}</View>
+        </>}
+        {!!r.competitors.length && <><Text style={s.label}>What others are offering now (web search)</Text>{r.competitors.map(c => <Text key={c} style={s.small}>• {c}</Text>)}</>}
+        {!!r.news.length && <><Text style={s.label}>Market news</Text>{r.news.slice(0, 3).map(n => <Pressable key={n.url} onPress={() => Linking.openURL(n.url).catch(() => {})}><Text style={[s.link, { fontSize: 12.5 }]} numberOfLines={2}>{n.title}</Text></Pressable>)}</>}
+        {bt?.enough && <ChartCard w={Math.min(width, 1100) - 60} cur="" c={{ type: 'heatmap', title: `Best time to reach customers: ${bt.label}`, rows: bt.rows, cols: bt.cols, grid: bt.grid }} />}
+      </MoreDetails>
     </View>
   );
 }

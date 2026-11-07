@@ -3,13 +3,14 @@ import { ActivityIndicator, Linking, Pressable, ScrollView, Share, StyleSheet, S
 import { Ionicons } from '@expo/vector-icons';
 import { Text, TextInput } from '../lib/inter';
 import { ChartCard, ChoiceChip } from './AutopilotCard';
+import { MoreDetails } from './MoreDetails';
 import {
   CATEGORY, DAY_NAMES, OUTCOME, PROVIDERS, chatStats, cleanPhone, getReception, loadCalls, mmss, saveReception, testChat, testEnd, testStart, testTurn,
   updateCall, waLink, type Call, type ChatTest, type ReceptionInfo, type ReceptionSettings,
 } from '../lib/reception';
 
 // AI Customer Communication, Chat and Phone Reception (blueprint 2.6), the app's screen. Same data and rules as the website's /reception.
-const TITLE = 'AI Reception: calls and chats';
+const TITLE = 'Calls and chats';
 type Tab = 'overview' | 'calls' | 'test' | 'settings';
 const TABS: { k: Tab; label: string; icon: string }[] = [
   { k: 'overview', label: 'Overview', icon: 'bar-chart-outline' }, { k: 'calls', label: 'Calls', icon: 'call-outline' },
@@ -90,23 +91,27 @@ function Overview({ info, calls, chats, go, openCall }: { info: ReceptionInfo; c
         {!(st.phone_on && st.provider) && <Pressable onPress={() => go('settings')}><Text style={[s.link, { marginTop: 6 }]}>Connect a phone number</Text></Pressable>}
       </View>
       {!real.length && !!recent.length && <Text style={[s.small, { color: '#1E56A0' }]}>These figures come from your test calls until real calls come in.</Text>}
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
-        <Kpi label="Calls answered by Nexora" value={String(n(c => c.outcome === 'answered'))} note={`${base.length} calls in 30 days`} />
-        <Kpi label="After-hours calls caught" value={String(n(c => c.meta?.open_at_start === false))} note="Instead of voicemail" />
-        <Kpi label="Passed to your team" value={String(n(c => c.outcome === 'transferred'))} note="With a briefing" />
-        <Kpi label="Messages taken" value={String(n(c => c.outcome === 'message'))} note={`${n(c => !!c.task_id)} follow-up tasks`} />
-        <Kpi label="Average call" value={mmss(avg)} note="minutes" />
-        <Kpi label="Chat replies by Nexora" value={String(chats?.aiReplies ?? 0)} note={`${chats?.handovers ?? 0} handed to a person`} />
-      </View>
-      <ChartCard w={w} cur="" c={{ type: 'line', title: 'Calls per day (14 days)', unit: 'count', x: days.map(d => d.slice(8)), series: [
-        { name: 'Answered by Nexora', values: per(c => c.outcome === 'answered') }, { name: 'Needed a person', values: per(c => c.outcome === 'message' || c.outcome === 'transferred') },
-        { name: 'Chat replies', values: days.map(d => chats?.byDay[d] ?? 0), dashed: true },
-      ] }} />
-      {!!cats.length && <ChartCard w={w} cur="" c={{ type: 'donut', title: 'What callers wanted', items: cats }} />}
       <View style={s.card}>
         <Text style={s.bold}>Waiting for you</Text>
         {!todo.length ? <Text style={s.small}>Nothing waiting. Calls that need a callback show here.</Text> : todo.map(c => <CallRow key={c.id} c={c} onOpen={() => openCall(c)} />)}
       </View>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+        <Kpi label="Calls answered by Nexora" value={String(n(c => c.outcome === 'answered'))} note={`${base.length} calls in 30 days`} />
+        <Kpi label="Passed to your team" value={String(n(c => c.outcome === 'transferred'))} note="With a briefing" />
+        <Kpi label="Messages taken" value={String(n(c => c.outcome === 'message'))} note={`${n(c => !!c.task_id)} follow-up tasks`} />
+      </View>
+      <MoreDetails>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+          <Kpi label="After-hours calls caught" value={String(n(c => c.meta?.open_at_start === false))} note="Instead of voicemail" />
+          <Kpi label="Average call" value={mmss(avg)} note="minutes" />
+          <Kpi label="Chat replies by Nexora" value={String(chats?.aiReplies ?? 0)} note={`${chats?.handovers ?? 0} handed to a person`} />
+        </View>
+        <ChartCard w={w} cur="" c={{ type: 'line', title: 'Calls per day (14 days)', unit: 'count', x: days.map(d => d.slice(8)), series: [
+          { name: 'Answered by Nexora', values: per(c => c.outcome === 'answered') }, { name: 'Needed a person', values: per(c => c.outcome === 'message' || c.outcome === 'transferred') },
+          { name: 'Chat replies', values: days.map(d => chats?.byDay[d] ?? 0), dashed: true },
+        ] }} />
+        {!!cats.length && <ChartCard w={w} cur="" c={{ type: 'donut', title: 'What callers wanted', items: cats }} />}
+      </MoreDetails>
     </>
   );
 }

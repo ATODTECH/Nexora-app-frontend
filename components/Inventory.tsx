@@ -3,6 +3,7 @@ import { ActivityIndicator, Alert, Image, Linking, Modal, Pressable, ScrollView,
 import { Ionicons } from '@expo/vector-icons';
 import { Text, TextInput } from '../lib/inter';
 import { ChoiceChip } from './AutopilotCard';
+import { MoreDetails } from './MoreDetails';
 import {
   PO_STATUS, REASON, WRITE_OFF, addVariant, adjust, createPurchaseOrder, deletePurchaseOrder, download, loadInventory, loadMoves, loadPurchaseOrders, loadRestock,
   ordersForReturn, poText, receivePurchase, recordReturn, removeVariant, requestId, returnedSoFar, saveCount, saveDetails, saveRemindAt, saveSku,
@@ -132,9 +133,8 @@ function Overview({ products, moves, restock, sites, ccy, go, canManage, flash, 
   return (
     <>
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
-        <Kpi label="Products tracked" value={String(tracked.length)} note={`${live.length - tracked.length} not tracked yet`} />
+        <Kpi label="Products with a stock count" value={String(tracked.length)} note={`${live.length - tracked.length} without a stock number yet`} />
         <Kpi label="Units in stock" value={units.toLocaleString('en-US')} note={`${live.reduce((n, p) => n + p.variants.filter(v => v.active).length, 0)} variants`} />
-        <Kpi label="Stock value at cost" value={withCost.length ? fmt(costValue, ccy) : '—'} note={withCost.length ? `${withCost.length} of ${tracked.length} with a cost` : 'Add cost prices to see it'} />
         <Kpi label="Need restocking" value={String(out + low)} note={`${out} sold out · ${low} low · ${soon} soon`} red={out + low > 0} />
       </View>
       {out + low + soon > 0 && (
@@ -145,32 +145,37 @@ function Overview({ products, moves, restock, sites, ccy, go, canManage, flash, 
           <Text style={s.link}>Restock ›</Text>
         </Pressable>
       )}
-      <View style={s.card}>
-        <Text style={s.bold}>Last 30 days</Text>
-        <Text style={[s.small, { marginTop: 4 }]}>{sold} sold · {got} received or returned · {lost} written off</Text>
-        {top.length > 0 && <Text style={[s.label, { marginTop: 12 }]}>Best sellers</Text>}
-        {top.map(r => (
-          <View key={`${r.item_id}|${r.variant_id ?? ''}`} style={[s.row, { paddingVertical: 5 }]}>
-            <Text style={[s.small, { flex: 1, color: '#0B1220' }]} numberOfLines={1}>{r.name}{r.variant_name ? ` (${r.variant_name})` : ''}</Text>
-            <Text style={s.small}>{r.sold_30d} sold · {r.stock} left</Text>
-          </View>))}
-      </View>
-      <View style={s.card}>
-        <Text style={s.bold}>Where your stock is kept the same</Text>
-        <Text style={[s.small, { marginTop: 6 }]}>AI shop link: customers can’t order more than you have. Orders you add take stock; cancelled orders give it back. You’re alerted if an order takes more than you had.</Text>
-        {sites.map(site => {
-          const cb = String(site.settings?.callback_url ?? ''), push = site.settings?.stock_push === true, takes = site.settings?.stock_from_orders !== false;
-          return (
-            <View key={site.id} style={[s.row, { gap: 10, marginTop: 10 }]}>
-              <View style={{ flex: 1 }}><Text style={s.bold}>{site.name}</Text>
-                <Text style={s.tiny}>{takes ? 'Its orders take stock here' : 'Its orders don’t change stock'} · {cb ? (push ? 'Nexora sends it stock changes' : 'Send stock changes to it?') : 'Add a callback address in Websites to send stock changes'}</Text></View>
-              {canManage && <Switch value={push} disabled={!cb} accessibilityLabel={`Send stock changes to ${site.name}`} onValueChange={async v => {
-                try { await setStockPush(site, v); onSites(sites.map(x => x.id === site.id ? { ...x, settings: { ...x.settings, stock_push: v } } : x)); flash(v ? 'Stock changes will be sent' : 'Stopped sending stock changes'); } catch (e) { flash((e as Error).message); }
-              }} />}
-            </View>);
-        })}
-        {!sites.length && <Text style={[s.tiny, { marginTop: 8 }]}>No website connected. Connect one in AI shop link › Websites to keep its stock the same.</Text>}
-      </View>
+      <MoreDetails label="Show stock value, best sellers and where stock is kept the same">
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+          <Kpi label="Stock value at cost" value={withCost.length ? fmt(costValue, ccy) : '—'} note={withCost.length ? `${withCost.length} of ${tracked.length} with a cost` : 'Add cost prices to see it'} />
+        </View>
+        <View style={s.card}>
+          <Text style={s.bold}>Last 30 days</Text>
+          <Text style={[s.small, { marginTop: 4 }]}>{sold} sold · {got} received or returned · {lost} written off</Text>
+          {top.length > 0 && <Text style={[s.label, { marginTop: 12 }]}>Best sellers</Text>}
+          {top.map(r => (
+            <View key={`${r.item_id}|${r.variant_id ?? ''}`} style={[s.row, { paddingVertical: 5 }]}>
+              <Text style={[s.small, { flex: 1, color: '#0B1220' }]} numberOfLines={1}>{r.name}{r.variant_name ? ` (${r.variant_name})` : ''}</Text>
+              <Text style={s.small}>{r.sold_30d} sold · {r.stock} left</Text>
+            </View>))}
+        </View>
+        <View style={s.card}>
+          <Text style={s.bold}>Where your stock is kept the same</Text>
+          <Text style={[s.small, { marginTop: 6 }]}>AI shop link: customers can’t order more than you have. Orders you add take stock; cancelled orders give it back. You’re alerted if an order takes more than you had.</Text>
+          {sites.map(site => {
+            const cb = String(site.settings?.callback_url ?? ''), push = site.settings?.stock_push === true, takes = site.settings?.stock_from_orders !== false;
+            return (
+              <View key={site.id} style={[s.row, { gap: 10, marginTop: 10 }]}>
+                <View style={{ flex: 1 }}><Text style={s.bold}>{site.name}</Text>
+                  <Text style={s.tiny}>{takes ? 'Its orders take stock here' : 'Its orders don’t change stock'} · {cb ? (push ? 'Nexora sends it stock changes' : 'Send stock changes to it?') : 'Add a callback address in Websites to send stock changes'}</Text></View>
+                {canManage && <Switch value={push} disabled={!cb} accessibilityLabel={`Send stock changes to ${site.name}`} onValueChange={async v => {
+                  try { await setStockPush(site, v); onSites(sites.map(x => x.id === site.id ? { ...x, settings: { ...x.settings, stock_push: v } } : x)); flash(v ? 'Stock changes will be sent' : 'Stopped sending stock changes'); } catch (e) { flash((e as Error).message); }
+                }} />}
+              </View>);
+          })}
+          {!sites.length && <Text style={[s.tiny, { marginTop: 8 }]}>No website connected. Connect one in AI shop link › Websites to keep its stock the same.</Text>}
+        </View>
+      </MoreDetails>
     </>
   );
 }
