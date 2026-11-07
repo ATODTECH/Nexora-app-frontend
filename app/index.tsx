@@ -29,6 +29,7 @@ import { BrainAssistant } from '../components/BrainAssistant';
 import { BusinessPlanner } from '../components/BusinessPlanner';
 import { SocialPublisher } from '../components/SocialPublisher';
 import { WebsiteIntegration } from '../components/WebsiteIntegration';
+import { Inventory } from '../components/Inventory';
 import { AIReception } from '../components/AIReception';
 import { CRMScreen } from '../components/CRM';
 import { ShopMore } from '../components/ShopMore';
@@ -1174,7 +1175,7 @@ function BrandIcon({ platform, size = 36, ring = false }: { platform: Conversati
   );
 }
 
-type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'campaigns'|'automations'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules'|'opportunities'|'opportunityDetail'|'settings'|'quickActions'|'activityLog'|'approvals'|'brainAssistant'|'businessPlanner'|'socialPublisher'|'websiteIntegration'|'aiMarketing'|'aiReception'|'crm';
+type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'campaigns'|'automations'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules'|'opportunities'|'opportunityDetail'|'settings'|'quickActions'|'activityLog'|'approvals'|'brainAssistant'|'businessPlanner'|'socialPublisher'|'websiteIntegration'|'aiMarketing'|'aiReception'|'crm'|'inventory';
 type KnowledgeCategory='products'|'services'|'operations'|'policies'|'faqs';
 type KnowledgeField={label:string;value:string};
 // ---- Brain AI tools (company guide, 29 Oct 2026): organised tools instead of one crowded screen ----
@@ -1724,7 +1725,7 @@ const MENU_AREAS: MenuArea[] = [
     { go: 'schedule', label: 'Tasks and schedule', screens: ['agenda', 'agendaPriority', 'agendaCreate'] },
   ] },
   { k: 'orders', icon: 'cube-outline', label: 'Orders', go: 'orders', screens: ['orders'], items: [
-    { go: 'products', label: 'Products and inventory', screens: [] },
+    { go: 'inventory', label: 'Products and inventory', screens: ['inventory'] },
   ] },
   { k: 'marketing', icon: 'megaphone-outline', label: 'Marketing', screens: [], items: [
     { go: 'marketing', label: 'Campaigns', screens: ['aiMarketing', 'campaigns'] },
@@ -3964,7 +3965,7 @@ function HomeScreenInner(){
       if (screen === 'brainAssistant') { goTab('brain'); return true; }
       if (screen === 'businessPlanner') { goTab('home'); return true; }
       if (screen === 'socialPublisher') { goTab('home'); return true; }
-      if (screen === 'websiteIntegration' || screen === 'aiMarketing') { goTab('home'); return true; }
+      if (screen === 'websiteIntegration' || screen === 'aiMarketing' || screen === 'inventory') { goTab('home'); return true; }
       if (screen === 'aiReception') { goTab('inbox'); return true; }
       if (screen === 'crm') { openCustomers(); return true; }
       if (screen === 'opportunityDetail') { setScreen('opportunities'); return true; }
@@ -8368,6 +8369,7 @@ function HomeScreenInner(){
           case 'approvals': openApprovals('home'); break;
           case 'followups': openFollowups().catch(() => {}); break;
           case 'products': openKnowledgeList('products'); break;
+          case 'inventory': setScreen('inventory'); break;
           case 'broadcast': openBroadcast(); break;
           case 'activity': setScreen('activityLog'); break;
           case 'reception': setScreen('aiReception'); break;
@@ -12313,6 +12315,8 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
     openCustomer={id => { const row = contacts.find(x => x.id === id); if (row) openContact(row); else flash('Open them from Customers.'); }} />;
   if (screen === 'aiReception') return <AIReception flash={flash} topInset={insets.top} wide={isDesktopWeb} onBack={() => goTab('inbox')}
     goTo={h => { const m: Record<string, Screen> = { '/schedule': 'agenda', '/customers': 'customersLive', '/approvals': 'approvals' }; const to = m[h.split('?')[0]]; if (to) setScreen(to); }} />;
+  if (screen === 'inventory') return <Inventory userId={userId ?? ''} business={workspace?.name || ''} currency={/nigeria/i.test(workspace?.country || '') || (!workspace?.country && LOCAL_NGN) ? 'NGN' : 'USD'}
+    canManage={access.can('products_manage')} flash={flash} topInset={insets.top} wide={isDesktopWeb} onBack={() => goTab('home')} onProducts={() => openKnowledgeList('products')} />;
   if (screen === 'websiteIntegration') return <WebsiteIntegration flash={flash} topInset={insets.top} wide={isDesktopWeb} onBack={() => goTab('home')}
     goTo={h => { const m: Record<string, Screen> = { '/orders': 'orders', '/publish': 'socialPublisher', '/plans': 'businessPlanner', '/website': 'websiteIntegration', '/leads': 'leads', '/approvals': 'approvals', '/customers': 'customersLive' }; const to = m[h.split('?')[0]]; if (to) setScreen(to); }} />;
   if (screen === 'socialPublisher') return <SocialPublisher userId={userId ?? ''} flash={flash} topInset={insets.top} wide={isDesktopWeb} onBack={() => goTab('home')} />;

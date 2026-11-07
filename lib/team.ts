@@ -125,6 +125,7 @@ export const logExport = (what: string, count: number) => { supabase.rpc('log_ex
 // Screens not listed are open to everyone on the team. 'owner': only the owner. Same areas as the website's pages.
 const SCREEN_NEEDS: Record<string, Perm[] | 'owner'> = {
   orders: ['orders_view'],
+  inventory: ['products_view'],
   customers: ['customers_view'], customersLive: ['customers_view'], customerDetail: ['customers_view'], customerProfile: ['customers_view'],
   addCustomer: ['customers_manage'], interactionHistory: ['customers_view'], leads: ['customers_view'], leadDetail: ['customers_view'], followups: ['customers_view'], crm: ['customers_view'],
   inboxChat: ['inbox_view'], 'tab:inbox': ['inbox_view'],
