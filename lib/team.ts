@@ -3,7 +3,7 @@ import { supabase } from './supabase';
 // Team roles and permissions. Same rules as the database (nx_role_permissions / staff_can) and the website's
 // src/lib/team.ts. The database enforces every permission; these helpers only decide what each person's screens show.
 export type Perm =
-  | 'orders_view' | 'orders_manage' | 'customers_view' | 'customers_manage' | 'products_view' | 'products_manage'
+  | 'orders_view' | 'orders_manage' | 'customers_view' | 'customers_manage' | 'customers_sensitive' | 'products_view' | 'products_manage'
   | 'knowledge_manage' | 'inbox_view' | 'inbox_manage' | 'marketing_view' | 'marketing_manage' | 'export' | 'team_manage' | 'approvals_manage';
 export type Perms = Partial<Record<Perm, boolean>>;
 export type JobRole = 'owner' | 'admin' | 'manager' | 'sales' | 'support' | 'inventory' | 'marketing' | 'analyst' | 'custom';
@@ -30,6 +30,7 @@ export const AREAS: { key: 'orders' | 'customers' | 'products' | 'inbox' | 'mark
 ];
 export const EXTRAS: { key: Perm; label: string; sub: string; ownerOnly?: boolean }[] = [
   { key: 'knowledge_manage', label: 'Train AI', sub: 'Edit policies, FAQs and how the business works' },
+  { key: 'customers_sensitive', label: 'See contact details', sub: 'See customers’ phone numbers, emails, addresses and birthdays (each look is logged)' },
   { key: 'export', label: 'Export data', sub: 'Download orders, customers and other lists' },
   { key: 'team_manage', label: 'Manage the team', sub: 'Invite, change access, suspend, and see the activity log', ownerOnly: true },
   { key: 'approvals_manage', label: 'Approve team requests', sub: 'Approve or reject refunds, cancellations, stock corrections, campaign posts and bulk messages', ownerOnly: true },
@@ -37,10 +38,10 @@ export const EXTRAS: { key: Perm; label: string; sub: string; ownerOnly?: boolea
 
 const ALL_MANAGE: Perm[] = ['orders_manage', 'customers_manage', 'products_manage', 'knowledge_manage', 'inbox_manage', 'marketing_manage', 'export'];
 const PRESETS: Record<Exclude<StaffRole, 'custom'>, Perm[]> = {
-  admin: [...ALL_MANAGE, 'team_manage', 'approvals_manage'],
-  manager: [...ALL_MANAGE, 'approvals_manage'],
-  sales: ['orders_manage', 'customers_manage', 'products_view', 'inbox_manage', 'export'],
-  support: ['inbox_manage', 'customers_manage', 'orders_view', 'products_view'],
+  admin: [...ALL_MANAGE, 'customers_sensitive', 'team_manage', 'approvals_manage'],
+  manager: [...ALL_MANAGE, 'customers_sensitive', 'approvals_manage'],
+  sales: ['orders_manage', 'customers_manage', 'customers_sensitive', 'products_view', 'inbox_manage', 'export'],
+  support: ['inbox_manage', 'customers_manage', 'customers_sensitive', 'orders_view', 'products_view'],
   inventory: ['products_manage', 'orders_manage'],
   marketing: ['marketing_manage', 'customers_view', 'products_view'],
   analyst: ['orders_view', 'customers_view', 'products_view', 'inbox_view', 'marketing_view', 'export'],
@@ -125,7 +126,7 @@ export const logExport = (what: string, count: number) => { supabase.rpc('log_ex
 const SCREEN_NEEDS: Record<string, Perm[] | 'owner'> = {
   orders: ['orders_view'],
   customers: ['customers_view'], customersLive: ['customers_view'], customerDetail: ['customers_view'], customerProfile: ['customers_view'],
-  addCustomer: ['customers_manage'], interactionHistory: ['customers_view'], leads: ['customers_view'], leadDetail: ['customers_view'], followups: ['customers_view'],
+  addCustomer: ['customers_manage'], interactionHistory: ['customers_view'], leads: ['customers_view'], leadDetail: ['customers_view'], followups: ['customers_view'], crm: ['customers_view'],
   inboxChat: ['inbox_view'], 'tab:inbox': ['inbox_view'],
   campaigns: ['marketing_view'], broadcast: ['inbox_manage'],
   activityLog: ['team_manage'],

@@ -30,6 +30,7 @@ import { BusinessPlanner } from '../components/BusinessPlanner';
 import { SocialPublisher } from '../components/SocialPublisher';
 import { WebsiteIntegration } from '../components/WebsiteIntegration';
 import { AIReception } from '../components/AIReception';
+import { CRMScreen } from '../components/CRM';
 import { AIMarketing } from '../components/AIMarketing';
 import { savePrompt } from '../lib/brainAssistant';
 import { openPaystackPopup } from '../lib/paystackPopup';
@@ -1172,7 +1173,7 @@ function BrandIcon({ platform, size = 36, ring = false }: { platform: Conversati
   );
 }
 
-type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'campaigns'|'automations'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules'|'opportunities'|'opportunityDetail'|'settings'|'quickActions'|'activityLog'|'approvals'|'brainAssistant'|'businessPlanner'|'socialPublisher'|'websiteIntegration'|'aiMarketing'|'aiReception';
+type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'campaigns'|'automations'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules'|'opportunities'|'opportunityDetail'|'settings'|'quickActions'|'activityLog'|'approvals'|'brainAssistant'|'businessPlanner'|'socialPublisher'|'websiteIntegration'|'aiMarketing'|'aiReception'|'crm';
 type KnowledgeCategory='products'|'services'|'operations'|'policies'|'faqs';
 type KnowledgeField={label:string;value:string};
 // ---- Brain AI tools (company guide, 29 Oct 2026): organised tools instead of one crowded screen ----
@@ -1717,6 +1718,7 @@ const MENU_AREAS: MenuArea[] = [
   ] },
   { k: 'customers', icon: 'people-outline', label: 'Customers', go: 'customers', screens: ['customersLive', 'customerDetail'], items: [
     { go: 'leads', label: 'Leads', screens: ['leads', 'leadDetail'] },
+    { go: 'crm', label: 'Pipeline and segments', screens: ['crm'] },
     { go: 'followups', label: 'Follow-ups', screens: ['followups'] },
     { go: 'schedule', label: 'Tasks and schedule', screens: ['agenda', 'agendaPriority', 'agendaCreate'] },
   ] },
@@ -3815,7 +3817,7 @@ function HomeScreenInner(){
   const [reportSending, setReportSending] = useState(false);
   // Live Leads & Customers (customers table). A row whose segment is
   // Lead / Contacted / Qualified is a lead; New / VIP / Active is a customer.
-  type ContactRow = { id: string; name: string; channel: string; handle: string; segment: string; location: string | null; total_orders: number | null; total_spent: number | null; last_order_at: string | null; customer_since: string | null; ai_recommendation: string | null; segments: string[] | null; tags: string[] | null; last_interaction_at: string | null; created_at: string; follow_up_at?: string | null; follow_up_note?: string; notes?: string; phone?: string; email?: string };
+  type ContactRow = { id: string; name: string; channel: string; handle: string; segment: string; location: string | null; total_orders: number | null; total_spent: number | null; last_order_at: string | null; customer_since: string | null; ai_recommendation: string | null; segments: string[] | null; tags: string[] | null; last_interaction_at: string | null; created_at: string; follow_up_at?: string | null; follow_up_note?: string; notes?: string; phone?: string; email?: string; masked?: boolean; rfm?: string; lead_score?: number };
   const [contacts, setContacts] = useState<ContactRow[]>([]);
   const [contactsLoading, setContactsLoading] = useState(false);
   const [contactFilter, setContactFilter] = useState('All');
@@ -3953,6 +3955,7 @@ function HomeScreenInner(){
       if (screen === 'socialPublisher') { goTab('home'); return true; }
       if (screen === 'websiteIntegration' || screen === 'aiMarketing') { goTab('home'); return true; }
       if (screen === 'aiReception') { goTab('inbox'); return true; }
+      if (screen === 'crm') { openCustomers(); return true; }
       if (screen === 'opportunityDetail') { setScreen('opportunities'); return true; }
       if (screen === 'opportunities') { marketBackRef.current(); return true; }
       if ((screen === 'explore' || screen === 'trends' || screen === 'community') && exploreBackRef.current) { exploreBackRef.current(); return true; }
@@ -5413,6 +5416,9 @@ function HomeScreenInner(){
   const loadContacts = async () => {
     setContactsLoading(true);
     try {
+      // CRM (2.7): totals, groups and scores, with contact details hidden from team members who aren't allowed to see them.
+      const crm = await supabase.rpc('crm_contacts');
+      if (!crm.error) { setContacts((crm.data ?? []) as ContactRow[]); return; }
       const { data, error } = await supabase.from('customers')
         .select('*').order('created_at', { ascending: false }).limit(1000);
       if (error) throw error;
@@ -5455,8 +5461,9 @@ function HomeScreenInner(){
     if (date) logInteraction(c, 'Follow-ups', `Follow-up planned for ${date}`, note).catch(() => {});
   };
   const followUpsDue = () => { const today = localIsoDate(); return contacts.filter(c => c.follow_up_at && c.follow_up_at <= today); };
-  const contactPhone = (c: ContactRow) => (c.phone ? c.phone.replace(/[^\d+]/g, '') : /^\+?[\d\s()-]{7,}$/.test(c.handle || '') ? c.handle.replace(/[^\d+]/g, '') : '');
-  const contactEmail = (c: ContactRow) => (c.email && EMAIL_REGEX.test(c.email) ? c.email : EMAIL_REGEX.test(c.handle || '') ? c.handle : '');
+  // Team members without "See contact details" get hidden numbers and emails (CRM 2.7), so there is nothing to call or write to.
+  const contactPhone = (c: ContactRow) => c.masked ? '' : (c.phone ? c.phone.replace(/[^\d+]/g, '') : /^\+?[\d\s()-]{7,}$/.test(c.handle || '') ? c.handle.replace(/[^\d+]/g, '') : '');
+  const contactEmail = (c: ContactRow) => c.masked ? '' : (c.email && EMAIL_REGEX.test(c.email) ? c.email : EMAIL_REGEX.test(c.handle || '') ? c.handle : '');
   const contactConversation = (c: ContactRow) => conversations.find(v => v.live && v.channel === String(c.channel || '').toLowerCase()
     && ((!!c.handle && (v.handle === c.handle || v.externalId === c.handle.replace(/[^\d]/g, ''))) || v.name.toLowerCase() === c.name.toLowerCase()));
   const messageContact = (c: ContactRow) => {
@@ -8353,6 +8360,7 @@ function HomeScreenInner(){
           case 'broadcast': openBroadcast(); break;
           case 'activity': setScreen('activityLog'); break;
           case 'reception': setScreen('aiReception'); break;
+          case 'crm': setScreen('crm'); loadContacts().catch(() => {}); break;
         }
       },
     };
@@ -12289,6 +12297,9 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
   }
   if (screen === 'aiMarketing') return <AIMarketing flash={flash} topInset={insets.top} wide={isDesktopWeb} onBack={() => goTab('home')}
     goTo={h => { const m: Record<string, Screen> = { '/orders': 'orders', '/publish': 'socialPublisher', '/plans': 'businessPlanner', '/website': 'websiteIntegration', '/marketing': 'aiMarketing', '/campaigns': 'campaigns', '/leads': 'leads', '/approvals': 'approvals', '/customers': 'customersLive' }; const to = m[h.split('?')[0]]; if (to) setScreen(to); }} />;
+  if (screen === 'crm') return <CRMScreen userId={userId ?? ''} flash={flash} topInset={insets.top} wide={isDesktopWeb} onBack={() => openCustomers()}
+    isOwner={access.isOwner} canManage={access.can('customers_manage')} canExport={access.can('export')}
+    openCustomer={id => { const row = contacts.find(x => x.id === id); if (row) openContact(row); else flash('Open them from Customers.'); }} />;
   if (screen === 'aiReception') return <AIReception flash={flash} topInset={insets.top} wide={isDesktopWeb} onBack={() => goTab('inbox')}
     goTo={h => { const m: Record<string, Screen> = { '/schedule': 'agenda', '/customers': 'customersLive', '/approvals': 'approvals' }; const to = m[h.split('?')[0]]; if (to) setScreen(to); }} />;
   if (screen === 'websiteIntegration') return <WebsiteIntegration flash={flash} topInset={insets.top} wide={isDesktopWeb} onBack={() => goTab('home')}
