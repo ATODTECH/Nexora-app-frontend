@@ -1710,13 +1710,16 @@ const MENU_AREAS: MenuArea[] = [
   { k: 'home', icon: 'home-outline', label: 'Home', go: 'home', screens: ['home', 'quickActions'], items: [] },
   { k: 'brain', icon: 'sparkles-outline', label: 'Brain', go: 'brain', screens: ['brain'], items: [
     { go: 'assistant', label: 'AI tools and workflows', screens: ['brainAssistant'] },
+    { go: 'planner', label: 'Business plans', screens: ['businessPlanner'] },
     { go: 'saved', label: 'Saved work', screens: [] },
     { go: 'knowledge', label: 'Knowledge base', screens: ['knowledgeHealth', 'knowledgeList', 'itemDetail', 'itemEdit', 'addKnowledge', 'missingImages'] },
     { go: 'learned', label: 'What Nexora learned', screens: ['learned'] },
   ] },
-  { k: 'messages', icon: 'chatbubble-ellipses-outline', label: 'Messages', go: 'inbox', screens: ['inbox', 'inboxChat', 'approvals', 'aiReception', 'connectChannels'], items: [] },
+  { k: 'messages', icon: 'chatbubble-ellipses-outline', label: 'Inbox', go: 'inbox', screens: ['inbox', 'inboxChat', 'approvals', 'aiReception', 'connectChannels'], items: [] },
   { k: 'customers', icon: 'people-outline', label: 'Customers', go: 'customers', screens: ['customersLive', 'customerDetail', 'leads', 'leadDetail', 'crm', 'followups', 'agenda', 'agendaPriority', 'agendaCreate'], items: [] },
-  { k: 'orders', icon: 'cube-outline', label: 'Orders', go: 'orders', screens: ['orders', 'inventory'], items: [] },
+  { k: 'orders', icon: 'bag-handle-outline', label: 'Orders', go: 'orders', screens: ['orders'], items: [] },
+  // 8 Nov 2026 (same as the website): Products and stock (2.9) has its own button; Business plans (2.2) sits under Brain.
+  { k: 'products', icon: 'cube-outline', label: 'Products and stock', go: 'inventory', screens: ['inventory'], items: [] },
   { k: 'marketing', icon: 'megaphone-outline', label: 'Marketing', screens: [], items: [
     { go: 'marketing', label: 'Campaigns', screens: ['aiMarketing', 'campaigns'] },
     { go: 'publisher', label: 'Social posts', screens: ['socialPublisher'] },
@@ -1727,7 +1730,7 @@ const MENU_AREAS: MenuArea[] = [
     { go: 'automations', label: 'Workflows', screens: ['automations'] },
     { go: 'rules', label: 'What Nexora decides', screens: ['rules'] },
   ] },
-  { k: 'insights', icon: 'stats-chart-outline', label: 'Business Insights', go: 'insights', screens: ['insights', 'businessPlanner', 'trends', 'opportunities', 'opportunityDetail'], items: [] },
+  { k: 'insights', icon: 'stats-chart-outline', label: 'Business Insights', go: 'insights', screens: ['insights', 'trends', 'opportunities', 'opportunityDetail'], items: [] },
   { k: 'market', icon: 'storefront-outline', label: 'Market', go: 'market', screens: ['market', 'explore', 'browser', 'community', 'communityPost', 'network'], items: [] },
   { k: 'settings', icon: 'settings-outline', label: 'Settings', screens: [], items: [
     { go: 'profile', label: 'Business profile', screens: ['profile', 'settings'] },
@@ -1737,7 +1740,7 @@ const MENU_AREAS: MenuArea[] = [
   ] },
 ];
 // Shown at the bottom of the menu so you can tell which build is on a phone. Update RELEASE with each new build.
-const APP_RELEASE = '2.9 · 7 Nov 2026';
+const APP_RELEASE = '2.10 · 8 Nov 2026';
 const APP_RELEASE_LABEL = `Nexora ${Constants.expoConfig?.version ?? ''} · Release ${APP_RELEASE}`;
 const menuAreaOf = (active: string) => MENU_AREAS.find(a => a.screens.includes(active) || a.items.some(i => i.screens.includes(active)))?.k ?? null;
 /** The menu, used by the phone drawer (light) and the computer sidebar (dark). `run` closes the drawer first on phones. */
@@ -10361,7 +10364,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
   const renderBottomNav = () => {
     if (IS_WEB && userId && hookWidth >= 1000) return null;   // the desktop sidebar replaces the phone tab bar
     // Five tabs, as in the design: Home, Inbox, Brain, Market, Profile. The active one becomes a dark pill with its name.
-    const tabs: [MainTab, string, string][] = [['home', 'home-outline', 'Home'], ['inbox', 'chatbubble-ellipses-outline', 'Messages'], ['brain', 'sparkles-outline', 'Brain'], ['market', 'storefront-outline', 'Market'], ['profile', 'person-circle-outline', 'Profile']];
+    const tabs: [MainTab, string, string][] = [['home', 'home-outline', 'Home'], ['inbox', 'chatbubble-ellipses-outline', 'Inbox'], ['brain', 'sparkles-outline', 'Brain'], ['market', 'storefront-outline', 'Market'], ['profile', 'person-circle-outline', 'Profile']];
     const unreadN = conversations.filter(c => c.unread > 0).length;
     return (
       <View style={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 10 + insets.bottom, backgroundColor: 'transparent' }}>
@@ -10554,10 +10557,23 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8 }}>
                 <Text style={{ fontSize: 15, color: '#6B7A8C' }}>{roleLabel}</Text>
                 {!!workspace && <Pressable onPress={() => openBilling(() => goTab('profile'))} style={{ backgroundColor: '#1AA6CF', borderRadius: 16, paddingHorizontal: 14, height: 30, justifyContent: 'center' }}><Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '600' }}>{planName || 'Free'} Plan</Text></Pressable>}
-                {awayMode && <Text style={{ color: '#0B1220', backgroundColor: '#FFD27A', fontSize: 11, fontWeight: '800', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, overflow: 'hidden' }}>AUTOPILOT ON</Text>}
+                {awayMode && <Text style={{ color: '#0B1220', backgroundColor: '#FFD27A', fontSize: 11, fontWeight: '800', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, overflow: 'hidden' }}>AWAY</Text>}
               </View>
             </View>
             <View style={{ paddingHorizontal: 16, width: '100%', maxWidth: 720, alignSelf: 'center' }}>
+              {/* I'm around / I'm away (company feedback 8 Nov 2026, same as the website): moved here from the Inbox. */}
+              <View style={{ marginTop: 20, borderRadius: 22, borderWidth: 1, borderColor: '#E6ECF3', backgroundColor: '#FFFFFF', padding: 16 }}>
+                <Text style={{ fontSize: 15, fontWeight: '700', color: '#0B1220' }}>Are you around?</Text>
+                <Text style={{ fontSize: 13, color: '#5C6B7A', marginTop: 2 }}>{awayMode ? 'Nexora is answering your customers for you using your knowledge base.' : 'Nexora only drafts replies. You send them yourself.'}</Text>
+                <View accessibilityRole="radiogroup" style={{ flexDirection: 'row', gap: 4, marginTop: 12, backgroundColor: '#EEF2F7', borderRadius: 16, padding: 4 }}>
+                  {([[false, "I'm around"], [true, "I'm away"]] as const).map(([v, l]) => (
+                    <Pressable key={l} onPress={() => { if (awayMode !== v) setAway(v); }} accessibilityRole="radio" accessibilityState={{ checked: awayMode === v }}
+                      style={{ flex: 1, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: awayMode === v ? (v ? '#0F2942' : '#FFFFFF') : 'transparent' }}>
+                      <Text style={{ fontSize: 14, fontWeight: '700', color: awayMode === v ? (v ? '#FFFFFF' : '#0B1220') : '#5C6B7A' }}>{l}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
               {isFree && workspace?.role !== 'staff' && (
                 <View style={{ marginTop: 20, borderRadius: 22, backgroundColor: '#0F2942', padding: 18, flexDirection: 'row', alignItems: 'center', gap: 12 }}>
                   <Ionicons name="sparkles" size={26} color="#E7B6FF" style={{ alignSelf: 'flex-start' }} />
@@ -10656,7 +10672,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
             {/* Back to Home (Inbox is also in the bottom bar). */}
             <Pressable onPress={() => goTab('home')} hitSlop={10} accessibilityRole="button" accessibilityLabel="Back" style={{ marginRight: 8 }}><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
             <View style={{ flex: 1 }}>
-              <Text style={styles.knowledgeHeaderTitle}>Messages</Text>
+              <Text style={styles.knowledgeHeaderTitle}>Inbox</Text>
             </View>
             {/* Entry point into the social-media reference gallery (all 21
                 files in the Supabase 'social-media' bucket: Inbox-1..14,
@@ -10666,26 +10682,10 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                 screen these screens actually belong to. */}
             {/* NEW: entry point into the Customers CRM (Customers/Customer
                 Profile/Add Customer/Interaction History truth screens). */}
-            {/* NEW: send one message to every connected channel. */}
-            <Pressable onPress={() => openBroadcast()} hitSlop={8} style={{ marginRight: 16 }} accessibilityLabel="Send to all channels">
-              <Ionicons name="megaphone-outline" size={22} color="#0B1220" />
-            </Pressable>
-            <Pressable onPress={() => { openCustomers(() => goTab('inbox')); }} hitSlop={8} style={{ marginRight: 16 }}>
-              <Ionicons name="people-outline" size={22} color="#0B1220" />
-            </Pressable>
-            <Pressable onPress={() => openConnectChannels()} hitSlop={8}>
-              <Ionicons name="settings-outline" size={22} color="#0B1220" />
-            </Pressable>
+            {/* Broadcast, Customers and Connect icons removed (company feedback 8 Nov 2026, same as the website): each is in the menu. */}
           </View>
           <Text style={styles.inboxSubtitle}>All your customers conversations in one place</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: 16, marginBottom: 12, padding: 12, borderRadius: 14, borderWidth: 1, borderColor: awayMode ? '#B9CFEA' : '#DCE2EA', backgroundColor: awayMode ? '#EAF1FB' : '#FFFFFF' }}>
-            <Ionicons name={awayMode ? 'moon' : 'sunny-outline'} size={20} color={awayMode ? '#1E56A0' : '#5C6B7A'} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.attentionTitle}>{awayMode ? 'Away mode is on' : "I'm available"}</Text>
-              <Text style={styles.attentionSubtitle}>{awayMode ? 'Nexora answers customers for you using your knowledge base' : 'Turn on to let Nexora handle customers while you are away'}</Text>
-            </View>
-            <Switch value={awayMode} onValueChange={setAway} accessibilityLabel="Away mode" />
-          </View>
+          {/* Away mode moved to Profile → Are you around? (company feedback 8 Nov 2026). */}
           <View style={[styles.searchBarPlain, { marginHorizontal: 16 }]}>
             <Ionicons name="search-outline" size={16} color="#8A97A6" />
             <TextInput
@@ -11555,7 +11555,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
           { label: 'Insights', icon: 'stats-chart-outline', onPress: () => openInsights() },
         ] },
         { title: 'Customers', items: [
-          { label: 'Messages', icon: 'chatbubbles-outline', onPress: () => goTab('inbox') },
+          { label: 'Inbox', icon: 'chatbubbles-outline', onPress: () => goTab('inbox') },
           { label: 'Customers', icon: 'people-outline', onPress: () => openCustomers(() => goTab('home')) },
           { label: 'Leads', icon: 'person-add-outline', onPress: () => openLeads() },
           { label: 'Follow-ups', icon: 'paper-plane-outline', onPress: () => { openFollowups().catch(() => {}); } },
