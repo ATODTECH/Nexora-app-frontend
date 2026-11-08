@@ -33,6 +33,7 @@ export function BusinessOverview({ businessName, bizCurrency, width, canExport, 
   const [area, setArea] = useState<Area | 'all'>('all');
   const [openDef, setOpenDef] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
+  const [inner, setInner] = useState(0);   // the card's inside width, so tiles fit exactly two (or more) per row
 
   useEffect(() => {
     let live = true;
@@ -45,8 +46,9 @@ export function BusinessOverview({ businessName, bizCurrency, width, canExport, 
 
   const cur = ov?.currency || bizCurrency;
   const money = (v: number) => `${v < 0 ? '-' : ''}${SYM[cur] ?? (cur ? `${cur} ` : '')}${Math.round(Math.abs(v)).toLocaleString('en-US')}`;
-  const cols = width >= 900 ? 4 : width >= 600 ? 3 : 2;
-  const tileW = (width - 36 - (cols - 1) * 10) / cols;
+  const avail = inner || Math.max(240, width - 34);
+  const cols = avail >= 860 ? 4 : avail >= 560 ? 3 : 2;
+  const tileW = Math.floor((avail - (cols - 1) * 10) / cols) - 1;
   const areas = (Object.keys(AREA_TEXT) as Area[]).filter(a => ov?.kpis.some(k => k.area === a));
   const pick = (r: RangeDays) => { if (r !== range) { setBusy(true); setRange(r); } };
   const explain = () => ov && onAsk(`Explain my business numbers in simple words. Say what is going well, what looks unusual, and the three most useful things to do next. Keep measured facts separate from your own reading.\n\n${overviewText(ov, money, businessName)}`);
@@ -59,8 +61,8 @@ export function BusinessOverview({ businessName, bizCurrency, width, canExport, 
   );
 
   return (
-    <View style={{ backgroundColor: '#FFFFFF', borderRadius: 18, borderWidth: 1, borderColor: GRID, padding: 16 }} accessibilityLabel="Business overview">
-      <Text style={{ fontSize: 17, fontWeight: '900', color: INK }}>Business overview</Text>
+    <View style={{ backgroundColor: '#FFFFFF', borderRadius: 18, borderWidth: 1, borderColor: GRID, padding: 16 }} accessibilityLabel="Business dashboard">
+      <Text style={{ fontSize: 17, fontWeight: '900', color: INK }}>Business dashboard</Text>
       <Text style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>{ov ? `${rangeText(ov)} · compared with the ${ov.range} days before` : 'Your sales, customers, stock, marketing and online shop in one place'}</Text>
       <View accessibilityRole="radiogroup" style={{ flexDirection: 'row', alignSelf: 'flex-start', backgroundColor: '#F4F7FB', borderRadius: 18, borderWidth: 1, borderColor: GRID, padding: 2, marginTop: 10 }}>
         {([7, 30, 90] as RangeDays[]).map(r => (
@@ -90,7 +92,7 @@ export function BusinessOverview({ businessName, bizCurrency, width, canExport, 
       {!ov && busy && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 14 }}><ActivityIndicator size="small" color={BLUE} /><Text style={{ fontSize: 13, color: MUTED }}>Adding up your records…</Text></View>}
 
       {ov && (
-        <View style={{ opacity: busy ? 0.6 : 1 }}>
+        <View style={{ opacity: busy ? 0.6 : 1 }} onLayout={e => { const w = Math.round(e.nativeEvent.layout.width); if (w && w !== inner) setInner(w); }}>
           {areas.length > 1 && (
             <View accessibilityRole="tablist" style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 14 }}>
               {(['all', ...areas] as (Area | 'all')[]).map(a => (

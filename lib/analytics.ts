@@ -131,11 +131,11 @@ export function buildOverview(r: Raw, range: RangeDays, now = Date.now()): Overv
 
   const leadSeg = ['Lead', 'Contacted', 'Qualified'];
   const newContacts = (f: (t: string) => boolean) => r.contacts.filter(c => f(c.created_at)).length;
-  const newCustomers = (f: (t: string) => boolean) => r.contacts.filter(c => c.customer_since && f(`${c.customer_since}T12:00:00`)).length;
+  const newCustomers = (f: (t: string) => boolean) => r.contacts.filter(c => !leadSeg.includes(c.segment) && c.customer_since && f(`${c.customer_since}T12:00:00`)).length;
   add({ key: 'buyers', area: 'customers', label: 'Customers who bought', value: buyers(cur), prev: buyers(prev), fmt: 'count', kind: 'measured', href: '/customers', source: 'Orders',
     def: `Different people with at least one order in ${per}.` });
   add({ key: 'newcust', area: 'customers', label: 'New customers', value: newCustomers(inNow), prev: newCustomers(inPrev), fmt: 'count', kind: 'measured', href: '/customers', source: 'Customers (CRM)',
-    def: `Customers whose first purchase date falls in ${per}.` });
+    def: `Customers (not leads) whose customer-since date falls in ${per}.` });
   add({ key: 'newleads', area: 'customers', label: 'New contacts and leads', value: newContacts(inNow), prev: newContacts(inPrev), fmt: 'count', kind: 'measured', href: '/leads', source: 'Customers (CRM)',
     def: `People added to Customers or Leads in ${per}, by you, a chat, the shop link or a website form.` });
   add({ key: 'openleads', area: 'customers', label: 'Open leads now', value: r.contacts.filter(c => leadSeg.includes(c.segment)).length, prev: null, fmt: 'count', kind: 'measured', href: '/leads', source: 'Customers (CRM)', snapshot: true,
@@ -225,9 +225,10 @@ function campaignResults(list: any[], orders: Order[], from: Date, now: number):
     const during = ok.filter(o => { const t = new Date(o.created_at).getTime(); return t >= s && t <= e; });
     const before = ok.filter(o => { const t = new Date(o.created_at).getTime(); return t >= s - len && t < s; });
     const dv = during.reduce((n, o) => n + takings(o), 0), bv = before.reduce((n, o) => n + takings(o), 0);
-    const enough = during.length + before.length >= 4;
+    const enough = before.length >= 2 && during.length + before.length >= 4;
     out.push({ id: c.id, name: c.name, channel: c.channel, window, orders: 0, sales: 0, kind: 'estimate', during: dv, before: bv,
       note: enough ? 'No order used its link or code yet. Compared with the same number of days before it started, on timing only, so other things may explain the difference.'
+        : !before.length ? 'No order used its link or code yet, and there were no sales before it started to compare with. Share its tracked link or code so Nexora can measure it.'
         : 'No order used its link or code yet, and there are too few orders around it to compare. Share its tracked link or code so Nexora can measure it.' });
   }
   return out.sort((a, b) => (b.sales || b.during || 0) - (a.sales || a.during || 0));
@@ -279,7 +280,7 @@ export const fmtValue = (k: Pick<Kpi, 'fmt' | 'value'>, money: (v: number) => st
 
 /** A plain summary of the overview, used for the report and for asking Nexora to explain the numbers. */
 export function overviewText(ov: Overview, money: (v: number) => string, business = '') {
-  const lines = [`${business ? `${business} · ` : ''}Business overview, ${rangeText(ov)} (compared with the ${ov.range} days before).`];
+  const lines = [`${business ? `${business} · ` : ''}Business dashboard, ${rangeText(ov)} (compared with the ${ov.range} days before).`];
   for (const a of Object.keys(AREA_TEXT) as Area[]) {
     const ks = ov.kpis.filter(k => k.area === a);
     if (!ks.length) continue;
