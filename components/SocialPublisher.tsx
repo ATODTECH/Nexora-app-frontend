@@ -64,7 +64,6 @@ export function SocialPublisher({ userId, onBack, flash, topInset = 0, wide = fa
             const n = t.k === 'posts' ? todo.manual + todo.failed : t.k === 'accounts' ? todo.reauth : 0;
             return (
               <Pressable key={t.k} onPress={() => setTab(t.k)} accessibilityRole="tab" accessibilityState={{ selected: tab === t.k }} style={[s.tab, tab === t.k && s.tabOn]}>
-                <Ionicons name={t.icon as any} size={16} color={tab === t.k ? '#FFF' : '#1F2A37'} />
                 <Text style={[s.tabText, tab === t.k && { color: '#FFF' }]}>{t.label}</Text>
                 {n > 0 && <View style={s.badge}><Text style={{ color: '#FFF', fontSize: 11, fontWeight: '700' }}>{n}</Text></View>}
               </Pressable>

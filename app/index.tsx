@@ -1700,9 +1700,9 @@ let brainNavBridge: { chats: BrainChatLink[] | null; newChat: () => void; open: 
   { chats: null, newChat: () => {}, open: () => {}, all: () => {} };
 const brainNavSubs = new Set<() => void>();
 function setBrainNavBridge(next: typeof brainNavBridge) { brainNavBridge = next; brainNavSubs.forEach(f => f()); }
-// The menu (company direction 6 Nov 2026): the same layout as the website, with "Home" first on the app. Every earlier
-// button keeps its name and still opens its screen in one tap; related tools sit underneath it and show while you are in
-// that area (or when you tap its arrow). New areas (Messages, Marketing, Automation, Settings) only open and close.
+// The menu (company direction 8 Nov 2026: fewer buttons, better organised): the same 9 areas as the website, with "Home"
+// first on the app. Every screen is still in the menu under the area it belongs to; the area you are in shows its tools
+// by itself, and its arrow shows or hides them.
 // New capabilities go under the area they belong to. `go` keys are handled by drawerBridge.go; `screens` say where you are.
 type MenuLink = { go: string; label: string; screens: string[] };
 type MenuArea = { k: string; icon: string; label: string; go?: string; screens: string[]; items: MenuLink[]; line?: boolean };
@@ -1717,6 +1717,7 @@ const MENU_AREAS: MenuArea[] = [
   { k: 'messages', icon: 'chatbubble-ellipses-outline', label: 'Messages', go: 'inbox', screens: ['inbox', 'inboxChat'], items: [
     { go: 'approvals', label: 'Approvals', screens: ['approvals'] },
     { go: 'reception', label: 'Calls and chats', screens: ['aiReception'] },
+    { go: 'channels', label: 'WhatsApp and social accounts', screens: ['connectChannels'] },
   ] },
   { k: 'customers', icon: 'people-outline', label: 'Customers', go: 'customers', screens: ['customersLive', 'customerDetail'], items: [
     { go: 'leads', label: 'Leads', screens: ['leads', 'leadDetail'] },
@@ -1726,19 +1727,13 @@ const MENU_AREAS: MenuArea[] = [
   ] },
   { k: 'orders', icon: 'cube-outline', label: 'Orders', go: 'orders', screens: ['orders'], items: [
     { go: 'inventory', label: 'Products and inventory', screens: ['inventory'] },
+    { go: 'shop', label: 'AI shop link', screens: ['storefront'] },
+    { go: 'website', label: 'Websites', screens: ['websiteIntegration'] },
   ] },
   { k: 'marketing', icon: 'megaphone-outline', label: 'Marketing', screens: [], items: [
     { go: 'marketing', label: 'Campaigns', screens: ['aiMarketing', 'campaigns'] },
     { go: 'publisher', label: 'Social posts', screens: ['socialPublisher'] },
     { go: 'broadcast', label: 'Broadcasts', screens: ['broadcast'] },
-  ] },
-  { k: 'shop', icon: 'qr-code-outline', label: 'AI shop link', go: 'shop', screens: ['storefront'], items: [
-    { go: 'website', label: 'Websites', screens: ['websiteIntegration'] },
-    { go: 'channels', label: 'WhatsApp and social accounts', screens: ['connectChannels'] },
-  ] },
-  { k: 'automation', icon: 'flash-outline', label: 'Automation', screens: [], items: [
-    { go: 'automations', label: 'Workflows', screens: ['automations'] },
-    { go: 'rules', label: 'What Nexora decides', screens: ['rules'] },
   ] },
   { k: 'insights', icon: 'stats-chart-outline', label: 'Business Insights', go: 'insights', screens: ['insights'], items: [
     { go: 'planner', label: 'Business plans', screens: ['businessPlanner'] },
@@ -1746,13 +1741,15 @@ const MENU_AREAS: MenuArea[] = [
   ] },
   { k: 'market', icon: 'storefront-outline', label: 'Market', go: 'market', screens: ['market', 'explore', 'browser'], items: [
     { go: 'community', label: 'Community', screens: ['community', 'communityPost'] },
+    { go: 'network', label: 'Find partners', screens: ['network'] },
   ] },
-  { k: 'partners', icon: 'people-circle-outline', label: 'Find partners', go: 'network', screens: ['network'], items: [] },
-  { k: 'billing', icon: 'card-outline', label: 'Plans & billing', go: 'billing', screens: ['billing'], items: [], line: true },
   { k: 'settings', icon: 'settings-outline', label: 'Settings', screens: [], items: [
     { go: 'profile', label: 'Business profile', screens: ['profile', 'settings'] },
+    { go: 'automations', label: 'Automations', screens: ['automations'] },
+    { go: 'rules', label: 'What Nexora decides', screens: ['rules'] },
     { go: 'ownerAlerts', label: 'Alerts to you', screens: ['ownerAlerts'] },
     { go: 'activity', label: 'Activity log', screens: ['activityLog'] },
+    { go: 'billing', label: 'Plans & billing', screens: ['billing'] },
   ] },
 ];
 // Shown at the bottom of the menu so you can tell which build is on a phone. Update RELEASE with each new build.
@@ -3854,6 +3851,11 @@ function HomeScreenInner(){
     staff_seats: number | null; max_users: number | null; monthly_ai_messages: number | null; blurb: string; features: string[]; contact_sales: boolean;
   };
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  // Home (company feedback 8 Nov 2026): the All window, and View All on the two lists that now show 4 rows.
+  const [homeAllOpen, setHomeAllOpen] = useState(false);
+  const [homeAllQ, setHomeAllQ] = useState('');
+  const [homeMoreTodo, setHomeMoreTodo] = useState(false);
+  const [homeMoreAct, setHomeMoreAct] = useState(false);
   // What this person can see and do (team roles; the database enforces the same rules).
   const access = accessOf(workspace);
   const [workspaceChecked, setWorkspaceChecked] = useState(false);
@@ -11583,12 +11585,12 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
       const narrow = hookWidth < 700;
       const panel = { backgroundColor: '#FFFFFF', borderRadius: isDesktopWeb ? 14 : 18, padding: narrow ? 14 : 18, borderWidth: 1, borderColor: '#E6ECF3' } as const;
       const hour = new Date().getHours();
-      // Quick action (Home design, Oct 2026): four shortcuts; "More" opens the full Quick Actions screen.
+      // Quick action (Home design, Oct 2026): three shortcuts and "All", which opens every tool in a window (company feedback 8 Nov 2026).
       const commandCenter: { label: string; icon: string; color: string; onPress: () => void }[] = [
         { label: 'Train AI', icon: 'school-outline', color: '#0F2942', onPress: () => handleCommandCenterPress('Train AI') },
         { label: 'Connect Apps', icon: 'extension-puzzle', color: '#0F2942', onPress: () => handleCommandCenterPress('Connect Apps') },
         { label: 'Schedule', icon: 'calendar', color: '#0F2942', onPress: () => handleCommandCenterPress('Schedule') },
-        { label: 'More', icon: 'apps', color: '#0F2942', onPress: () => openQuickActions('home') },
+        { label: 'All', icon: 'apps', color: '#0F2942', onPress: () => { setHomeAllQ(''); setHomeAllOpen(true); } },
       ];
       const askHome = () => { const q = homeAsk.trim(); setHomeAsk(''); goTab('brain'); if (q) sendChatMessage(q); };
       const desktop = isDesktopWeb;
@@ -11615,7 +11617,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
       );
       const sectionLabel = (t: string) => <Text style={{ fontSize: 12, fontWeight: '800', color: '#8A97A6', letterSpacing: 0.8, textTransform: 'uppercase', marginTop: narrow ? 4 : 6 }}>{t}</Text>;
       const wide = !narrow;
-      const attention = todo.slice(0, desktop ? 6 : 4);
+      const attention = homeMoreTodo ? todo : todo.slice(0, 4);
       const activityRows = homeOverview?.activity ?? [];
       // Ask Nexora (design: "Ask Nexora about your business...", mic, send): in the top bar on computers, under the greeting on phones.
       const askBox = (inBar: boolean) => (
@@ -11725,7 +11727,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
             {/* Need Your Attention + Recent Activity (Home design) */}
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: narrow ? 14 : 18, alignItems: 'flex-start' }}>
               <View style={[panel, { flexBasis: narrow ? '100%' : '48%', flexGrow: 1, minWidth: narrow ? 0 : 340 }]}>
-                {head('Need Your Attention', { count: todo.length, link: escalations.length ? 'View All' : undefined, onLink: () => { refreshEscalations().catch(() => {}); setScreen('agendaPriority'); } })}
+                {head('Need Your Attention', todo.length > 4 ? { count: todo.length, link: homeMoreTodo ? 'Show less' : 'View All', onLink: () => setHomeMoreTodo(v => !v) } : { count: todo.length, link: escalations.length ? 'View All' : undefined, onLink: () => { refreshEscalations().catch(() => {}); setScreen('agendaPriority'); } })}
                 {attention.length === 0 && (
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 12 }}>
                     <Ionicons name="checkmark-circle" size={20} color="#1E9E6D" />
@@ -11751,9 +11753,9 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                 })}
               </View>
               <View style={[panel, { flexBasis: narrow ? '100%' : '48%', flexGrow: 1, minWidth: narrow ? 0 : 340 }]}>
-                {head('Recent Activity')}
+                {head('Recent Activity', activityRows.length > 4 ? { link: homeMoreAct ? 'Show less' : 'View All', onLink: () => setHomeMoreAct(v => !v) } : {})}
                 {activityRows.length === 0 && <Text style={[styles.attentionSubtitle, { paddingVertical: 12 }]}>Nothing yet. Replies Nexora sends, new orders, leads and community answers will show here.</Text>}
-                {activityRows.slice(0, 6).map((a, i) => {
+                {activityRows.slice(0, homeMoreAct ? 50 : 4).map((a, i) => {
                   const tagColor = a.tag === 'Needs you' ? ['#FDECEC', '#B42318'] : a.tag === 'AI Handled' || a.tag === 'Done' ? ['#E9F8EE', '#15803D'] : a.tag === 'Opportunity' ? ['#FFF6E5', '#B7791F'] : ['#EAF1FB', '#1E56A0'];
                   const icon = a.kind === 'reply' ? 'checkmark-circle' : a.kind === 'escalation' ? 'hand-left' : a.kind === 'order' ? 'bag-handle' : a.kind === 'lead' ? 'person-add' : a.kind === 'learned' ? 'bulb' : 'chatbubbles';
                   return (
@@ -11792,44 +11794,46 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
               </View>
             )}
 
-            {/* Conversations and Nexora's suggestions */}
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: narrow ? 14 : 18, alignItems: 'flex-start' }}>
-              <View style={{ flexBasis: narrow ? '100%' : '48%', flexGrow: 1, minWidth: narrow ? 0 : 340 }}>
-                <View style={panel}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <Text style={{ fontSize: 15.5, fontWeight: '700', color: '#0B1220' }}>Latest conversations</Text>
-                    <Pressable onPress={() => goTab('inbox')}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>Open inbox ›</Text></Pressable>
-                  </View>
-                  {conversations.length === 0 && <Text style={[styles.attentionSubtitle, { marginTop: 10 }]}>No conversations yet. Connect WhatsApp, Instagram or Facebook so customer messages arrive here.</Text>}
-                  {conversations.slice(0, 5).map(c => (
-                    <Pressable key={c.id} onPress={() => openConversation(c)} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' }}>
-                      <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#1E56A0', fontWeight: '800' }}>{c.name.charAt(0).toUpperCase()}</Text></View>
-                      <View style={{ flex: 1, minWidth: 0 }}>
-                        <Text style={{ fontSize: 14, fontWeight: c.unread ? '800' : '600', color: '#0B1220' }} numberOfLines={1}>{c.name} <Text style={{ fontWeight: '400', color: '#8A97A6', fontSize: 12 }}>· {c.platform}</Text></Text>
-                        <Text style={{ fontSize: 13, color: '#5C6B7A' }} numberOfLines={1}>{c.lastMessage}</Text>
-                      </View>
-                      <Text style={{ fontSize: 12, color: '#8A97A6' }}>{c.lastTime}</Text>
-                      {c.unread > 0 && <View style={{ minWidth: 20, height: 20, borderRadius: 10, paddingHorizontal: 5, backgroundColor: '#1E56A0', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#FFF', fontSize: 11, fontWeight: '800' }}>{c.unread}</Text></View>}
-                    </Pressable>
-                  ))}
-                </View>
-              </View>
-              <View style={[panel, { flexBasis: narrow ? '100%' : '48%', flexGrow: 1, minWidth: narrow ? 0 : 340 }]}>
-                {head('Nexora suggests', { icon: 'sparkles' })}
-                {recs.length === 0 && <Text style={[styles.attentionSubtitle, { marginTop: 6 }]}>Suggestions appear here once Nexora has enough activity from your orders, shop and customers. Nothing is guessed.</Text>}
-                {recs.map((r, i) => (
-                  <View key={i} style={{ paddingVertical: 10, borderBottomWidth: i < recs.length - 1 ? 1 : 0, borderBottomColor: '#F1F5F9' }}>
-                    <View style={{ flexDirection: 'row', gap: 10 }}>
-                      <Ionicons name={r.icon as any} size={17} color="#1E56A0" style={{ marginTop: 1 }} />
-                      <Text style={{ flex: 1, fontSize: 13.5, color: '#1F2937', lineHeight: 19 }}>{r.text}</Text>
-                    </View>
-                    <Pressable onPress={r.onPress} style={{ alignSelf: 'flex-start', marginLeft: 27, marginTop: 6 }}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>{r.cta} ›</Text></Pressable>
-                  </View>
-                ))}
-                <Text style={{ fontSize: 11.5, color: '#8A97A6', marginTop: 6 }}>Based only on your own orders, shop visits and customers.</Text>
-              </View>
-            </View>
           </ScrollView>
+          {/* All: every Nexora tool in a window (company feedback 8 Nov 2026) */}
+          <Modal visible={homeAllOpen} transparent animationType="fade" onRequestClose={() => setHomeAllOpen(false)} statusBarTranslucent>
+            <Pressable onPress={() => setHomeAllOpen(false)} style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.55)', justifyContent: 'center', padding: narrow ? 12 : 24 }}>
+              <Pressable onPress={() => {}} style={{ width: '100%', maxWidth: 820, maxHeight: '88%' as any, alignSelf: 'center', backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                  <Ionicons name="apps" size={18} color="#1E56A0" />
+                  <Text style={{ flex: 1, fontSize: 17, fontWeight: '800', color: '#0B1220' }}>All actions</Text>
+                  <Pressable onPress={() => setHomeAllOpen(false)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Close"><Ionicons name="close" size={24} color="#5C6B7A" /></Pressable>
+                </View>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, height: 42, borderRadius: 21, paddingHorizontal: 14, backgroundColor: '#F2F5F9', borderWidth: 1, borderColor: '#E1E8F0', marginBottom: 12 }}>
+                  <Ionicons name="search" size={17} color="#8A97A6" />
+                  <TextInput value={homeAllQ} onChangeText={setHomeAllQ} placeholder="Search actions" placeholderTextColor="#8A97A6" accessibilityLabel="Search actions" style={{ flex: 1, minWidth: 0, fontSize: 14.5, color: '#0B1220', height: 40 }} />
+                </View>
+                <ScrollView keyboardShouldPersistTaps="handled">
+                  {(() => {
+                    const q = homeAllQ.trim().toLowerCase();
+                    const secs = qaSections().map(sec => ({ ...sec, tiles: q ? sec.tiles.filter(t => t.label.toLowerCase().includes(q) || sec.title.toLowerCase().includes(q)) : sec.tiles })).filter(sec => sec.tiles.length);
+                    if (!secs.length) return <Text style={[styles.attentionSubtitle, { textAlign: 'center', marginVertical: 30 }]}>No action matches "{homeAllQ}". Try another word, or ask Nexora in the Brain tab.</Text>;
+                    return secs.map(sec => (
+                      <View key={sec.title} style={{ marginBottom: 18 }}>
+                        <Text style={{ fontSize: 15, fontWeight: '600', color: '#0B1220', marginBottom: 12 }}>{sec.title}</Text>
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', rowGap: 16 }}>
+                          {sec.tiles.map(t => (
+                            <Pressable key={`${sec.title}-${t.label}`} onPress={() => { setHomeAllOpen(false); t.onPress(); }} accessibilityRole="button" accessibilityLabel={t.label}
+                              style={({ pressed }) => ({ width: narrow ? '25%' : '16.66%', alignItems: 'center', gap: 8, opacity: pressed ? 0.6 : 1 })}>
+                              <View style={{ width: 50, height: 50, borderRadius: 25, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E6ECF3', alignItems: 'center', justifyContent: 'center' }}>
+                                {t.mci ? <MaterialCommunityIcons name={t.icon as any} size={22} color="#0F2942" /> : <Ionicons name={t.icon as any} size={21} color="#0F2942" />}
+                              </View>
+                              <Text style={{ fontSize: 12, color: '#5C6B7A', textAlign: 'center', paddingHorizontal: 2 }} numberOfLines={1}>{t.label}</Text>
+                            </Pressable>
+                          ))}
+                        </View>
+                      </View>
+                    ));
+                  })()}
+                </ScrollView>
+              </Pressable>
+            </Pressable>
+          </Modal>
           {renderBottomNav()}
         </View>
       );
@@ -11900,16 +11904,14 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
     );
   }
 
-  if (screen === 'quickActions') {
-    // Quick Actions (Figma, Oct 2026): every Nexora feature as round tiles, four to a row, in sections.
-    const back = () => { setQaSearch(null); setQaBriefing(false); setMainTab(quickBackRef.current); setScreen('main'); };
+  // Every Nexora tool as tiles in sections: the Quick Actions screen and Home's All window (company feedback 8 Nov 2026) use the same list.
+  function qaSections(): { title: string; tiles: { label: string; icon: string; mci?: boolean; badge?: number; onPress: () => void }[] }[] {
     const tool = (k: AiToolKey) => () => {
       const t = AI_TOOL_GROUPS.flatMap(g => g.tools).find(x => x.key === k) ?? null;
       setMainTab('brain'); setScreen('main'); setAiTool({ tool: t, topic: '', extra: '' });
     };
     const ask = (q: string) => () => { setMainTab('brain'); setScreen('main'); sendChatMessage(q); };
-    type QaTile = { label: string; icon: string; mci?: boolean; badge?: number; onPress: () => void };
-    const sections: { title: string; tiles: QaTile[] }[] = [
+    return [
       { title: 'AI Command center', tiles: [
         { label: 'Train AI', icon: 'brain', mci: true, onPress: () => handleCommandCenterPress('Train AI') },
         { label: 'Connect Apps', icon: 'extension-puzzle', onPress: () => handleCommandCenterPress('Connect Apps') },
@@ -11970,6 +11972,11 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
         { label: 'Chat history', icon: 'chatbubbles', onPress: () => { setMainTab('brain'); setScreen('main'); openChatHistory().catch(() => {}); } },
       ] },
     ];
+  }
+  if (screen === 'quickActions') {
+    // Quick Actions (Figma, Oct 2026): every Nexora feature as round tiles, four to a row, in sections.
+    const back = () => { setQaSearch(null); setQaBriefing(false); setMainTab(quickBackRef.current); setScreen('main'); };
+    const sections = qaSections();
     const q = (qaSearch ?? '').trim().toLowerCase();
     const shown = sections.map(sec => ({ ...sec, tiles: q ? sec.tiles.filter(t => t.label.toLowerCase().includes(q) || sec.title.toLowerCase().includes(q)) : sec.tiles })).filter(sec => sec.tiles.length);
     const desktop = isDesktopWeb;

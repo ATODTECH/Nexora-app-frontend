@@ -65,7 +65,6 @@ export function Inventory({ userId, business, currency: ccy, canManage, flash, o
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingHorizontal: 16, paddingVertical: 10 }}>
           {TABS.map(t => (
             <Pressable key={t.k} onPress={() => setTab(t.k)} style={[s.tab, tab === t.k && s.tabOn]}>
-              <Ionicons name={t.icon as any} size={15} color={tab === t.k ? '#FFF' : '#26313D'} />
               <Text style={[s.tabText, tab === t.k && { color: '#FFF' }]}>{t.label}{t.k === 'restock' && toRestock ? ` (${toRestock})` : ''}</Text>
             </Pressable>))}
         </ScrollView>

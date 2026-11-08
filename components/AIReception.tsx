@@ -48,7 +48,7 @@ export function AIReception({ onBack, flash, goTo, topInset = 0, wide = false }:
       {!open && (
         <View>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingHorizontal: 16, paddingVertical: 10 }}>
-            {TABS.map(t => <Pressable key={t.k} onPress={() => setTab(t.k)} style={[s.tab, tab === t.k && s.tabOn]}><Ionicons name={t.icon as any} size={15} color={tab === t.k ? '#FFF' : '#26313D'} />
+            {TABS.map(t => <Pressable key={t.k} onPress={() => setTab(t.k)} style={[s.tab, tab === t.k && s.tabOn]}>
               <Text style={[s.tabText, tab === t.k && { color: '#FFF' }]}>{t.label}{t.k === 'calls' && waiting ? ` (${waiting})` : ''}</Text></Pressable>)}
           </ScrollView>
         </View>

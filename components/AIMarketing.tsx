@@ -59,7 +59,7 @@ export function AIMarketing({ onBack, flash, goTo, topInset = 0, wide = false }:
       </View>
       <View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingHorizontal: 16, paddingVertical: 10 }}>
-          {TABS.map(t => <Pressable key={t.k} onPress={() => setTab(t.k)} style={[s.tab, tab === t.k && s.tabOn]}><Ionicons name={t.icon as any} size={15} color={tab === t.k ? '#FFF' : '#26313D'} /><Text style={[s.tabText, tab === t.k && { color: '#FFF' }]}>{t.label}</Text></Pressable>)}
+          {TABS.map(t => <Pressable key={t.k} onPress={() => setTab(t.k)} style={[s.tab, tab === t.k && s.tabOn]}><Text style={[s.tabText, tab === t.k && { color: '#FFF' }]}>{t.label}</Text></Pressable>)}
         </ScrollView>
       </View>
       <ScrollView contentContainerStyle={[{ padding: 16, paddingBottom: 60, gap: 12 }, wide && { width: '100%', maxWidth: 1100, alignSelf: 'center' }]} keyboardShouldPersistTaps="handled">
