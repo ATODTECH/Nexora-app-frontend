@@ -3669,7 +3669,7 @@ function HomeScreenInner(){
   const insets = useSafeAreaInsets();
   const{width:hookWidth,height:hookHeight}=useWindowDimensions();
   const[measured,setMeasured]=useState<{width:number;height:number}|null>(null);
-  const width=measured?.width??hookWidth;
+  const rawWidth=measured?.width??hookWidth;
   const height=measured?.height??hookHeight;
   const onRootLayout=(e:any)=>{
     const{width:w,height:h}=e.nativeEvent.layout;
@@ -3678,6 +3678,10 @@ function HomeScreenInner(){
     }
   };
   const[screen,setScreen]=useState<Screen>(()=>{const s0=nextStartScreen??'launch';nextStartScreen=null;return s0;});
+  // Phone browsers: the Figma sign-in screens are drawn to fit the visible height (the web layout centres a
+  // frame this wide), so they are the right size from the first paint, before onLayout reports the frame.
+  const webAuthFit=IS_WEB&&hookWidth<700&&['launch','onboarding','signup','login','forgotPassword'].includes(screen);
+  const width=webAuthFit?Math.min(rawWidth,Math.floor(hookHeight*FIGMA_WIDTH/FIGMA_HEIGHT)):rawWidth;
   const[interestPicks,setInterestPicks]=useState<FeatureKey[]>([]);
   const[onboardingIndex,setOnboardingIndex]=useState(0),[signupIndex,setSignupIndex]=useState(0),[loginIndex,setLoginIndex]=useState(0);
   const[fullName,setFullName]=useState(''),[email,setEmail]=useState(''),[password,setPassword]=useState(''),[confirmPassword,setConfirmPassword]=useState('');
