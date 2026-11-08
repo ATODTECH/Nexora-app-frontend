@@ -44,6 +44,7 @@ export type Overview = {
   range: RangeDays; from: Date; to: Date; prevFrom: Date; currency: string; otherCurrency: number;
   kpis: Kpi[]; daily: { day: string; revenue: number; prev: number; orders: number }[]; channels: { ch: Channel; label: string; orders: number; sales: number }[];
   anomalies: Anomaly[]; campaigns: CampaignResult[]; generated: Date; sources: Record<string, boolean>;
+  stock: { out: number; low: number; ok: number };   // tracked products by stock level, counted today
 };
 
 const DAY = 86400000;
@@ -196,7 +197,8 @@ export function buildOverview(r: Raw, range: RangeDays, now = Date.now()): Overv
   });
   const channels = (Object.keys(CHANNEL_TEXT) as Channel[]).map(ch => { const l = cur.filter(o => channelOf(o) === ch); return { ch, label: CHANNEL_TEXT[ch], orders: l.length, sales: sum(l, takings) }; }).filter(x => x.orders);
 
-  const ov: Overview = { range, from, to, prevFrom, currency, otherCurrency, kpis, daily, channels, anomalies: [], campaigns, generated: new Date(now), sources: {} };
+  const stock = { out: r.restock.filter(x => x.level === 'out').length, low: r.restock.filter(x => x.level === 'low' || x.level === 'soon').length, ok: r.restock.filter(x => x.level !== 'out' && x.level !== 'low' && x.level !== 'soon').length };
+  const ov: Overview = { range, from, to, prevFrom, currency, otherCurrency, kpis, daily, channels, anomalies: [], campaigns, generated: new Date(now), sources: {}, stock };
   ov.anomalies = findAnomalies(ov, r);
   return ov;
 }

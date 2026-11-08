@@ -18,7 +18,7 @@ import { Text, TextInput, interFamily, useInterFonts } from '../lib/inter';
 import { LEVEL_COLORS, STOCK_ALERT_LABEL, STOCK_LABEL, currentStockField, stockInfo, stockOf } from '../lib/products';
 import { StockCard } from '../components/StockCard';
 import { AddOrderSheet, type ManualOrder } from '../components/AddOrderSheet';
-import { BusinessOverview, KindBadge } from '../components/BusinessOverview';
+import { BusinessOverview, KindBadge, UnusualChanges } from '../components/BusinessOverview';
 import type { Overview } from '../lib/analytics';
 import { TeamManager } from '../components/TeamManager';
 import { ActivityLog } from '../components/ActivityLog';
@@ -7233,7 +7233,8 @@ function HomeScreenInner(){
     } catch { /* ignore */ }
   }, [userId, screen]);
   const [insightsGroup, setInsightsGroup] = useState<'sales' | 'marketing' | 'customers' | 'ai'>('sales');
-  const [insOverview, setInsOverview] = useState<Overview | null>(null);   // 2.11: the Business overview's period also drives the day-by-day chart
+  const [insOverview, setInsOverview] = useState<Overview | null>(null);
+  const [insTab, setInsTab] = useState<'charts' | 'advice'>('charts');   // Insights: Charts (figures, nothing repeated) or Advice (written reading)   // 2.11: the Business overview's period also drives the day-by-day chart
   const [aiUsageRows, setAiUsageRows] = useState<{ kind: string; tasks: number; created_at: string }[] | null>(null);
   const loadAiUsage = async () => {
     const { data } = await supabase.from('ai_usage').select('kind,tasks,created_at').gte('created_at', new Date(Date.now() - 30 * 86400000).toISOString()).limit(5000);
@@ -15437,7 +15438,6 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
               <Text style={{ color: '#FFFFFF', fontSize: twoCol ? 30 : 24, fontWeight: '800', marginTop: 6 }}>{D && !D.business?.has_business ? `Welcome${fullName ? `, ${fullName.split(' ')[0]}` : ''}` : D?.business?.name || fullName || 'Your business'}</Text>
               <Text style={{ color: '#B6C3D4', fontSize: 13.5, marginTop: 4 }}>{D && !D.business?.has_business ? 'One step before your dashboard' : [D?.business?.industry, D?.business?.country].filter(Boolean).join(' · ') || 'Add your industry and country for sharper ideas'}</Text>
               <View style={{ marginTop: 14 }}>{pageLinks([{ go: 'planner', label: 'Business plans' }, { go: 'trends', label: 'Opportunities' }], true)}</View>
-              {!!I?.summary && <View style={{ marginTop: 14, maxWidth: 760, gap: 6 }}><KindBadge k="ai" /><Text style={{ color: '#E6EEF8', fontSize: 15, lineHeight: 22 }}>{I.summary}</Text></View>}
               {!!I && D?.business?.has_business && <Text style={{ color: '#7D8DA3', fontSize: 11.5, marginTop: 10 }}>Updated {new Date(I.loaded_at || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · from your own orders, customers, chats and shop link{I.ai ? '' : ' · AI ideas are unavailable right now'}</Text>}
             </View>
           </View>
@@ -15497,54 +15497,132 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
 
             {D && D.business?.has_business && (
               <>
+                <View accessibilityRole="tablist" style={{ flexDirection: 'row', alignSelf: 'flex-start', backgroundColor: '#FFFFFF', borderRadius: 22, borderWidth: 1, borderColor: IN_GRID, padding: 4 }}>
+                  {([['charts', 'Charts'], ['advice', 'Advice']] as const).map(([t, l]) => (
+                    <Pressable key={t} onPress={() => setInsTab(t)} accessibilityRole="tab" accessibilityState={{ selected: insTab === t }} style={{ height: 36, paddingHorizontal: 20, borderRadius: 18, justifyContent: 'center', backgroundColor: insTab === t ? IN_C[0] : 'transparent' }}>
+                      <Text style={{ fontSize: 13.5, fontWeight: '800', color: insTab === t ? '#FFFFFF' : IN_INK }}>{l}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+                <View style={{ display: insTab === 'charts' ? 'flex' : 'none', gap: 16 }}>
                 <BusinessOverview businessName={D.business?.name || fullName || ''} bizCurrency={cur} width={cw} canExport={access.can('export')} callFn={callFn}
-                  onGo={insGo} onAsk={insAsk} onDaily={setInsOverview} onExported={n => logExport('insights report', n)} />
-                {renderAutonomyCard()}
+                  onGo={insGo} onAsk={insAsk} onDaily={setInsOverview} onExported={n => logExport('insights report', n)}
+                  renderDaily={(ov, w) => <InLineCompare daily={ov.daily} width={w} cur={ov.currency} days={ov.range} />} />
+                {row(<>
+                  <InCard title="Weekly revenue and forecast" subtitle="12 weeks of sales (measured) and Nexora's estimate for the next 4" right={<KindBadge k="estimate" />} style={{ flex: twoCol ? 1.4 : undefined }}>
+                    <InBarsForecast weekly={D.weekly} forecast={D.forecast} width={twoCol ? (cw - 16) * (1.4 / 2.3) - 38 : cw - 38} cur={cur} />
+                  </InCard>
+                  <InCard title={D.health.mode === 'launch' ? 'Launch readiness' : 'Business health'} subtitle={D.health.mode === 'launch' ? 'Five setup steps, 20 points each' : 'Five checks, 20 points each'} style={{ flex: twoCol ? 0.9 : undefined }}>
+                    <InGauge score={D.health.score} parts={D.health.parts} />
+                  </InCard>
+                </>)}
 
-                {/* Where the business is: worked out from its own data (days of data, orders, weeks with sales) */}
-                {!!D.stage && (() => {
-                  const st = D.stage;
-                  const tone = st.key === 'setting_up' ? { bg: '#FFF4E5', fg: IN_WARN, icon: 'construct-outline' } : st.key === 'starting' ? { bg: '#EAF1FB', fg: IN_C[0], icon: 'leaf-outline' } : st.key === 'growing' ? { bg: '#E9F8EE', fg: IN_GOOD, icon: 'trending-up-outline' } : { bg: '#F1F5F9', fg: IN_INK, icon: 'ribbon-outline' };
-                  const conf = st.confidence === 'low' ? 'Early data' : st.confidence === 'medium' ? 'Some history' : 'Solid history';
-                  const go = (a: string) => {
-                    if (a === 'train') setScreen('knowledgeHealth');
-                    else if (a === 'channels') openConnectChannels();
-                    else if (a === 'shop') openStorefront().catch(() => {});
-                    else if (a === 'orders') openOrders('All');
-                    else if (a === 'customers') openCustomers(() => openInsights());
-                  };
-                  return (
-                    <View style={{ backgroundColor: '#FFFFFF', borderRadius: 18, padding: 16, borderWidth: 1, borderColor: IN_GRID, flexDirection: twoCol ? 'row' : 'column', gap: 16 }}>
-                      <View style={{ flex: twoCol ? 1 : undefined, minWidth: 0 }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, backgroundColor: tone.bg }}>
-                            <Ionicons name={tone.icon as any} size={14} color={tone.fg} />
-                            <Text style={{ fontSize: 12.5, fontWeight: '800', color: tone.fg }}>{st.label}</Text>
+                {row(<>
+                  <InCard title="Order status" subtitle={`Last 90 days${D.late_orders ? ` · ${D.late_orders} waiting over 2 days` : ''}`} style={{ flex: twoCol ? 1 : undefined }}
+                    right={D.open_orders ? <Pressable onPress={() => openOrders('Unshipped')}><Text style={{ color: IN_C[0], fontSize: 12.5, fontWeight: '700' }}>Open orders</Text></Pressable> : undefined}>
+                    <InDonut items={D.status} center="orders" colorFor={l => IN_STATUS_COLOR[l] || IN_C[5]} size={140} />
+                  </InCard>
+                  <InCard title="Best sellers" subtitle="Revenue in the last 90 days, with your product photos" style={{ flex: twoCol ? 1 : undefined }}>
+                    <InRankBars items={D.products.map((p: any) => ({ label: p.name, value: p.revenue, image: p.image, sub: `${p.units} sold · ${p.orders} order${p.orders === 1 ? '' : 's'}` }))} fmt={v => inMoney(v, cur, true)} />
+                  </InCard>
+                </>)}
+
+                <View style={{ flexDirection: threeCol ? 'row' : 'column', gap: 16 }}>
+                  <InCard title="From contact to loyal customer" subtitle="How many move to the next step" style={{ flex: threeCol ? 1 : undefined }}>
+                    <InFunnel steps={D.funnel} />
+                  </InCard>
+                  <InCard title="Where customers come from" subtitle="By channel" style={{ flex: threeCol ? 1 : undefined }}>
+                    <InDonut items={D.channels} center="people" size={130} />
+                  </InCard>
+                  <InCard title="Top places" subtitle="Where your customers are" style={{ flex: threeCol ? 1 : undefined }}>
+                    <InRankBars items={D.places.map((p: any) => ({ label: p.label, value: p.value }))} fmt={v => `${v}`} />
+                  </InCard>
+                </View>
+
+                {row(<>
+                  <InCard title="Who brings the money" subtitle={D.top_share !== null ? `Your top 20% of customers bring ${D.top_share}% of all spending` : 'Spending by customer group'} style={{ flex: twoCol ? 1 : undefined }}>
+                    <InStack items={D.tiers} cur={cur} />
+                  </InCard>
+                  <InCard title="AI shop link · 30 days" subtitle="Visits, chats with your Nexora, and leads" style={{ flex: twoCol ? 1 : undefined }}
+                    right={<Pressable onPress={() => { openStorefront().catch(() => {}); }}><Text style={{ color: IN_C[0], fontSize: 12.5, fontWeight: '700' }}>Open</Text></Pressable>}>
+                    <InFunnel steps={[{ label: 'Visits', value: D.shop.visits }, { label: 'Chats', value: D.shop.chats }, { label: 'Leads', value: D.shop.leads }]} />
+                    {!D.shop.visits && <Text style={{ fontSize: 12, color: IN_FAINT, marginTop: 8 }}>Share your shop link in your bio and WhatsApp status to start getting visits.</Text>}
+                  </InCard>
+                </>)}
+
+                {row(<>
+                  <InCard title="When customers buy" subtitle="Orders by day and time, last 90 days" style={{ flex: twoCol ? 1 : undefined }}>
+                    <InHeatmap grid={D.heat} />
+                  </InCard>
+                  {!!shopStats?.sources?.length && (
+                    <InCard title="Shop visits by link" subtitle="Which campaign or post link brought visitors to your shop, last 30 days" right={<KindBadge k="measured" />} style={{ flex: twoCol ? 1 : undefined }}>
+                      {shopStats.sources.map(r => {
+                        const max = Math.max(...shopStats.sources.map(x => x.visits), 1);
+                        return (
+                          <View key={r.src} style={{ paddingVertical: 6 }}>
+                            <View style={{ flexDirection: 'row' }}>
+                              <Text style={{ flex: 1, fontSize: 13, color: IN_INK }}>{!r.src || r.src === 'direct' ? 'Direct or unknown' : r.src}</Text>
+                              <Text style={{ fontSize: 12, color: IN_MUTED }}>{r.visits} visits · {r.orders} orders</Text>
+                            </View>
+                            <View style={{ height: 8, borderRadius: 4, backgroundColor: '#EEF2F7', marginTop: 4 }}><View style={{ width: `${Math.round((r.visits / max) * 100)}%`, height: 8, borderRadius: 4, backgroundColor: IN_C[0] }} /></View>
                           </View>
-                          <Text style={{ fontSize: 12, color: IN_FAINT, fontWeight: '600' }}>{conf}</Text>
-                        </View>
-                        <Text style={{ fontSize: 14, color: IN_INK, marginTop: 10, lineHeight: 20 }}>{st.text}</Text>
-                        <Text style={{ fontSize: 12.5, color: IN_MUTED, marginTop: 6 }}>{`${st.days_active} day${st.days_active === 1 ? '' : 's'} of data · ${st.orders_total} order${st.orders_total === 1 ? '' : 's'} · sales in ${st.weeks_with_sales} of the last 12 weeks`}</Text>
-                        {!!st.next && <Text style={{ fontSize: 12.5, color: IN_C[0], marginTop: 6, fontWeight: '600' }}>{st.next}</Text>}
-                      </View>
-                      {!!D.launch?.length && (
-                        <View style={{ flex: 1, minWidth: 0, gap: 8 }}>
-                          <Text style={{ fontSize: 12, fontWeight: '800', color: IN_MUTED, letterSpacing: 0.5 }}>YOUR LAUNCH CHECKLIST</Text>
-                          {D.launch.map((c: any) => (
-                            <Pressable key={c.key} onPress={() => !c.done && go(c.action)} disabled={c.done} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                              <Ionicons name={c.done ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={c.done ? IN_GOOD : IN_FAINT} />
-                              <View style={{ flex: 1 }}>
-                                <Text style={{ fontSize: 13.5, fontWeight: '700', color: IN_INK }}>{c.label}</Text>
-                                <Text style={{ fontSize: 12, color: IN_MUTED }}>{c.text}</Text>
+                        );
+                      })}
+                    </InCard>
+                  )}
+                </>)}
+                </View>
+                {insTab === 'advice' && (<>
+                  {!!I?.summary && <View style={{ backgroundColor: '#FFFFFF', borderRadius: 18, borderWidth: 1, borderColor: IN_GRID, padding: 16, gap: 8 }}><KindBadge k="ai" /><Text style={{ color: IN_INK, fontSize: 15, lineHeight: 22 }}>{I.summary}</Text></View>}
+                  <UnusualChanges ov={insOverview} currency={cur} onGo={insGo} onAsk={insAsk} />
+                {!!D.problems?.length && (
+                  <InCard title="Problems Nexora spotted" subtitle="Found in your own numbers; the fixes are Nexora's suggestions" right={<KindBadge k="ai" />}>
+                    <View style={{ gap: 12 }}>
+                      {D.problems.map((p: any) => {
+                        const sev = p.severity === 'high' ? { c: IN_BAD, bg: '#FDECEC', w: 'Needs attention' } : p.severity === 'medium' ? { c: IN_WARN, bg: '#FFF4E5', w: 'Worth fixing' } : { c: IN_C[0], bg: '#EAF1FB', w: 'Small' };
+                        return (
+                          <View key={p.key} style={{ borderRadius: 14, borderLeftWidth: 4, borderLeftColor: sev.c, backgroundColor: '#FBFCFE', borderWidth: 1, borderColor: IN_GRID, padding: 14 }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                              <Text style={{ flex: 1, minWidth: 160, fontSize: 14.5, fontWeight: '800', color: IN_INK }}>{p.title}</Text>
+                              <View style={{ paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, backgroundColor: sev.bg }}><Text style={{ fontSize: 11, fontWeight: '800', color: sev.c }}>{sev.w}</Text></View>
+                            </View>
+                            <Text style={{ fontSize: 12.5, color: IN_MUTED, marginTop: 4, lineHeight: 18 }}>{p.evidence}</Text>
+                            <Text style={{ fontSize: 11.5, fontWeight: '800', color: IN_MUTED, marginTop: 10, letterSpacing: 0.4 }}>WHAT YOU CAN DO</Text>
+                            {(p.solutions ?? []).map((sol: string, i: number) => (
+                              <View key={i} style={{ flexDirection: 'row', gap: 8, marginTop: 6 }}>
+                                <Ionicons name="arrow-forward-circle" size={16} color={IN_GOOD} style={{ marginTop: 1 }} />
+                                <Text style={{ flex: 1, fontSize: 13, color: '#334155', lineHeight: 19 }}>{sol}</Text>
                               </View>
-                              {!c.done && <Ionicons name="chevron-forward" size={16} color={IN_FAINT} />}
+                            ))}
+                            <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); sendChatMessage(`Help me fix this problem in my business: ${p.title}. ${p.evidence} Give me a simple step-by-step plan for this week.`); }} accessibilityRole="button" style={{ marginTop: 10, alignSelf: 'flex-start' }}>
+                              <Text style={{ color: IN_C[0], fontSize: 12.5, fontWeight: '700' }}>Help me fix this</Text>
                             </Pressable>
-                          ))}
-                        </View>
-                      )}
+                          </View>
+                        );
+                      })}
                     </View>
-                  );
-                })()}
+                  </InCard>
+                )}
+                {/* AI analysis */}
+                {!!I?.insights?.length && (
+                  <InCard title="What Nexora sees" subtitle="Nexora's reading of your numbers" right={<KindBadge k="ai" />}>
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+                      {I.insights.map((x: any, i: number) => {
+                        const t = toneStyle(x.tone);
+                        return (
+                          <View key={i} style={{ flexGrow: 1, flexBasis: twoCol ? '45%' : '100%', backgroundColor: t.bg, borderRadius: 14, padding: 14 }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                              <Ionicons name={t.icon as any} size={16} color={t.color} />
+                              <Text style={{ fontSize: 11, fontWeight: '800', color: t.color, letterSpacing: 0.5 }}>{t.word.toUpperCase()}</Text>
+                            </View>
+                            <Text style={{ fontSize: 14, fontWeight: '800', color: IN_INK, marginTop: 6 }}>{x.title}</Text>
+                            <Text style={{ fontSize: 13, color: '#334155', marginTop: 4, lineHeight: 19 }}>{x.detail}</Text>
+                          </View>
+                        );
+                      })}
+                    </View>
+                  </InCard>
+                )}
 
                 {/* Goals the owner set, how they are tracking, and Nexora's plan for the week */}
                 {(() => {
@@ -15625,223 +15703,50 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                 })()}
 
                 {/* Problems found in the numbers, each with ways to fix it */}
-                {!!D.problems?.length && (
-                  <InCard title="Problems Nexora spotted" subtitle="Found in your own numbers; the fixes are Nexora's suggestions" right={<KindBadge k="ai" />}>
-                    <View style={{ gap: 12 }}>
-                      {D.problems.map((p: any) => {
-                        const sev = p.severity === 'high' ? { c: IN_BAD, bg: '#FDECEC', w: 'Needs attention' } : p.severity === 'medium' ? { c: IN_WARN, bg: '#FFF4E5', w: 'Worth fixing' } : { c: IN_C[0], bg: '#EAF1FB', w: 'Small' };
-                        return (
-                          <View key={p.key} style={{ borderRadius: 14, borderLeftWidth: 4, borderLeftColor: sev.c, backgroundColor: '#FBFCFE', borderWidth: 1, borderColor: IN_GRID, padding: 14 }}>
-                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                              <Text style={{ flex: 1, minWidth: 160, fontSize: 14.5, fontWeight: '800', color: IN_INK }}>{p.title}</Text>
-                              <View style={{ paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, backgroundColor: sev.bg }}><Text style={{ fontSize: 11, fontWeight: '800', color: sev.c }}>{sev.w}</Text></View>
-                            </View>
-                            <Text style={{ fontSize: 12.5, color: IN_MUTED, marginTop: 4, lineHeight: 18 }}>{p.evidence}</Text>
-                            <Text style={{ fontSize: 11.5, fontWeight: '800', color: IN_MUTED, marginTop: 10, letterSpacing: 0.4 }}>WHAT YOU CAN DO</Text>
-                            {(p.solutions ?? []).map((sol: string, i: number) => (
-                              <View key={i} style={{ flexDirection: 'row', gap: 8, marginTop: 6 }}>
-                                <Ionicons name="arrow-forward-circle" size={16} color={IN_GOOD} style={{ marginTop: 1 }} />
-                                <Text style={{ flex: 1, fontSize: 13, color: '#334155', lineHeight: 19 }}>{sol}</Text>
-                              </View>
-                            ))}
-                            <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); sendChatMessage(`Help me fix this problem in my business: ${p.title}. ${p.evidence} Give me a simple step-by-step plan for this week.`); }} accessibilityRole="button" style={{ marginTop: 10, alignSelf: 'flex-start' }}>
-                              <Text style={{ color: IN_C[0], fontSize: 12.5, fontWeight: '700' }}>Help me fix this</Text>
-                            </Pressable>
+                {renderAutonomyCard()}
+                {!!D.stage && (() => {
+                  const st = D.stage;
+                  const tone = st.key === 'setting_up' ? { bg: '#FFF4E5', fg: IN_WARN, icon: 'construct-outline' } : st.key === 'starting' ? { bg: '#EAF1FB', fg: IN_C[0], icon: 'leaf-outline' } : st.key === 'growing' ? { bg: '#E9F8EE', fg: IN_GOOD, icon: 'trending-up-outline' } : { bg: '#F1F5F9', fg: IN_INK, icon: 'ribbon-outline' };
+                  const conf = st.confidence === 'low' ? 'Early data' : st.confidence === 'medium' ? 'Some history' : 'Solid history';
+                  const go = (a: string) => {
+                    if (a === 'train') setScreen('knowledgeHealth');
+                    else if (a === 'channels') openConnectChannels();
+                    else if (a === 'shop') openStorefront().catch(() => {});
+                    else if (a === 'orders') openOrders('All');
+                    else if (a === 'customers') openCustomers(() => openInsights());
+                  };
+                  return (
+                    <View style={{ backgroundColor: '#FFFFFF', borderRadius: 18, padding: 16, borderWidth: 1, borderColor: IN_GRID, flexDirection: twoCol ? 'row' : 'column', gap: 16 }}>
+                      <View style={{ flex: twoCol ? 1 : undefined, minWidth: 0 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, backgroundColor: tone.bg }}>
+                            <Ionicons name={tone.icon as any} size={14} color={tone.fg} />
+                            <Text style={{ fontSize: 12.5, fontWeight: '800', color: tone.fg }}>{st.label}</Text>
                           </View>
-                        );
-                      })}
-                    </View>
-                  </InCard>
-                )}
-                {/* Four groups (company guide): Sales, Marketing, Customers, AI usage */}
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-                  {([['sales', 'Sales', 'cash-outline'], ['marketing', 'Marketing', 'megaphone-outline'], ['customers', 'Customers', 'people-outline'], ['ai', 'AI usage', 'sparkles-outline']] as const).map(([g, l, ic]) => (
-                    <Pressable key={g} onPress={() => setInsightsGroup(g)} accessibilityRole="tab" accessibilityState={{ selected: insightsGroup === g }} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, height: 38, borderRadius: 19, backgroundColor: insightsGroup === g ? IN_C[0] : '#FFFFFF', borderWidth: 1, borderColor: insightsGroup === g ? IN_C[0] : IN_GRID }}>
-                      <Ionicons name={ic as any} size={15} color={insightsGroup === g ? '#FFFFFF' : IN_INK} />
-                      <Text style={{ fontSize: 13.5, fontWeight: '800', color: insightsGroup === g ? '#FFFFFF' : IN_INK }}>{l}</Text>
-                    </Pressable>
-                  ))}
-                </View>
-                {(() => {
-                  // Extra numbers for the chosen group, all from this business's own records.
-                  const D30 = 30 * 86400000, nowT = Date.now();
-                  const o30 = orders.filter(o => nowT - new Date(o.created_at).getTime() < D30);
-                  const refunds = o30.reduce((n, o) => n + Number(o.refunded_amount || 0), 0);
-                  const unpaidAmt = orders.filter(o => o.status !== 'cancelled' && o.payment_status === 'unpaid').reduce((n, o) => n + Number(o.total || 0), 0);
-                  const cancelled = o30.filter(o => o.status === 'cancelled').length;
-                  const st = shopStats;
-                  const used = planUsage?.ai_tasks;
-                  const byKind: Record<string, number> = {};
-                  for (const r of aiUsageRows ?? []) byKind[r.kind] = (byKind[r.kind] || 0) + Number(r.tasks || 0);
-                  const KIND_NAME: Record<string, string> = { reply: 'Customer replies', shop_reply: 'Shop chat replies', trends: 'Trend searches', briefing: 'Daily briefings', insights: 'Insights', market: 'Market finds', learning: 'Learning from chats', quote: 'Quotes', find: 'Web searches', research: 'Business research', listing: 'Listings written', caption: 'Posts written', email: 'Emails sent', partners: 'Partner searches', web_community: 'Community searches', chat: 'Questions to Nexora' };
-                  const kindRows = Object.entries(byKind).sort((a, b) => b[1] - a[1]);
-                  const totalTasks = kindRows.reduce((n, [, v]) => n + v, 0);
-                  const tile = (label: string, value: string, note: string, onPress?: () => void) => (
-                    <Pressable key={label} disabled={!onPress} onPress={onPress} style={{ flexGrow: 1, flexBasis: threeCol ? '22%' : twoCol ? '30%' : '46%', minWidth: 150, backgroundColor: '#FFFFFF', borderRadius: 16, padding: 14, borderWidth: 1, borderColor: IN_GRID }}>
-                      <Text style={{ fontSize: 12.5, color: IN_MUTED, fontWeight: '700' }}>{label}</Text>
-                      <Text style={{ fontSize: 22, fontWeight: '900', color: IN_INK, marginTop: 6 }}>{value}</Text>
-                      <Text style={{ fontSize: 12, color: IN_MUTED, marginTop: 2 }}>{note}</Text>
-                    </Pressable>
-                  );
-                  const say = (text: string, cta?: string, onPress?: () => void) => (
-                    <View style={{ backgroundColor: '#EAF1FB', borderRadius: 14, padding: 12, flexDirection: 'row', gap: 10, alignItems: 'flex-start' }}>
-                      <Ionicons name="bulb" size={16} color={IN_C[0]} style={{ marginTop: 2 }} />
-                      <View style={{ flex: 1 }}>
-                        <Text style={{ fontSize: 13.5, color: IN_INK, lineHeight: 20 }}>{text}</Text>
-                        {!!cta && <Pressable onPress={onPress} style={{ marginTop: 4 }}><Text style={{ color: IN_C[0], fontWeight: '800', fontSize: 13 }}>{cta} ›</Text></Pressable>}
+                          <Text style={{ fontSize: 12, color: IN_FAINT, fontWeight: '600' }}>{conf}</Text>
+                        </View>
+                        <Text style={{ fontSize: 14, color: IN_INK, marginTop: 10, lineHeight: 20 }}>{st.text}</Text>
+                        <Text style={{ fontSize: 12.5, color: IN_MUTED, marginTop: 6 }}>{`${st.days_active} day${st.days_active === 1 ? '' : 's'} of data · ${st.orders_total} order${st.orders_total === 1 ? '' : 's'} · sales in ${st.weeks_with_sales} of the last 12 weeks`}</Text>
+                        {!!st.next && <Text style={{ fontSize: 12.5, color: IN_C[0], marginTop: 6, fontWeight: '600' }}>{st.next}</Text>}
                       </View>
-                    </View>
-                  );
-                  if (insightsGroup === 'sales') return (
-                    <View style={{ gap: 10 }}>
-                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
-                        {/* Money received, unpaid and cancelled orders are in the Business overview above; refunds stay here. */}
-                        {tile('Refunds · 30 days', inMoney(refunds, cur), refunds ? 'Recorded in Orders' : 'No refunds recorded', () => openOrders('All'))}
-                      </View>
-                    </View>
-                  );
-                  if (insightsGroup === 'marketing') return (
-                    <View style={{ gap: 10 }}>
-                      {!st ? <Text style={{ fontSize: 13, color: IN_MUTED }}>Switch on your AI shop link to see visitors, where they come from and how many order.</Text> : (
-                        <>
-                          {/* Visits, enquiries and conversion are in the Business overview above; the breakdown by source stays here. */}
-                          {st.sources.length > 0 && (
-                            <View style={{ backgroundColor: '#FFFFFF', borderRadius: 16, padding: 14, borderWidth: 1, borderColor: IN_GRID }}>
-                              <Text style={{ fontSize: 14, fontWeight: '800', color: IN_INK, marginBottom: 6 }}>Traffic sources and campaigns</Text>
-                              {st.sources.map(r => {
-                                const max = Math.max(...st.sources.map(x => x.visits), 1);
-                                return (
-                                  <View key={r.src} style={{ paddingVertical: 6 }}>
-                                    <View style={{ flexDirection: 'row' }}>
-                                      <Text style={{ flex: 1, fontSize: 13, color: IN_INK, textTransform: 'capitalize' }}>{r.src === 'direct' ? 'Direct / unknown' : r.src}</Text>
-                                      <Text style={{ fontSize: 12, color: IN_MUTED }}>{r.visits} visits · {r.enquiries} enquiries · {r.orders} orders</Text>
-                                    </View>
-                                    <View style={{ height: 6, borderRadius: 3, backgroundColor: '#EEF2F7', marginTop: 4 }}><View style={{ width: `${Math.round((r.visits / max) * 100)}%`, height: 6, borderRadius: 3, backgroundColor: IN_C[0] }} /></View>
-                                  </View>
-                                );
-                              })}
-                            </View>
-                          )}
-                          {st.totals.visits >= 10 && st.totals.orders === 0
-                            ? say(`Your shop received ${st.totals.visits} visits in 30 days, but no one placed an order. Prices, photos and delivery details on your shop usually help.`, 'Open shop settings', () => { openStorefront().catch(() => {}); })
-                            : st.totals.visits > 0 && say(`${st.totals.visits} visits led to ${st.totals.orders} orders and ${st.totals.enquiries} enquiries in 30 days. Use a tracked link for each place you post to see which works best.`, 'Get tracked links', () => { openStorefront().catch(() => {}); })}
-                        </>
-                      )}
-                    </View>
-                  );
-                  if (insightsGroup === 'ai') return (
-                    <View style={{ gap: 10 }}>
-                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
-                        {tile('AI tasks this month', used ? `${used.used.toLocaleString()}${used.limit !== null ? ` / ${used.limit.toLocaleString()}` : ''}` : '—', used?.limit ? `${Math.max(0, used.limit - used.used).toLocaleString()} left on your plan` : 'Included in your plan', () => openBilling(() => setScreen('insights')))}
-                        {tile('Tasks · 30 days', totalTasks.toLocaleString(), 'Completed by Nexora')}
-                        {tile('Customer replies', String((byKind.reply || 0) + (byKind.shop_reply || 0)), 'Answered for you')}
-                        {tile('Cost', 'Included', 'AI tasks are part of your plan price')}
-                      </View>
-                      {kindRows.length > 0 && (
-                        <View style={{ backgroundColor: '#FFFFFF', borderRadius: 16, padding: 14, borderWidth: 1, borderColor: IN_GRID }}>
-                          <Text style={{ fontSize: 14, fontWeight: '800', color: IN_INK, marginBottom: 6 }}>What Nexora did (30 days)</Text>
-                          {kindRows.map(([kd, n]) => (
-                            <View key={kd} style={{ flexDirection: 'row', paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' }}>
-                              <Text style={{ flex: 1, fontSize: 13, color: IN_INK }}>{KIND_NAME[kd] || kd}</Text>
-                              <Text style={{ fontSize: 13, fontWeight: '700', color: IN_INK }}>{n}</Text>
-                            </View>
+                      {!!D.launch?.length && (
+                        <View style={{ flex: 1, minWidth: 0, gap: 8 }}>
+                          <Text style={{ fontSize: 12, fontWeight: '800', color: IN_MUTED, letterSpacing: 0.5 }}>YOUR LAUNCH CHECKLIST</Text>
+                          {D.launch.map((c: any) => (
+                            <Pressable key={c.key} onPress={() => !c.done && go(c.action)} disabled={c.done} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                              <Ionicons name={c.done ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={c.done ? IN_GOOD : IN_FAINT} />
+                              <View style={{ flex: 1 }}>
+                                <Text style={{ fontSize: 13.5, fontWeight: '700', color: IN_INK }}>{c.label}</Text>
+                                <Text style={{ fontSize: 12, color: IN_MUTED }}>{c.text}</Text>
+                              </View>
+                              {!c.done && <Ionicons name="chevron-forward" size={16} color={IN_FAINT} />}
+                            </Pressable>
                           ))}
                         </View>
                       )}
-                      {used?.limit && used.used / used.limit >= 0.8 && say(`You have used ${Math.round((used.used / used.limit) * 100)}% of this month's AI tasks. When they run out, Nexora stops replying to customers until next month or an upgrade.`, 'See plans', () => openBilling(() => setScreen('insights')))}
                     </View>
                   );
-                  return null;
                 })()}
-                {/* KPI tiles for the chosen group */}
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
-                  {kpiTiles.filter(t => insightsGroup === 'sales' ? /^Estimate/.test(t.label) : insightsGroup === 'customers' ? /^(Customers|Repeat|Lead|Customer lifetime)/.test(t.label) : false).map(t => (
-                    <View key={t.label} style={{ flexGrow: 1, flexBasis: threeCol ? '22%' : twoCol ? '30%' : '46%', minWidth: 150, backgroundColor: '#FFFFFF', borderRadius: 16, padding: 14, borderWidth: 1, borderColor: IN_GRID }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                        <View style={{ width: 28, height: 28, borderRadius: 8, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}><Ionicons name={t.icon as any} size={15} color={IN_C[0]} /></View>
-                        <Text style={{ flex: 1, fontSize: 12, color: IN_MUTED, fontWeight: '600' }} numberOfLines={1}>{t.label}</Text>
-                      </View>
-                      <View style={{ flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', marginTop: 10, gap: 6 }}>
-                        <Text style={{ fontSize: 22, fontWeight: '900', color: IN_INK, flexShrink: 1 }} numberOfLines={1} adjustsFontSizeToFit>{t.value}</Text>
-                        {!!t.spark && <InSparkline values={t.spark} width={70} height={26} />}
-                      </View>
-                      <View style={{ marginTop: 6 }}>{t.change !== undefined ? <InChange value={t.change} significance={t.sig} /> : <Text style={{ fontSize: 11.5, color: IN_FAINT }}>{t.note}</Text>}</View>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8 }}><KindBadge k={/^Estimate/.test(t.label) ? 'estimate' : 'measured'} /><Text style={{ fontSize: 10.5, color: IN_FAINT, flexShrink: 1 }}>{/^(Customers|Repeat|Customer lifetime)/.test(t.label) ? 'From: Orders and Customers · all time' : /^Lead/.test(t.label) ? 'From: Customers (CRM)' : 'From: Orders · next 30 days'}</Text></View>
-                    </View>
-                  ))}
-                </View>
-
-                {row(<>
-                  <InCard title={D.health.mode === 'launch' ? 'Launch readiness' : 'Business health'} subtitle={D.health.mode === 'launch' ? 'Five setup steps, 20 points each' : 'Five checks, 20 points each'} style={{ flex: twoCol ? 0.9 : undefined }}>
-                    <InGauge score={D.health.score} parts={D.health.parts} />
-                  </InCard>
-                  <InCard title="Money received, day by day" subtitle={`${insOverview ? `Last ${insOverview.range} days against the ${insOverview.range} before` : 'Last 30 days against the 30 before'} · tap a day`} right={<KindBadge k="measured" />} style={{ flex: twoCol ? 1.4 : undefined }}>
-                    <InLineCompare daily={insOverview?.daily ?? D.daily} width={twoCol ? (cw - 16) * (1.4 / 2.3) - 38 : cw - 38} cur={insOverview?.currency || cur} days={insOverview?.range ?? 30} />
-                  </InCard>
-                </>)}
-
-                {row(<>
-                  <InCard title="Weekly revenue and forecast" subtitle="12 weeks of sales (measured) and Nexora's estimate for the next 4" right={<KindBadge k="estimate" />} style={{ flex: twoCol ? 1.4 : undefined }}>
-                    <InBarsForecast weekly={D.weekly} forecast={D.forecast} width={twoCol ? (cw - 16) * (1.4 / 2.3) - 38 : cw - 38} cur={cur} />
-                  </InCard>
-                  <InCard title="Order status" subtitle={`Last 90 days${D.late_orders ? ` · ${D.late_orders} waiting over 2 days` : ''}`} style={{ flex: twoCol ? 0.9 : undefined }}
-                    right={D.open_orders ? <Pressable onPress={() => openOrders('Unshipped')}><Text style={{ color: IN_C[0], fontSize: 12.5, fontWeight: '700' }}>Open orders</Text></Pressable> : undefined}>
-                    <InDonut items={D.status} center="orders" colorFor={l => IN_STATUS_COLOR[l] || IN_C[5]} size={140} />
-                  </InCard>
-                </>)}
-
-                {row(<>
-                  <InCard title="Best sellers" subtitle="Revenue in the last 90 days, with your product photos" style={{ flex: twoCol ? 1 : undefined }}>
-                    <InRankBars items={D.products.map((p: any) => ({ label: p.name, value: p.revenue, image: p.image, sub: `${p.units} sold · ${p.orders} order${p.orders === 1 ? '' : 's'}` }))} fmt={v => inMoney(v, cur, true)} />
-                  </InCard>
-                  <InCard title="When customers buy" subtitle="Orders by day and time, last 90 days" style={{ flex: twoCol ? 1 : undefined }}>
-                    <InHeatmap grid={D.heat} />
-                  </InCard>
-                </>)}
-
-                <View style={{ flexDirection: threeCol ? 'row' : 'column', gap: 16 }}>
-                  <InCard title="From contact to loyal customer" subtitle="How many move to the next step" style={{ flex: threeCol ? 1 : undefined }}>
-                    <InFunnel steps={D.funnel} />
-                  </InCard>
-                  <InCard title="Where customers come from" subtitle="By channel" style={{ flex: threeCol ? 1 : undefined }}>
-                    <InDonut items={D.channels} center="people" size={130} />
-                  </InCard>
-                  <InCard title="Top places" subtitle="Where your customers are" style={{ flex: threeCol ? 1 : undefined }}>
-                    <InRankBars items={D.places.map((p: any) => ({ label: p.label, value: p.value }))} fmt={v => `${v}`} />
-                  </InCard>
-                </View>
-
-                {row(<>
-                  <InCard title="Who brings the money" subtitle={D.top_share !== null ? `Your top 20% of customers bring ${D.top_share}% of all spending` : 'Spending by customer group'} style={{ flex: twoCol ? 1 : undefined }}>
-                    <InStack items={D.tiers} cur={cur} />
-                  </InCard>
-                  <InCard title="AI shop link · 30 days" subtitle="Visits, chats with your Nexora, and leads" style={{ flex: twoCol ? 1 : undefined }}
-                    right={<Pressable onPress={() => { openStorefront().catch(() => {}); }}><Text style={{ color: IN_C[0], fontSize: 12.5, fontWeight: '700' }}>Open</Text></Pressable>}>
-                    <InFunnel steps={[{ label: 'Visits', value: D.shop.visits }, { label: 'Chats', value: D.shop.chats }, { label: 'Leads', value: D.shop.leads }]} />
-                    {!D.shop.visits && <Text style={{ fontSize: 12, color: IN_FAINT, marginTop: 8 }}>Share your shop link in your bio and WhatsApp status to start getting visits.</Text>}
-                  </InCard>
-                </>)}
-
-                {/* AI analysis */}
-                {!!I?.insights?.length && (
-                  <InCard title="What Nexora sees" subtitle="Nexora's reading of your numbers" right={<KindBadge k="ai" />}>
-                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
-                      {I.insights.map((x: any, i: number) => {
-                        const t = toneStyle(x.tone);
-                        return (
-                          <View key={i} style={{ flexGrow: 1, flexBasis: twoCol ? '45%' : '100%', backgroundColor: t.bg, borderRadius: 14, padding: 14 }}>
-                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                              <Ionicons name={t.icon as any} size={16} color={t.color} />
-                              <Text style={{ fontSize: 11, fontWeight: '800', color: t.color, letterSpacing: 0.5 }}>{t.word.toUpperCase()}</Text>
-                            </View>
-                            <Text style={{ fontSize: 14, fontWeight: '800', color: IN_INK, marginTop: 6 }}>{x.title}</Text>
-                            <Text style={{ fontSize: 13, color: '#334155', marginTop: 4, lineHeight: 19 }}>{x.detail}</Text>
-                          </View>
-                        );
-                      })}
-                    </View>
-                  </InCard>
-                )}
 
                 {/* Profitable ideas, each with a picture */}
                 <View>
@@ -15913,24 +15818,9 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                       <Text style={{ fontSize: 12, color: IN_MUTED, marginTop: 10 }}>Try a bundle with a best seller, a better photo, or a short video post.</Text>
                     </InCard>
                   )}
-                  {!!D.trends?.length && (
-                    <InCard title="What's moving in your market" subtitle="From Trending for you, refreshed every hour" style={{ flex: twoCol ? 1 : undefined }}
-                      right={<Pressable onPress={openTrends}><Text style={{ color: IN_C[0], fontSize: 12.5, fontWeight: '700' }}>See all</Text></Pressable>}>
-                      <View style={{ gap: 12 }}>
-                        {D.trends.map((t: any, i: number) => (
-                          <Pressable key={i} onPress={() => t.url && openInApp(t.url, t.title)} style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
-                            {renderWebThumb(t.url, 56, 12)}
-                            <View style={{ flex: 1, minWidth: 0 }}>
-                              <Text style={{ fontSize: 13, fontWeight: '700', color: IN_INK }} numberOfLines={2}>{t.title}</Text>
-                              <Text style={{ fontSize: 12, color: IN_MUTED, marginTop: 2 }} numberOfLines={2}>{t.summary}</Text>
-                            </View>
-                          </Pressable>
-                        ))}
-                      </View>
-                    </InCard>
-                  )}
                 </>)}
 
+                </>)}
                 <Text style={{ fontSize: 11.5, color: IN_FAINT, textAlign: 'center', marginTop: 4 }}>
                   Figures come from the orders, customers and chats saved in Nexora. Idea pictures: your product photos or Wikimedia Commons.
                 </Text>
