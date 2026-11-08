@@ -4054,6 +4054,10 @@ function HomeScreenInner(){
   const [ordersFilter, setOrdersFilter] = useState<'Unshipped' | 'Unpaid' | 'Shipped' | 'Cancelled' | 'All'>('Unshipped');
   const [ordersQuery, setOrdersQuery] = useState('');
   const [orderOpenId, setOrderOpenId] = useState<string | null>(null);
+  // 2.10: orders from every channel with a "From" filter, the sales trend, and an offer to tell the customer after each step.
+  const [ordersChannel, setOrdersChannel] = useState<'all' | 'shop' | 'website' | 'chat' | 'manual'>('all');
+  const [ordersTrends, setOrdersTrends] = useState(false);
+  const [orderNudge, setOrderNudge] = useState<string | null>(null);
   const [orderForm, setOrderForm] = useState<{ tracking: string; delivery_fee: string; discount: string; refund: string; cancel_reason: string; note: string } | null>(null);
   // ---- Team approvals (lib/approvals.ts): the owner's rules, requests waiting for this person, and the "Ask for approval" sheet ----
   const [approvalRules, setApprovalRules] = useState<ApprovalRules>(ALL_ON);
@@ -8468,6 +8472,7 @@ function HomeScreenInner(){
     const ok = await updateOrder(o, { status, ...stamp, ...extra }, text, true, status === 'shipped' ? `${orderLabel(o)} marked as shipped` : status === 'delivered' ? 'Marked as delivered' : status === 'cancelled' ? 'Order cancelled' : 'Order updated');
     // The database gives back (or takes again) the stock of a cancelled (or reopened) order; show the new counts.
     if (ok && (status === 'cancelled') !== (o.status === 'cancelled')) refreshKnowledge().catch(() => {});
+    if (ok && status !== 'pending') setOrderNudge(o.id);
     return ok;
   };
   const setPayment = async (o: OrderRow, payment_status: PaymentStatus, amount?: number) => {
@@ -8506,7 +8511,7 @@ function HomeScreenInner(){
     const lines = o.line_items?.length ? o.line_items : [{ name: o.items, qty: 1, unit_price: Number(o.total), total: Number(o.total) }];
     const esc = (t: string) => t.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
     const subtotal = o.subtotal ?? lines.reduce((n, l) => n + Number(l.total || 0), 0);
-    const kind = o.payment_status === 'paid' ? 'Receipt' : 'Invoice';
+    const kind = ['paid', 'partially_refunded', 'refunded'].includes(o.payment_status || '') ? 'Receipt' : 'Invoice';
     const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${kind} ${esc(orderLabel(o))}</title><style>body{font-family:Arial,sans-serif;color:#0B1220;max-width:640px;margin:32px auto;padding:0 16px}h1{font-size:22px;margin:0}table{width:100%;border-collapse:collapse;margin-top:18px}td,th{padding:8px 4px;border-bottom:1px solid #E6ECF3;text-align:left;font-size:14px}th{color:#5C6B7A;font-weight:600}.r{text-align:right}.muted{color:#5C6B7A;font-size:13px}.tot td{font-weight:700;border-bottom:none}@media print{button{display:none}}</style></head><body>
 <h1>${esc(biz)}</h1><p class="muted">${kind} ${esc(orderLabel(o))} · ${new Date(o.created_at).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}</p>
 <p><b>Customer:</b> ${esc(o.customer_name)}${o.customer_phone ? `<br>${esc(o.customer_phone)}` : ''}${o.customer_email ? `<br>${esc(o.customer_email)}` : ''}${o.delivery_address ? `<br>${esc(o.delivery_address)}` : ''}</p>
@@ -8545,8 +8550,8 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
     const items = [...o.lines.map(l => `${l.name} x${l.qty}`), o.other.trim()].filter(Boolean).join(', ').slice(0, 500);
     const base = { user_id: userId, customer_name: o.name.trim(), items, total: o.total, status: 'pending' as const, tracking: '' };
     const extra = {
-      source: 'manual', customer_phone: o.phone.trim(), payment_status: o.paid ? 'paid' : 'unpaid', paid_at: o.paid ? now : null, amount_paid: o.paid ? o.total : 0,
-      subtotal: o.total, currency: o.currency, line_items: o.lines, history: [{ at: now, text: 'Order added in Nexora', by: fullName || 'Owner', customer: false }],
+      source: o.channel || 'manual', customer_phone: o.phone.trim(), payment_status: o.paid ? 'paid' : 'unpaid', paid_at: o.paid ? now : null, amount_paid: o.paid ? o.total : 0,
+      subtotal: o.total, currency: o.currency, line_items: o.lines, history: [{ at: now, text: `Order added in Nexora${o.channel && o.channel !== 'manual' ? ` (came in by ${o.channel === 'call' ? 'phone call' : o.channel === 'whatsapp' ? 'WhatsApp' : o.channel[0].toUpperCase() + o.channel.slice(1)})` : ''}`, by: fullName || 'Owner', customer: false }],
     };
     const row: Record<string, unknown> = ordersUpgraded ? { ...base, ...extra, order_number: `NX-${1001 + orders.length}` } : base;
     let { error } = await supabase.from('orders').insert(row);
@@ -12045,17 +12050,51 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
     const isDone = (o: OrderRow) => o.status === 'shipped' || o.status === 'delivered' || o.status === 'completed';
     const isUnpaid = (o: OrderRow) => o.status !== 'cancelled' && (o.payment_status === 'unpaid' || o.payment_status === 'pending');
     const counts = { Unshipped: orders.filter(isUnshipped).length, Unpaid: orders.filter(isUnpaid).length, Shipped: orders.filter(isDone).length, Cancelled: orders.filter(o => o.status === 'cancelled').length, All: orders.length };
+    // 2.10 (same rules as the website): where each order came from, and the money that really came in.
+    type Ch = 'shop' | 'website' | 'chat' | 'manual';
+    const CH_TEXT: Record<Ch, string> = { shop: 'Shop link', website: 'Website', chat: 'Chats and calls', manual: 'In person' };
+    const channelOf = (o: OrderRow): Ch => { const s = (o.source || '').toLowerCase(); return s === 'shop' ? 'shop' : s === 'website' || s === 'api' || s === 'webhook' ? 'website' : ['whatsapp', 'instagram', 'facebook', 'chat', 'messenger', 'sms', 'email', 'call', 'phone'].includes(s) ? 'chat' : 'manual'; };
+    const takings = (o: OrderRow) => (o.status === 'cancelled' && !Number(o.amount_paid)) ? 0 : ['paid', 'partially_refunded', 'refunded'].includes(o.payment_status || '') ? Math.max(0, Number(o.amount_paid || o.total || 0) - Number(o.refunded_amount || 0)) : 0;
+    const mainCur = (() => { const n: Record<string, number> = {}; for (const o of orders) if (o.currency) n[o.currency] = (n[o.currency] || 0) + 1; return Object.entries(n).sort((a, b) => b[1] - a[1])[0]?.[0] || (LOCAL_NGN ? 'NGN' : 'USD'); })();
+    const sameCur = orders.filter(o => !o.currency || o.currency === mainCur);
+    const DAY = 86400000, nowMs = Date.now();
+    const inLast = (o: OrderRow, from: number, to: number) => { const t = new Date(o.created_at).getTime(); return t >= nowMs - from * DAY && t < nowMs - to * DAY; };
+    const last30 = sameCur.filter(o => o.status !== 'cancelled' && inLast(o, 30, 0)), prev30 = sameCur.filter(o => o.status !== 'cancelled' && inLast(o, 60, 30));
+    const sales30 = last30.reduce((n, o) => n + takings(o), 0), salesPrev = prev30.reduce((n, o) => n + takings(o), 0);
+    const salesChange = salesPrev > 0 ? Math.round(((sales30 - salesPrev) / salesPrev) * 100) : null;
+    const cm = (n: number) => orderMoney({ currency: mainCur } as OrderRow, n);
+    const weekStart = (() => { const d = new Date(nowMs); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.getTime(); })();
+    const weeks = Array.from({ length: 12 }, (_, i) => { const start = weekStart - (11 - i) * 7 * DAY; const ws = sameCur.filter(o => o.status !== 'cancelled' && new Date(o.created_at).getTime() >= start && new Date(o.created_at).getTime() < start + 7 * DAY); return { start, sales: ws.reduce((n, o) => n + takings(o), 0), orders: ws.length }; });
+    const weekMax = Math.max(1, ...weeks.map(w => w.sales));
+    const chCounts = (Object.keys(CH_TEXT) as Ch[]).map(c => [c, orders.filter(o => channelOf(o) === c).length] as const).filter(([, n]) => n);
+    const ch30 = (Object.keys(CH_TEXT) as Ch[]).map(c => { const cs = last30.filter(o => channelOf(o) === c); return { c, orders: cs.length, sales: cs.reduce((n, o) => n + takings(o), 0) }; }).filter(x => x.orders);
+    const chMax = Math.max(1, ...ch30.map(x => x.sales || x.orders));
+    const payEvents = (o: OrderRow) => (Array.isArray(o.history) ? o.history : []).filter((h: any) => /pa(id|y)|refund|paystack|transfer/i.test(String(h?.text || '')));
     const qq = ordersQuery.trim().toLowerCase();
-    const shown = orders.filter(o => (ordersFilter === 'All' ? true : ordersFilter === 'Unshipped' ? isUnshipped(o) : ordersFilter === 'Unpaid' ? isUnpaid(o) : ordersFilter === 'Cancelled' ? o.status === 'cancelled' : isDone(o)))
+    const shown = orders.filter(o => (ordersChannel === 'all' || channelOf(o) === ordersChannel)).filter(o => (ordersFilter === 'All' ? true : ordersFilter === 'Unshipped' ? isUnshipped(o) : ordersFilter === 'Unpaid' ? isUnpaid(o) : ordersFilter === 'Cancelled' ? o.status === 'cancelled' : isDone(o)))
       .filter(o => !qq || `${orderLabel(o)} ${o.customer_name} ${o.items} ${o.customer_phone ?? ''} ${o.customer_email ?? ''}`.toLowerCase().includes(qq));
     const statusPill = (st: OrderRow['status']) => st === 'pending' ? { bg: '#FDF3E1', fg: '#B7791F' } : st === 'processing' ? { bg: '#EAF1FB', fg: '#1E56A0' } : st === 'cancelled' ? { bg: '#FDECEC', fg: '#B42318' } : { bg: '#E3F6EE', fg: '#1E9E6D' };
     const payPill = (p?: PaymentStatus) => p === 'paid' ? { bg: '#E3F6EE', fg: '#1E9E6D' } : p === 'unpaid' ? { bg: '#FDECEC', fg: '#B42318' } : p === 'pending' ? { bg: '#FDF3E1', fg: '#B7791F' } : p === 'refunded' || p === 'partially_refunded' ? { bg: '#F3EEFF', fg: '#7C3AED' } : { bg: '#F1F5F9', fg: '#5C6B7A' };
     const pill = (text: string, c: { bg: string; fg: string }) => <View style={{ backgroundColor: c.bg, borderRadius: 10, paddingHorizontal: 9, paddingVertical: 3 }}><Text style={{ color: c.fg, fontSize: 11, fontWeight: '700' }}>{text}</Text></View>;
     const open = orderOpenId ? orders.find(o => o.id === orderOpenId) ?? null : null;
+    // 2.10 customer notifications: after the order moves on, offer the update Nexora wrote. Nothing is sent without a tap.
+    const nudgeEl = (o: OrderRow) => (
+      <View accessibilityRole="alert" style={{ backgroundColor: '#EAF1FB', borderRadius: 16, padding: 14, marginBottom: 12 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8 }}>
+          <Text style={{ flex: 1, fontSize: 13.5, color: '#0B1220' }}><Text style={{ fontWeight: '700' }}>Let {o.customer_name.split(' ')[0]} know?</Text> {orderLabel(o)} is now {ORDER_STATUS_TEXT[o.status].toLowerCase()}. Nexora has written the update; you choose how to send it.</Text>
+          <Pressable onPress={() => setOrderNudge(null)} hitSlop={8} accessibilityLabel="Not now"><Ionicons name="close" size={18} color="#5C6B7A" /></Pressable>
+        </View>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+          {(o.customer_phone || '').replace(/[^\d]/g, '').length >= 7 && btn('Send on WhatsApp', () => { setOrderNudge(null); notifyCustomer(o, 'whatsapp').catch(() => {}); }, 'primary', false, true)}
+          {!!o.customer_email && btn('Send by email', () => { setOrderNudge(null); notifyCustomer(o, 'email').catch(() => {}); }, 'outline', false, true)}
+          {btn('Copy or share', () => { setOrderNudge(null); notifyCustomer(o, 'share').catch(() => {}); }, 'outline', false, true)}
+        </View>
+      </View>
+    );
     // Changing an order needs "Orders: manage"; contacting the customer is fine with "see".
     const orderManage = access.can('orders_manage');
     const btn = (text: string, onPress: () => void, kind: 'primary' | 'outline' | 'danger' = 'outline', disabled = false, viewOnlyOk = false) => (!orderManage && !viewOnlyOk) ? null : (
-      <Pressable disabled={disabled} onPress={onPress} style={[styles.resetButton, { flexGrow: 1, flexBasis: '45%', minHeight: 40, opacity: disabled ? 0.5 : 1 }, kind === 'primary' ? styles.resetButtonEnabled : kind === 'danger' ? { borderWidth: 1, borderColor: '#F5C2C2', backgroundColor: '#FDECEC' } : { borderWidth: 1, borderColor: '#5381BB' }]}>
+      <Pressable disabled={disabled} onPress={onPress} style={[styles.resetButton, { flexGrow: 1, flexBasis: '45%', maxWidth: 320, minHeight: 40, opacity: disabled ? 0.5 : 1 }, kind === 'primary' ? styles.resetButtonEnabled : kind === 'danger' ? { borderWidth: 1, borderColor: '#F5C2C2', backgroundColor: '#FDECEC' } : { borderWidth: 1, borderColor: '#5381BB' }]}>
         <Text style={[styles.resetButtonText, { fontSize: 13 }, kind === 'outline' && { color: '#1E56A0' }, kind === 'danger' && { color: '#B42318' }]}>{text}</Text>
       </Pressable>
     );
@@ -12084,6 +12123,54 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
             <View style={[styles.detailCard, { flex: 1, marginBottom: 0 }]}><Text style={{ fontSize: 20, fontWeight: '800', color: '#0B1220' }}>{counts.Unshipped}</Text><Text style={styles.attentionSubtitle}>To prepare or ship</Text></View>
             <View style={[styles.detailCard, { flex: 1, marginBottom: 0 }]}><Text style={{ fontSize: 20, fontWeight: '800', color: counts.Unpaid ? '#B42318' : '#0B1220' }}>{counts.Unpaid}</Text><Text style={styles.attentionSubtitle}>Unpaid{counts.Unpaid && sample ? ` · ${orderMoney(sample, unpaidTotal)}` : ''}</Text></View>
           </View>
+          {(() => { const no = orderNudge ? orders.find(x => x.id === orderNudge) : null; return no && !open ? nudgeEl(no) : null; })()}
+          {orders.length > 0 && (
+            <View style={styles.detailCard}>
+              <Pressable onPress={() => setOrdersTrends(t => !t)} accessibilityRole="button" accessibilityState={{ expanded: ordersTrends }} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.attentionTitle}>Sales, last 30 days: {cm(sales30)}</Text>
+                  <Text style={styles.attentionSubtitle}>{last30.length} order{last30.length === 1 ? '' : 's'}{salesChange !== null ? ` · ${salesChange >= 0 ? 'up' : 'down'} ${Math.abs(salesChange)}% on the 30 days before` : ''}</Text>
+                </View>
+                <Text style={{ color: '#1E56A0', fontWeight: '600', fontSize: 13 }}>{ordersTrends ? 'Hide trends' : 'Show sales trends'}</Text>
+                <Ionicons name={ordersTrends ? 'chevron-up' : 'chevron-down'} size={14} color="#1E56A0" />
+              </Pressable>
+              {ordersTrends && (
+                <View style={{ marginTop: 12, borderTopWidth: 1, borderTopColor: '#E6ECF3', paddingTop: 12 }}>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                    {([['Takings', cm(sales30)], ['Average paid order', cm(last30.filter(o => takings(o) > 0).length ? Math.round(sales30 / last30.filter(o => takings(o) > 0).length) : 0)],
+                      ['Refunded', cm(sameCur.filter(o => inLast(o, 30, 0)).reduce((n, o) => n + Number(o.refunded_amount || 0), 0))],
+                      ['Waiting to be paid', cm(sameCur.filter(isUnpaid).reduce((n, o) => n + Number(o.total || 0), 0))]] as const).map(([k, v]) => (
+                      <View key={k} style={{ flexBasis: '47%', flexGrow: 1, backgroundColor: '#F4F7FB', borderRadius: 12, padding: 12 }}>
+                        <Text style={{ fontSize: 12, color: '#5C6B7A' }}>{k}</Text><Text style={{ fontSize: 16, fontWeight: '800', color: '#0B1220' }}>{v}</Text>
+                      </View>
+                    ))}
+                  </View>
+                  <Text style={[styles.channelSectionLabel, { marginTop: 14 }]}>Takings by week · last 12 weeks</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'flex-end', height: 110, gap: 4, borderBottomWidth: 1, borderBottomColor: '#E6ECF3' }} accessibilityLabel="Takings by week for the last 12 weeks">
+                    {weeks.map((w, i) => (
+                      <Pressable key={w.start} onPress={() => flash(`Week of ${new Date(w.start).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}: ${cm(w.sales)} from ${w.orders} order${w.orders === 1 ? '' : 's'}`)} style={{ flex: 1, justifyContent: 'flex-end', height: '100%' }}>
+                        <View style={{ height: `${Math.max(w.orders ? 2 : 0, Math.round((w.sales / weekMax) * 100))}%`, backgroundColor: i === weeks.length - 1 ? '#1E56A0' : '#7FB2FF', borderTopLeftRadius: 4, borderTopRightRadius: 4 }} />
+                      </Pressable>
+                    ))}
+                  </View>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 }}>
+                    <Text style={{ fontSize: 11, color: '#8A97A6' }}>{new Date(weeks[0].start).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}</Text>
+                    <Text style={{ fontSize: 11, color: '#8A97A6' }}>This week</Text>
+                  </View>
+                  <Text style={[styles.attentionSubtitle, { fontSize: 12, marginTop: 6 }]}>Takings = money received on paid orders, less refunds. Cancelled orders are left out. Tap a bar for its week.</Text>
+                  {ch30.length > 0 && <Text style={[styles.channelSectionLabel, { marginTop: 14 }]}>Where the last 30 days of orders came from</Text>}
+                  {ch30.map(x => (
+                    <View key={x.c} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 6 }}>
+                      <Text style={{ width: 96, fontSize: 13, color: '#0B1220' }}>{CH_TEXT[x.c]}</Text>
+                      <View style={{ flex: 1, height: 10, borderRadius: 999, backgroundColor: '#F4F7FB' }}><View style={{ width: `${Math.max(4, Math.round(((x.sales || x.orders) / chMax) * 100))}%`, height: '100%', borderRadius: 999, backgroundColor: '#1E56A0' }} /></View>
+                      <Text style={{ fontSize: 12, color: '#5C6B7A' }}>{x.orders} · {cm(x.sales)}</Text>
+                    </View>
+                  ))}
+                  <Pressable onPress={() => { openInsights(); }} style={{ marginTop: 12 }}><Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>More charts in Insights ›</Text></Pressable>
+                </View>
+              )}
+            </View>
+          )}
           <View style={[styles.searchBarPlain]}>
             <Ionicons name="search-outline" size={16} color="#8A97A6" />
             <TextInput value={ordersQuery} onChangeText={setOrdersQuery} placeholder="Search by order number, customer or item" placeholderTextColor="#8A97A6" style={[styles.homeSearchPlaceholder, { flex: 1, paddingVertical: 0 }]} />
@@ -12095,6 +12182,17 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
               </Pressable>
             ))}
           </ScrollView>
+          {chCounts.length > 1 && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 12, alignItems: 'center' }}>
+              <Text style={{ fontSize: 12, fontWeight: '600', color: '#8A97A6' }}>From:</Text>
+              {([['all', orders.length] as const, ...chCounts]).map(([c, n]) => (
+                <Pressable key={c} onPress={() => setOrdersChannel(c)} accessibilityState={{ selected: ordersChannel === c }}
+                  style={{ borderWidth: 1, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 5, borderColor: ordersChannel === c ? '#1E56A0' : '#E6ECF3', backgroundColor: ordersChannel === c ? '#EAF1FB' : '#FFFFFF' }}>
+                  <Text style={{ fontSize: 12, fontWeight: '600', color: ordersChannel === c ? '#1E56A0' : '#5C6B7A' }}>{c === 'all' ? 'Every channel' : CH_TEXT[c]} ({n})</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          )}
 {access.can('orders_manage') && (
           <Pressable onPress={() => setAddingOrder(true)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', marginBottom: 12 }}>
             <Ionicons name="add-circle-outline" size={18} color="#1E56A0" /><Text style={{ color: '#1E56A0', fontWeight: '700' }}>Add an order yourself</Text>
@@ -12113,7 +12211,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                 <View style={styles.attentionTextWrap}>
                   <Text style={styles.attentionTitle}>{o.customer_name} <Text style={{ color: '#8A97A6', fontWeight: '500', fontSize: 13 }}>· {orderLabel(o)}</Text></Text>
                   <Text style={styles.attentionSubtitle} numberOfLines={2}>{o.items}</Text>
-                  <Text style={[styles.attentionSubtitle, { marginTop: 2 }]}>{orderMoney(o, o.total)}  {'·'}  {timeAgo(o.created_at)}{o.source === 'shop' ? '  ·  Shop link' : ''}</Text>
+                  <Text style={[styles.attentionSubtitle, { marginTop: 2 }]}>{orderMoney(o, o.total)}  {'·'}  {timeAgo(o.created_at)}  {'·'}  {CH_TEXT[channelOf(o)]}</Text>
                 </View>
                 <View style={{ alignItems: 'flex-end', gap: 6 }}>
                   {pill(ORDER_STATUS_TEXT[o.status], statusPill(o.status))}
@@ -12161,11 +12259,12 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                   <Pressable onPress={() => orderReceipt(o)} hitSlop={8} accessibilityLabel="Receipt"><Ionicons name="document-text-outline" size={22} color="#0B1220" /></Pressable>
                 </View>
                 <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40 + insets.bottom, width: '100%', maxWidth: 760, alignSelf: 'center' }]} keyboardShouldPersistTaps="handled">
+                  {orderNudge === o.id && nudgeEl(o)}
                   <View style={styles.detailCard}>
                     <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
                       {pill(`Order: ${ORDER_STATUS_TEXT[o.status]}`, statusPill(o.status))}
                       {pill(`Payment: ${PAY_TEXT[o.payment_status || 'unknown']}`, payPill(o.payment_status))}
-                      {o.source === 'shop' && pill(`Shop link${o.src ? ` · ${o.src}` : ''}`, { bg: '#EAF1FB', fg: '#1E56A0' })}
+                      {pill(`From: ${CH_TEXT[channelOf(o)]}${o.src ? ` · ${o.src}` : ''}`, { bg: '#EAF1FB', fg: '#1E56A0' })}
                     </View>
                     <Text style={[styles.attentionSubtitle, { marginTop: 8 }]}>Placed {new Date(o.created_at).toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' })}</Text>
                   </View>
@@ -12177,6 +12276,9 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                     {!!o.customer_email && <Text style={styles.attentionSubtitle}>{o.customer_email}</Text>}
                     {!!o.delivery_address && <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}><Text style={{ fontWeight: '700' }}>Deliver to: </Text>{o.delivery_address}</Text>}
                     {!!o.note && <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}><Text style={{ fontWeight: '700' }}>Note: </Text>{o.note}</Text>}
+                    <Pressable onPress={() => { const row = (o as any).customer_id ? contacts.find(x => x.id === (o as any).customer_id) : null; setOrderOpenId(null); if (row) openContact(row); else openCustomers(); }} style={{ marginTop: 6 }}>
+                      <Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>{(o as any).customer_id ? 'Open customer record ›' : 'Find in Customers ›'}</Text>
+                    </Pressable>
                     <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
                       {phone.length >= 7 && btn('WhatsApp update', () => { notifyCustomer(o, 'whatsapp').catch(() => {}); }, 'outline', false, true)}
                       {!!o.customer_email && btn('Email update', () => { notifyCustomer(o, 'email').catch(() => {}); }, 'outline', false, true)}
@@ -12216,6 +12318,13 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                     <Text style={styles.attentionSubtitle}>Payment is tracked separately from delivery: an order can be paid but not shipped, or cancelled with a refund still to send.</Text>
                     {!!o.paid_at && <Text style={[styles.attentionSubtitle, { marginTop: 6 }]}>Paid {orderMoney(o, o.amount_paid || o.total)} on {new Date(o.paid_at).toLocaleDateString()}</Text>}
                     {!!Number(o.refunded_amount) && <Text style={[styles.attentionSubtitle, { marginTop: 4, color: '#7C3AED' }]}>Refunded {orderMoney(o, o.refunded_amount)}</Text>}
+                    {payEvents(o).length > 0 && (
+                      <View accessibilityLabel="Payment events" style={{ marginTop: 10, backgroundColor: '#F4F7FB', borderRadius: 12, padding: 10, gap: 4 }}>
+                        {payEvents(o).slice().reverse().map((h: any, i: number) => (
+                          <Text key={i} style={{ fontSize: 12.5, color: '#0B1220' }}>{h.text} <Text style={{ color: '#8A97A6' }}>· {new Date(h.at).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}{h.by ? ` · ${h.by}` : ''}</Text></Text>
+                        ))}
+                      </View>
+                    )}
                     <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
                       {o.payment_status !== 'paid' && o.payment_status !== 'refunded' && o.payment_status !== 'partially_refunded' && btn('Mark as paid', () => { setPayment(o, 'paid').catch(() => {}); }, 'primary', !ordersUpgraded)}
                       {(o.payment_status === 'unpaid' || o.payment_status === 'unknown') && btn('Customer says they paid', () => { setPayment(o, 'pending').catch(() => {}); }, 'outline', !ordersUpgraded)}
@@ -12250,6 +12359,11 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                       {o.status !== 'pending' && o.status !== 'cancelled' && orderForm.tracking.trim() !== (o.tracking || '') && btn('Save tracking', () => { updateOrder(o, { tracking: orderForm.tracking.trim() }, `Tracking updated: ${orderForm.tracking.trim()}`, true, 'Tracking saved').catch(() => {}); })}
                       {o.status === 'cancelled' && direct('order_cancel') && btn('Reopen order', () => { setOrderStatus(o, 'pending', { cancelled_at: null, cancel_reason: '' }).catch(() => {}); })}
                     </View>
+                    {(o.status === 'delivered' || o.status === 'completed' || o.status === 'shipped') && (o.line_items ?? []).length > 0 && orderManage && (
+                      <Pressable onPress={() => { setOrderOpenId(null); setScreen('inventory'); flash('Open the Returns tab to record what came back.'); }} style={{ marginTop: 12 }}>
+                        <Text style={{ color: '#1E56A0', fontWeight: '700', fontSize: 13 }}>Customer sent something back? Record a return ›</Text>
+                      </Pressable>
+                    )}
                     {o.status !== 'cancelled' && o.status !== 'completed' && canAsk('order_cancel') && (
                       <View style={{ flexDirection: 'row', marginTop: 14 }}>
                         {btn('Ask to cancel', () => setAskSheet({ title: `Ask to cancel ${orderLabel(o)}`,
@@ -12296,7 +12410,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                     ))}
                   </View>
                   <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
-                    {btn(o.payment_status === 'paid' ? 'Receipt' : 'Invoice', () => orderReceipt(o))}
+                    {btn(['paid', 'partially_refunded', 'refunded'].includes(o.payment_status || '') ? 'Receipt' : 'Invoice', () => orderReceipt(o))}
                   </View>
                 </ScrollView>
               </View>

@@ -6,7 +6,9 @@ import { LEVEL_COLORS, priceOf, stockInfo, type OrderLine } from '../lib/product
 
 // "Add an order yourself": a walk-in, phone or chat sale. Products picked from the list take their stock
 // (the database does it when the order is saved); anything else can be typed in. Same as the website's AddOrderSheet.
-export type ManualOrder = { name: string; phone: string; lines: OrderLine[]; other: string; total: number; currency: string; paid: boolean };
+export type ManualOrder = { name: string; phone: string; lines: OrderLine[]; other: string; total: number; currency: string; paid: boolean; channel: string };
+/** 2.10: where an order you type in came from, so every channel's orders can be told apart (same list as the website). */
+export const ORDER_CHANNELS: [string, string][] = [['manual', 'In person'], ['whatsapp', 'WhatsApp'], ['call', 'Phone call'], ['instagram', 'Instagram'], ['facebook', 'Facebook']];
 type Product = { id: string; name: string; subtitle: string; status: string; fields: { label: string; value: string }[] };
 type Props = { products: Product[]; defaultCurrency: string; onClose: () => void; onSave: (o: ManualOrder) => Promise<void> };
 const amount = (v: string) => Number(v.replace(/[^\d.]/g, '')) || 0;
@@ -14,7 +16,7 @@ const amount = (v: string) => Number(v.replace(/[^\d.]/g, '')) || 0;
 export function AddOrderSheet({ products: all, defaultCurrency, onClose, onSave }: Props) {
   // Drafts aren't for sale (same as the shop link).
   const products = useMemo(() => all.filter(p => p.status !== 'Draft').map(p => ({ id: p.id, name: p.name, ...priceOf(p.fields, p.subtitle), stock: stockInfo(p.fields) })), [all]);
-  const [f, setF] = useState({ name: '', phone: '', other: '', total: '', paid: false });
+  const [f, setF] = useState({ name: '', phone: '', other: '', total: '', paid: false, channel: 'manual' });
   const [qty, setQty] = useState<Record<string, number>>({});
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -34,7 +36,7 @@ export function AddOrderSheet({ products: all, defaultCurrency, onClose, onSave 
     if (mixed) { setErr('These products have different currencies. Record them as separate orders.'); return; }
     if (!(total > 0)) { setErr('Enter the total.'); return; }
     setBusy(true); setErr('');
-    try { await onSave({ name: f.name, phone: f.phone, lines, other: f.other, total, currency, paid: f.paid }); }
+    try { await onSave({ name: f.name, phone: f.phone, lines, other: f.other, total, currency, paid: f.paid, channel: f.channel }); }
     catch (e) { setErr((e as Error).message); setBusy(false); }
   };
 
@@ -85,6 +87,15 @@ export function AddOrderSheet({ products: all, defaultCurrency, onClose, onSave 
         <Text style={s.label}>Total</Text>
         <TextInput value={f.total} onChangeText={v => setF({ ...f, total: v })} placeholder={linesTotal ? linesTotal.toLocaleString() : '0'} placeholderTextColor="#A5AFBB" keyboardType="decimal-pad" style={s.input} maxLength={14} />
         {!!linesTotal && !f.total.trim() && <Text style={s.hint}>Worked out from the products. Type a different total if you gave a discount or added something.</Text>}
+        <Text style={s.label}>Where did this order come from?</Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }} accessibilityRole="radiogroup">
+          {ORDER_CHANNELS.map(([k, l]) => (
+            <Pressable key={k} onPress={() => setF({ ...f, channel: k })} accessibilityRole="radio" accessibilityState={{ checked: f.channel === k }}
+              style={{ borderWidth: 1, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 6, borderColor: f.channel === k ? '#1E56A0' : '#E6ECF3', backgroundColor: f.channel === k ? '#EAF1FB' : '#FFFFFF' }}>
+              <Text style={{ fontSize: 13, fontWeight: '600', color: f.channel === k ? '#1E56A0' : '#5C6B7A' }}>{l}</Text>
+            </Pressable>
+          ))}
+        </View>
         <View style={[s.row, { marginTop: 12 }]}>
           <Text style={[s.itemName, { flex: 1, fontSize: 14 }]}>Already paid</Text>
           <Switch value={f.paid} onValueChange={v => setF({ ...f, paid: v })} trackColor={{ true: '#5381BB', false: '#D5DEE8' }} thumbColor="#FFFFFF" />
