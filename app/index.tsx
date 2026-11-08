@@ -1944,17 +1944,17 @@ const WEB_WIDE_TABS = ['brain', 'inbox', 'market', 'profile'];
 // phone widget belongs to the mobile app); it reflows into one column on narrow screens.
 const WEB_DESKTOP_HOME_MIN = 0;
 // From this window width, sign up / log in / password reset are a full web page instead of the phone screens.
-// Web (any screen size, phones included) uses the responsive onboarding and sign-in pages; the fixed
-// 393x852 phone frames got cut off in phone browsers, hiding Continue and the sign-in buttons.
-const WEB_AUTH_PAGE_MIN = 0;
+// Web uses the Figma phone screens (launch, onboarding, sign up, log in, password reset) like the installed app.
+// They no longer get cut off: the web layout shrinks the phone frame to fit the window's height (see HomeScreen).
+const WEB_AUTH_PAGE_MIN = Infinity;
 // Screens the web version reopens after a refresh or when you come back to the tab.
 const WEB_RESTORABLE = ['main', 'insights', 'ownerAlerts', 'rules', 'leads', 'customersLive', 'orders', 'agenda', 'community', 'storefront', 'followups', 'trends', 'explore', 'network', 'billing', 'learned', 'connectChannels', 'knowledgeHealth', 'knowledgeList', 'campaigns', 'automations', 'quickActions'];
 const WEB_LAST_VIEW_KEY = 'nexora-last-view';
 const WEB_AUTH_SCREENS = ['launch', 'onboarding', 'signup', 'login', 'forgotPassword', 'verifyEmail'];
 const NEXORA_LOGO_URL = `${SUPABASE_URL}/storage/v1/object/public/assets/icon.png`;
 type WebShell = { wide: boolean; signedIn: boolean; active: string };
-// Starts wide: the first screen is the full-window landing page, never the phone card between side panels.
-let webShell: WebShell = { wide: true, signedIn: false, active: '' };
+// Starts on the Figma launch screen (phone card on desktop, full height-fitted frame in phone browsers).
+let webShell: WebShell = { wide: false, signedIn: false, active: 'launch' };
 const webShellSubs = new Set<(s: WebShell) => void>();
 function setWebShell(next: WebShell) {
   if (next.wide === webShell.wide && next.signedIn === webShell.signedIn && next.active === webShell.active) return;
@@ -3245,7 +3245,14 @@ export default function HomeScreen() {
   const authPage = wide && !shell.signedIn;   // the sign-in web page fills the whole window
   // Phone browsers (and narrow windows): the app fills the whole screen edge to edge, like the installed app.
   const phoneBrowser = !desktop && viewW < 700;
-  const cardStyle: any = authPage
+  // Phone browsers on the Figma sign-in screens: shrink the 393x852 frame to fit the visible height, so
+  // Continue, Log In and Sign Up are never hidden below the browser bars.
+  const figmaAuth = !shell.signedIn && ['launch', 'onboarding', 'signup', 'login', 'forgotPassword'].includes(shell.active);
+  const authFitW = Math.min(viewW, Math.floor(viewH * FIGMA_WIDTH / FIGMA_HEIGHT));
+  const authBg = shell.active === 'launch' ? '#0F2942' : '#FFFFFF';
+  const cardStyle: any = phoneBrowser && figmaAuth
+    ? { width: authFitW, height: viewH, alignSelf: 'center', backgroundColor: authBg, overflow: 'hidden' }
+    : authPage
     ? { flex: 1, alignSelf: 'stretch', width: '100%', backgroundColor: '#F4F7FB', overflow: 'hidden' }
     : phoneBrowser
     ? { flex: 1, alignSelf: 'stretch', width: '100%', height: viewH, backgroundColor: '#FFFFFF', overflow: 'hidden' }
@@ -3264,7 +3271,7 @@ export default function HomeScreen() {
       </Svg>
       {desktop && <WebSidebar active={shell.active} />}
       {showSides && <WebSidePanel side="left" />}
-      <View style={{ flex: 1, alignItems: phoneBrowser ? 'stretch' : 'center', justifyContent: 'center', backgroundColor: wide || phoneBrowser ? '#EEF2F7' : 'transparent' }}>
+      <View style={{ flex: 1, alignItems: phoneBrowser ? 'stretch' : 'center', justifyContent: 'center', backgroundColor: phoneBrowser && figmaAuth ? authBg : wide || phoneBrowser ? '#EEF2F7' : 'transparent' }}>
         <View style={cardStyle}>{app}</View>
       </View>
       {showSides && <WebSidePanel side="right" />}
@@ -10129,15 +10136,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
       </View>
     );
   };
-  // Web: the first visit is one landing page (what Nexora does, interests, pricing, FAQs, sign up / log in).
-  if (IS_WEB && (screen === 'launch' || screen === 'onboarding')) {
-    return (
-      <WebLanding width={hookWidth} picks={interestPicks}
-        onTogglePick={k => { const nx = interestPicks.includes(k) ? interestPicks.filter(x => x !== k) : [...interestPicks, k]; setInterestPicks(nx); savePendingFeature(nx[0] ?? null); }}
-        onStart={f => { if (f) savePendingFeature(f); setAuthError(''); setInfoMessage(''); setScreen('signup'); }}
-        onLogin={() => { setAuthError(''); setInfoMessage(''); setScreen('login'); }} />
-    );
-  }
+  // Web shows the same Figma launch and onboarding screens as the installed app (the old WebLanding page is no longer the first screen).
   if (IS_WEB && hookWidth >= WEB_AUTH_PAGE_MIN && ['signup', 'login', 'forgotPassword'].includes(screen)) return renderWebAuthPage();
 
   // The Figma screens draw a pretend status bar (11:30, full signal and battery) in their top 44 points.
