@@ -18,6 +18,8 @@ import { Text, TextInput, interFamily, useInterFonts } from '../lib/inter';
 import { LEVEL_COLORS, STOCK_ALERT_LABEL, STOCK_LABEL, currentStockField, stockInfo, stockOf } from '../lib/products';
 import { StockCard } from '../components/StockCard';
 import { AddOrderSheet, type ManualOrder } from '../components/AddOrderSheet';
+import { BusinessOverview, KindBadge } from '../components/BusinessOverview';
+import type { Overview } from '../lib/analytics';
 import { TeamManager } from '../components/TeamManager';
 import { ActivityLog } from '../components/ActivityLog';
 import { Approvals } from '../components/Approvals';
@@ -1740,7 +1742,7 @@ const MENU_AREAS: MenuArea[] = [
   ] },
 ];
 // Shown at the bottom of the menu so you can tell which build is on a phone. Update RELEASE with each new build.
-const APP_RELEASE = '2.10 · 8 Nov 2026';
+const APP_RELEASE = '2.11 · 8 Nov 2026';
 const APP_RELEASE_LABEL = `Nexora ${Constants.expoConfig?.version ?? ''} · Release ${APP_RELEASE}`;
 const menuAreaOf = (active: string) => MENU_AREAS.find(a => a.screens.includes(active) || a.items.some(i => i.screens.includes(active)))?.k ?? null;
 /** The menu, used by the phone drawer (light) and the computer sidebar (dark). `run` closes the drawer first on phones. */
@@ -3365,7 +3367,7 @@ function InChange({ value, suffix = 'vs previous 30 days', significance }: { val
 }
 
 // Revenue per day: this 30 days (blue area) against the 30 days before (grey dashes). Tap a day for its numbers.
-function InLineCompare({ daily, width, cur }: { daily: { day: string; revenue: number; prev: number; orders: number }[]; width: number; cur: string }) {
+function InLineCompare({ daily, width, cur, days = 30 }: { daily: { day: string; revenue: number; prev: number; orders: number }[]; width: number; cur: string; days?: number }) {
   const [sel, setSel] = useState<number | null>(null);
   const h = 210, padL = 46, padR = 10, padT = 10, padB = 26;
   const w = Math.max(240, width), iw = w - padL - padR, ih = h - padT - padB;
@@ -3377,8 +3379,8 @@ function InLineCompare({ daily, width, cur }: { daily: { day: string; revenue: n
   return (
     <View>
       <View style={{ flexDirection: 'row', gap: 16, marginBottom: 8, flexWrap: 'wrap' }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}><View style={{ width: 14, height: 3, borderRadius: 2, backgroundColor: IN_C[0] }} /><Text style={{ fontSize: 12, color: IN_MUTED }}>Last 30 days</Text></View>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}><View style={{ width: 14, height: 0, borderTopWidth: 2, borderStyle: 'dashed', borderColor: IN_FAINT }} /><Text style={{ fontSize: 12, color: IN_MUTED }}>The 30 days before</Text></View>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}><View style={{ width: 14, height: 3, borderRadius: 2, backgroundColor: IN_C[0] }} /><Text style={{ fontSize: 12, color: IN_MUTED }}>{`Last ${days} days`}</Text></View>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}><View style={{ width: 14, height: 0, borderTopWidth: 2, borderStyle: 'dashed', borderColor: IN_FAINT }} /><Text style={{ fontSize: 12, color: IN_MUTED }}>{`The ${days} days before`}</Text></View>
       </View>
       <View>
         <Svg width={w} height={h}>
@@ -3394,7 +3396,7 @@ function InLineCompare({ daily, width, cur }: { daily: { day: string; revenue: n
               <SvgText x={padL - 6} y={y(max * f) + 4} fontSize={10} fontFamily={IN_FONT} fill={IN_FAINT} textAnchor="end">{inMoney(max * f, cur, true)}</SvgText>
             </G>
           ))}
-          {[0, 10, 20, 29].map(i => daily[i] && <SvgText key={i} x={x(i)} y={h - 8} fontSize={10} fontFamily={IN_FONT} fill={IN_FAINT} textAnchor={i === 0 ? 'start' : i === 29 ? 'end' : 'middle'}>{inShortDate(daily[i].day)}</SvgText>)}
+          {[...new Set([0, Math.round((daily.length - 1) / 3), Math.round(((daily.length - 1) * 2) / 3), daily.length - 1])].map(i => daily[i] && <SvgText key={i} x={x(i)} y={h - 8} fontSize={10} fontFamily={IN_FONT} fill={IN_FAINT} textAnchor={i === 0 ? 'start' : i === daily.length - 1 ? 'end' : 'middle'}>{inShortDate(daily[i].day)}</SvgText>)}
           <Path d={line('prev')} stroke={IN_FAINT} strokeWidth={1.5} strokeDasharray="4 4" fill="none" />
           <Path d={`${line('revenue')} L${x(daily.length - 1)},${y(0)} L${x(0)},${y(0)} Z`} fill="url(#inArea)" />
           <Path d={line('revenue')} stroke={IN_C[0]} strokeWidth={2} fill="none" strokeLinejoin="round" />
@@ -3406,7 +3408,7 @@ function InLineCompare({ daily, width, cur }: { daily: { day: string; revenue: n
           )}
         </Svg>
         {/* Tap / hover targets, one per day, wider than the line itself */}
-        <View style={{ position: 'absolute', left: padL - iw / 58, top: 0, width: iw + iw / 29, height: h - padB, flexDirection: 'row' }}>
+        <View style={{ position: 'absolute', left: padL - iw / (2 * Math.max(1, daily.length - 1)), top: 0, width: iw + iw / Math.max(1, daily.length - 1), height: h - padB, flexDirection: 'row' }}>
           {daily.map((_, i) => (
             <Pressable key={i} onPress={() => setSel(sel === i ? null : i)} onHoverIn={() => setSel(i)} accessibilityLabel={`${daily[i].day}: ${inMoney(daily[i].revenue, cur)}`} style={{ flex: 1 }} />
           ))}
@@ -7229,6 +7231,7 @@ function HomeScreenInner(){
     } catch { /* ignore */ }
   }, [userId, screen]);
   const [insightsGroup, setInsightsGroup] = useState<'sales' | 'marketing' | 'customers' | 'ai'>('sales');
+  const [insOverview, setInsOverview] = useState<Overview | null>(null);   // 2.11: the Business overview's period also drives the day-by-day chart
   const [aiUsageRows, setAiUsageRows] = useState<{ kind: string; tasks: number; created_at: string }[] | null>(null);
   const loadAiUsage = async () => {
     const { data } = await supabase.from('ai_usage').select('kind,tasks,created_at').gte('created_at', new Date(Date.now() - 30 * 86400000).toISOString()).limit(5000);
@@ -15330,6 +15333,21 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
     const toneStyle = (t: string) => t === 'good' ? { icon: 'checkmark-circle', color: IN_GOOD, bg: '#E9F8EE', word: 'Working' } : t === 'warn' ? { icon: 'alert-circle', color: IN_WARN, bg: '#FFF4E5', word: 'Watch' } : { icon: 'bulb', color: IN_C[0], bg: '#EAF1FB', word: 'Insight' };
     const effortWord: Record<string, string> = { low: 'Easy', medium: 'Moderate', high: 'Big project' };
     const row = (children: React.ReactNode) => <View style={{ flexDirection: twoCol ? 'row' : 'column', gap: 16, alignItems: 'stretch' }}>{children}</View>;
+    // 2.11: links from the Business overview open the matching screen (same places as the website's links).
+    const insGo = (href: string) => {
+      const [path, q] = href.split('?');
+      const f = new URLSearchParams(q || '').get('filter');
+      if (path === '/orders') openOrders((['Unshipped', 'Unpaid', 'Shipped', 'Cancelled', 'All'].includes(f || '') ? f : 'All') as any);
+      else if (path === '/customers') openCustomers(() => openInsights());
+      else if (path === '/leads') openLeads();
+      else if (path === '/inbox') { goTab('inbox'); loadConversations().catch(() => {}); }
+      else if (path === '/inventory') setScreen('inventory');
+      else if (path === '/campaigns') openCampaigns();
+      else if (path === '/publish') setScreen('socialPublisher');
+      else if (path === '/shop') openStorefront().catch(() => {});
+      else if (path === '/website') setScreen('websiteIntegration');
+    };
+    const insAsk = (q: string) => { setMainTab('brain'); setScreen('main'); sendChatMessage(q); };
     const planIdea = (it: any) => {
       setMainTab('brain'); setScreen('main');
       sendChatMessage(`Help me carry out this idea for my business: "${it.title}". ${it.why} Give me a simple 7-day plan, what to post or say to customers, and how to measure if it works.`);
@@ -15417,7 +15435,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
               <Text style={{ color: '#FFFFFF', fontSize: twoCol ? 30 : 24, fontWeight: '800', marginTop: 6 }}>{D && !D.business?.has_business ? `Welcome${fullName ? `, ${fullName.split(' ')[0]}` : ''}` : D?.business?.name || fullName || 'Your business'}</Text>
               <Text style={{ color: '#B6C3D4', fontSize: 13.5, marginTop: 4 }}>{D && !D.business?.has_business ? 'One step before your dashboard' : [D?.business?.industry, D?.business?.country].filter(Boolean).join(' · ') || 'Add your industry and country for sharper ideas'}</Text>
               <View style={{ marginTop: 14 }}>{pageLinks([{ go: 'planner', label: 'Business plans' }, { go: 'trends', label: 'Opportunities' }], true)}</View>
-              {!!I?.summary && <Text style={{ color: '#E6EEF8', fontSize: 15, lineHeight: 22, marginTop: 14, maxWidth: 760 }}>{I.summary}</Text>}
+              {!!I?.summary && <View style={{ marginTop: 14, maxWidth: 760, gap: 6 }}><KindBadge k="ai" /><Text style={{ color: '#E6EEF8', fontSize: 15, lineHeight: 22 }}>{I.summary}</Text></View>}
               {!!I && D?.business?.has_business && <Text style={{ color: '#7D8DA3', fontSize: 11.5, marginTop: 10 }}>Updated {new Date(I.loaded_at || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · from your own orders, customers, chats and shop link{I.ai ? '' : ' · AI ideas are unavailable right now'}</Text>}
             </View>
           </View>
@@ -15477,6 +15495,8 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
 
             {D && D.business?.has_business && (
               <>
+                <BusinessOverview businessName={D.business?.name || fullName || ''} bizCurrency={cur} width={cw} canExport={access.can('export')} callFn={callFn}
+                  onGo={insGo} onAsk={insAsk} onDaily={setInsOverview} onExported={n => logExport('insights report', n)} />
                 {renderAutonomyCard()}
 
                 {/* Where the business is: worked out from its own data (days of data, orders, weeks with sales) */}
@@ -15604,7 +15624,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
 
                 {/* Problems found in the numbers, each with ways to fix it */}
                 {!!D.problems?.length && (
-                  <InCard title="Problems Nexora spotted" subtitle="Found in your own numbers, with ways to fix them">
+                  <InCard title="Problems Nexora spotted" subtitle="Found in your own numbers; the fixes are Nexora's suggestions" right={<KindBadge k="ai" />}>
                     <View style={{ gap: 12 }}>
                       {D.problems.map((p: any) => {
                         const sev = p.severity === 'high' ? { c: IN_BAD, bg: '#FDECEC', w: 'Needs attention' } : p.severity === 'medium' ? { c: IN_WARN, bg: '#FFF4E5', w: 'Worth fixing' } : { c: IN_C[0], bg: '#EAF1FB', w: 'Small' };
@@ -15673,23 +15693,16 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                   if (insightsGroup === 'sales') return (
                     <View style={{ gap: 10 }}>
                       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+                        {/* Money received, unpaid and cancelled orders are in the Business overview above; refunds stay here. */}
                         {tile('Refunds · 30 days', inMoney(refunds, cur), refunds ? 'Recorded in Orders' : 'No refunds recorded', () => openOrders('All'))}
-                        {tile('Waiting to be paid', inMoney(unpaidAmt, cur), 'Orders marked unpaid', () => openOrders('Unpaid'))}
-                        {tile('Cancelled · 30 days', String(cancelled), `${o30.length} orders in total`, () => openOrders('Cancelled'))}
                       </View>
-                      {unpaidAmt > 0 && say(`${inMoney(unpaidAmt, cur)} is still waiting to be paid. Sales above count orders; money is only confirmed once you mark an order paid.`, 'See unpaid orders', () => openOrders('Unpaid'))}
                     </View>
                   );
                   if (insightsGroup === 'marketing') return (
                     <View style={{ gap: 10 }}>
                       {!st ? <Text style={{ fontSize: 13, color: IN_MUTED }}>Switch on your AI shop link to see visitors, where they come from and how many order.</Text> : (
                         <>
-                          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
-                            {tile('Shop visitors · 30 days', String(st.totals.visits), `${st.totals.chats} started a chat`, () => { openStorefront().catch(() => {}); })}
-                            {tile('Enquiries', String(st.totals.enquiries), 'Questions and quote requests', () => openLeads())}
-                            {tile('Shop orders', String(st.totals.orders), `${st.totals.paid_orders} marked paid`, () => openOrders('All'))}
-                            {tile('Conversion', st.conversion === null ? '—' : `${st.conversion}%`, 'Visitors who ordered or enquired')}
-                          </View>
+                          {/* Visits, enquiries and conversion are in the Business overview above; the breakdown by source stays here. */}
                           {st.sources.length > 0 && (
                             <View style={{ backgroundColor: '#FFFFFF', borderRadius: 16, padding: 14, borderWidth: 1, borderColor: IN_GRID }}>
                               <Text style={{ fontSize: 14, fontWeight: '800', color: IN_INK, marginBottom: 6 }}>Traffic sources and campaigns</Text>
@@ -15740,7 +15753,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                 })()}
                 {/* KPI tiles for the chosen group */}
                 <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
-                  {kpiTiles.filter(t => insightsGroup === 'sales' ? /^(Revenue|Orders|Average order|Estimate)/.test(t.label) : insightsGroup === 'customers' ? /^(Customers|Repeat|Lead|Customer lifetime)/.test(t.label) : false).map(t => (
+                  {kpiTiles.filter(t => insightsGroup === 'sales' ? /^Estimate/.test(t.label) : insightsGroup === 'customers' ? /^(Customers|Repeat|Lead|Customer lifetime)/.test(t.label) : false).map(t => (
                     <View key={t.label} style={{ flexGrow: 1, flexBasis: threeCol ? '22%' : twoCol ? '30%' : '46%', minWidth: 150, backgroundColor: '#FFFFFF', borderRadius: 16, padding: 14, borderWidth: 1, borderColor: IN_GRID }}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                         <View style={{ width: 28, height: 28, borderRadius: 8, backgroundColor: '#EAF1FB', alignItems: 'center', justifyContent: 'center' }}><Ionicons name={t.icon as any} size={15} color={IN_C[0]} /></View>
@@ -15751,6 +15764,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                         {!!t.spark && <InSparkline values={t.spark} width={70} height={26} />}
                       </View>
                       <View style={{ marginTop: 6 }}>{t.change !== undefined ? <InChange value={t.change} significance={t.sig} /> : <Text style={{ fontSize: 11.5, color: IN_FAINT }}>{t.note}</Text>}</View>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8 }}><KindBadge k={/^Estimate/.test(t.label) ? 'estimate' : 'measured'} /><Text style={{ fontSize: 10.5, color: IN_FAINT, flexShrink: 1 }}>{/^(Customers|Repeat|Customer lifetime)/.test(t.label) ? 'From: Orders and Customers · all time' : /^Lead/.test(t.label) ? 'From: Customers (CRM)' : 'From: Orders · next 30 days'}</Text></View>
                     </View>
                   ))}
                 </View>
@@ -15759,13 +15773,13 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                   <InCard title={D.health.mode === 'launch' ? 'Launch readiness' : 'Business health'} subtitle={D.health.mode === 'launch' ? 'Five setup steps, 20 points each' : 'Five checks, 20 points each'} style={{ flex: twoCol ? 0.9 : undefined }}>
                     <InGauge score={D.health.score} parts={D.health.parts} />
                   </InCard>
-                  <InCard title="Revenue, day by day" subtitle="Tap or hover a day to see its numbers" style={{ flex: twoCol ? 1.4 : undefined }}>
-                    <InLineCompare daily={D.daily} width={twoCol ? (cw - 16) * (1.4 / 2.3) - 38 : cw - 38} cur={cur} />
+                  <InCard title="Money received, day by day" subtitle={`${insOverview ? `Last ${insOverview.range} days against the ${insOverview.range} before` : 'Last 30 days against the 30 before'} · tap a day`} right={<KindBadge k="measured" />} style={{ flex: twoCol ? 1.4 : undefined }}>
+                    <InLineCompare daily={insOverview?.daily ?? D.daily} width={twoCol ? (cw - 16) * (1.4 / 2.3) - 38 : cw - 38} cur={insOverview?.currency || cur} days={insOverview?.range ?? 30} />
                   </InCard>
                 </>)}
 
                 {row(<>
-                  <InCard title="Weekly revenue and forecast" subtitle="12 weeks of sales and Nexora's estimate for the next 4" style={{ flex: twoCol ? 1.4 : undefined }}>
+                  <InCard title="Weekly revenue and forecast" subtitle="12 weeks of sales (measured) and Nexora's estimate for the next 4" right={<KindBadge k="estimate" />} style={{ flex: twoCol ? 1.4 : undefined }}>
                     <InBarsForecast weekly={D.weekly} forecast={D.forecast} width={twoCol ? (cw - 16) * (1.4 / 2.3) - 38 : cw - 38} cur={cur} />
                   </InCard>
                   <InCard title="Order status" subtitle={`Last 90 days${D.late_orders ? ` · ${D.late_orders} waiting over 2 days` : ''}`} style={{ flex: twoCol ? 0.9 : undefined }}
@@ -15808,7 +15822,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
 
                 {/* AI analysis */}
                 {!!I?.insights?.length && (
-                  <InCard title="What Nexora sees" subtitle="Read from your numbers">
+                  <InCard title="What Nexora sees" subtitle="Nexora's reading of your numbers" right={<KindBadge k="ai" />}>
                     <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
                       {I.insights.map((x: any, i: number) => {
                         const t = toneStyle(x.tone);
@@ -15829,7 +15843,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
 
                 {/* Profitable ideas, each with a picture */}
                 <View>
-                  <Text style={{ fontSize: 20, fontWeight: '900', color: IN_INK, marginTop: 6 }}>Ideas to grow your profit</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 }}><Text style={{ fontSize: 20, fontWeight: '900', color: IN_INK }}>Ideas to grow your profit</Text><KindBadge k="ai" /></View>
                   <Text style={{ fontSize: 13, color: IN_MUTED, marginTop: 4 }}>Made for {D.business?.name || 'your business'} from your numbers{D.trends?.length ? ' and what is trending in your market' : ''}. Estimates are a guide, not a promise.</Text>
                 </View>
                 {!I?.ideas?.length && !insightsLoading && <Text style={{ fontSize: 13, color: IN_FAINT }}>Ideas will appear here. Tap "New ideas" at the top to try again.</Text>}
