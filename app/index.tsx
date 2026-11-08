@@ -1700,10 +1700,10 @@ let brainNavBridge: { chats: BrainChatLink[] | null; newChat: () => void; open: 
   { chats: null, newChat: () => {}, open: () => {}, all: () => {} };
 const brainNavSubs = new Set<() => void>();
 function setBrainNavBridge(next: typeof brainNavBridge) { brainNavBridge = next; brainNavSubs.forEach(f => f()); }
-// The menu (company direction 8 Nov 2026: fewer buttons, better organised): the same 9 areas as the website, with "Home"
-// first on the app. Every screen is still in the menu under the area it belongs to; the area you are in shows its tools
-// by itself, and its arrow shows or hides them.
-// New capabilities go under the area they belong to. `go` keys are handled by drawerBridge.go; `screens` say where you are.
+// The menu (company direction 8 Nov 2026): the same buttons as before, with fewer tools under the arrows. Areas with a main
+// screen (Messages, Customers, Orders, AI shop link, Business Insights, Market) open it, and that screen has shortcuts to the
+// screens that belong to it (listed in `screens` here so the area stays highlighted). Brain, Marketing, Automation and
+// Settings keep their arrows. Nothing is removed. `go` keys are handled by drawerBridge.go.
 type MenuLink = { go: string; label: string; screens: string[] };
 type MenuArea = { k: string; icon: string; label: string; go?: string; screens: string[]; items: MenuLink[]; line?: boolean };
 const MENU_AREAS: MenuArea[] = [
@@ -1714,42 +1714,26 @@ const MENU_AREAS: MenuArea[] = [
     { go: 'knowledge', label: 'Knowledge base', screens: ['knowledgeHealth', 'knowledgeList', 'itemDetail', 'itemEdit', 'addKnowledge', 'missingImages'] },
     { go: 'learned', label: 'What Nexora learned', screens: ['learned'] },
   ] },
-  { k: 'messages', icon: 'chatbubble-ellipses-outline', label: 'Messages', go: 'inbox', screens: ['inbox', 'inboxChat'], items: [
-    { go: 'approvals', label: 'Approvals', screens: ['approvals'] },
-    { go: 'reception', label: 'Calls and chats', screens: ['aiReception'] },
-    { go: 'channels', label: 'WhatsApp and social accounts', screens: ['connectChannels'] },
-  ] },
-  { k: 'customers', icon: 'people-outline', label: 'Customers', go: 'customers', screens: ['customersLive', 'customerDetail'], items: [
-    { go: 'leads', label: 'Leads', screens: ['leads', 'leadDetail'] },
-    { go: 'crm', label: 'Pipeline and segments', screens: ['crm'] },
-    { go: 'followups', label: 'Follow-ups', screens: ['followups'] },
-    { go: 'schedule', label: 'Tasks and schedule', screens: ['agenda', 'agendaPriority', 'agendaCreate'] },
-  ] },
-  { k: 'orders', icon: 'cube-outline', label: 'Orders', go: 'orders', screens: ['orders'], items: [
-    { go: 'inventory', label: 'Products and inventory', screens: ['inventory'] },
-    { go: 'shop', label: 'AI shop link', screens: ['storefront'] },
-    { go: 'website', label: 'Websites', screens: ['websiteIntegration'] },
-  ] },
+  { k: 'messages', icon: 'chatbubble-ellipses-outline', label: 'Messages', go: 'inbox', screens: ['inbox', 'inboxChat', 'approvals', 'aiReception', 'connectChannels'], items: [] },
+  { k: 'customers', icon: 'people-outline', label: 'Customers', go: 'customers', screens: ['customersLive', 'customerDetail', 'leads', 'leadDetail', 'crm', 'followups', 'agenda', 'agendaPriority', 'agendaCreate'], items: [] },
+  { k: 'orders', icon: 'cube-outline', label: 'Orders', go: 'orders', screens: ['orders', 'inventory'], items: [] },
   { k: 'marketing', icon: 'megaphone-outline', label: 'Marketing', screens: [], items: [
     { go: 'marketing', label: 'Campaigns', screens: ['aiMarketing', 'campaigns'] },
     { go: 'publisher', label: 'Social posts', screens: ['socialPublisher'] },
     { go: 'broadcast', label: 'Broadcasts', screens: ['broadcast'] },
   ] },
-  { k: 'insights', icon: 'stats-chart-outline', label: 'Business Insights', go: 'insights', screens: ['insights'], items: [
-    { go: 'planner', label: 'Business plans', screens: ['businessPlanner'] },
-    { go: 'trends', label: 'Opportunities', screens: ['trends', 'opportunities', 'opportunityDetail'] },
+  { k: 'shop', icon: 'qr-code-outline', label: 'AI shop link', go: 'shop', screens: ['storefront', 'websiteIntegration'], items: [] },
+  { k: 'automation', icon: 'flash-outline', label: 'Automation', screens: [], items: [
+    { go: 'automations', label: 'Workflows', screens: ['automations'] },
+    { go: 'rules', label: 'What Nexora decides', screens: ['rules'] },
   ] },
-  { k: 'market', icon: 'storefront-outline', label: 'Market', go: 'market', screens: ['market', 'explore', 'browser'], items: [
-    { go: 'community', label: 'Community', screens: ['community', 'communityPost'] },
-    { go: 'network', label: 'Find partners', screens: ['network'] },
-  ] },
+  { k: 'insights', icon: 'stats-chart-outline', label: 'Business Insights', go: 'insights', screens: ['insights', 'businessPlanner', 'trends', 'opportunities', 'opportunityDetail'], items: [] },
+  { k: 'market', icon: 'storefront-outline', label: 'Market', go: 'market', screens: ['market', 'explore', 'browser', 'community', 'communityPost', 'network'], items: [] },
   { k: 'settings', icon: 'settings-outline', label: 'Settings', screens: [], items: [
     { go: 'profile', label: 'Business profile', screens: ['profile', 'settings'] },
-    { go: 'automations', label: 'Automations', screens: ['automations'] },
-    { go: 'rules', label: 'What Nexora decides', screens: ['rules'] },
+    { go: 'billing', label: 'Plans & billing', screens: ['billing'] },
     { go: 'ownerAlerts', label: 'Alerts to you', screens: ['ownerAlerts'] },
     { go: 'activity', label: 'Activity log', screens: ['activityLog'] },
-    { go: 'billing', label: 'Plans & billing', screens: ['billing'] },
   ] },
 ];
 // Shown at the bottom of the menu so you can tell which build is on a phone. Update RELEASE with each new build.
@@ -10449,6 +10433,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
         { label: 'Trending', icon: 'trending-up', onPress: () => { openTrends(); exploreBackRef.current = () => goTab('market'); } },
         { label: 'Find Online', icon: 'earth', onPress: () => openFindOnline(() => goTab('market')) },
         { label: 'Community', icon: 'account-group', lib: 'mci', onPress: () => { openCommunity(); exploreBackRef.current = () => goTab('market'); } },
+        { label: 'Find partners', icon: 'git-network-outline', onPress: () => { openNetwork().catch(() => {}); } },
       ];
       const askMarket = () => {
         const q = marketAsk.trim() || 'What opportunities in my market should I act on this month?';
@@ -10734,6 +10719,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
             })}
           </ScrollView>
           <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingTop: 8 }]}>
+            {pageLinks([{ go: 'approvals', label: 'Approvals' }, { go: 'reception', label: 'Calls and chats' }, { go: 'channels', label: 'WhatsApp and social accounts' }])}
             {!!inboxError && <Text style={[styles.attentionSubtitle, { color: '#D64545', marginBottom: 8 }]}>{inboxError}</Text>}
             {filtered.length === 0 && (
               <View style={{ alignItems: 'center', paddingVertical: 36, paddingHorizontal: 12 }}>
@@ -11904,6 +11890,21 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
     );
   }
 
+  // Shortcuts at the top of a main screen to the screens that belong to it (company direction 8 Nov 2026: fewer tools under
+  // the menu's arrows; they sit on the screen instead). They open the same way as the menu.
+  function pageLinks(links: { go: string; label: string }[], dark = false) {
+    return (
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+        {links.map(l => (
+          <Pressable key={l.go} onPress={() => drawerBridge.go(l.go)} accessibilityRole="button" accessibilityLabel={l.label}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 4, height: 34, paddingHorizontal: 12, borderRadius: 17, borderWidth: 1, borderColor: dark ? 'rgba(255,255,255,0.25)' : '#E1E8F0', backgroundColor: dark ? 'rgba(255,255,255,0.08)' : '#FFFFFF' }}>
+            <Text style={{ fontSize: 13, fontWeight: '600', color: dark ? '#FFFFFF' : '#26313D' }}>{l.label}</Text>
+            <Ionicons name="chevron-forward" size={13} color={dark ? '#B6C3D4' : '#8A97A6'} />
+          </Pressable>
+        ))}
+      </View>
+    );
+  }
   // Every Nexora tool as tiles in sections: the Quick Actions screen and Home's All window (company feedback 8 Nov 2026) use the same list.
   function qaSections(): { title: string; tiles: { label: string; icon: string; mci?: boolean; badge?: number; onPress: () => void }[] }[] {
     const tool = (k: AiToolKey) => () => {
@@ -12072,6 +12073,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
           </View>
         </View>
         <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { width: '100%', maxWidth: 820, alignSelf: 'center' }]} keyboardShouldPersistTaps="handled">
+          {pageLinks([{ go: 'inventory', label: 'Products and inventory' }])}
           {!ordersUpgraded && (
             <View style={{ padding: 12, borderRadius: 12, backgroundColor: '#FFF6E5', marginBottom: 12 }}>
               <Text style={{ color: '#92400E', fontWeight: '700' }}>Payments, history and receipts need one setup step</Text>
@@ -14306,6 +14308,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
           </View>
         )}
         <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 100 }]} keyboardShouldPersistTaps="handled">
+          {!leadsMode && pageLinks([{ go: 'leads', label: 'Leads' }, { go: 'crm', label: 'Pipeline and segments' }, { go: 'followups', label: 'Follow-ups' }, { go: 'schedule', label: 'Tasks and schedule' }])}
           {leadsMode && (
             <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
               <Pressable onPress={() => setScreen('main')} hitSlop={10} accessibilityRole="button" accessibilityLabel="Back" style={{ marginRight: 8, marginTop: 2, width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFFFFF', cursor: 'pointer' } as any}>
@@ -15296,6 +15299,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
               <Text style={{ color: '#7FB2FF', fontSize: 12, fontWeight: '800', letterSpacing: 0.8, marginTop: 22 }}>BUSINESS INSIGHTS</Text>
               <Text style={{ color: '#FFFFFF', fontSize: twoCol ? 30 : 24, fontWeight: '800', marginTop: 6 }}>{D && !D.business?.has_business ? `Welcome${fullName ? `, ${fullName.split(' ')[0]}` : ''}` : D?.business?.name || fullName || 'Your business'}</Text>
               <Text style={{ color: '#B6C3D4', fontSize: 13.5, marginTop: 4 }}>{D && !D.business?.has_business ? 'One step before your dashboard' : [D?.business?.industry, D?.business?.country].filter(Boolean).join(' · ') || 'Add your industry and country for sharper ideas'}</Text>
+              <View style={{ marginTop: 14 }}>{pageLinks([{ go: 'planner', label: 'Business plans' }, { go: 'trends', label: 'Opportunities' }], true)}</View>
               {!!I?.summary && <Text style={{ color: '#E6EEF8', fontSize: 15, lineHeight: 22, marginTop: 14, maxWidth: 760 }}>{I.summary}</Text>}
               {!!I && D?.business?.has_business && <Text style={{ color: '#7D8DA3', fontSize: 11.5, marginTop: 10 }}>Updated {new Date(I.loaded_at || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · from your own orders, customers, chats and shop link{I.ai ? '' : ' · AI ideas are unavailable right now'}</Text>}
             </View>
@@ -16257,6 +16261,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
           <Pressable onPress={() => { openStorefront().catch(() => {}); }} hitSlop={8} accessibilityLabel="Refresh"><Ionicons name="refresh-outline" size={22} color="#0B1220" /></Pressable>
         </View>
         <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40, width: '100%', maxWidth: 760, alignSelf: 'center' }]} keyboardShouldPersistTaps="handled">
+          {pageLinks([{ go: 'website', label: 'Websites' }])}
           <View style={{ borderRadius: 18, padding: 16, backgroundColor: '#0B1220' }}>
             <Text style={{ color: '#FFFFFF', fontSize: 17, fontWeight: '800' }}>Your shop, open 24/7</Text>
             <Text style={{ color: '#B6C3D4', fontSize: 13, marginTop: 4, lineHeight: 19 }}>One link for your Instagram bio, WhatsApp status and flyers. Anyone can open it, no account needed: they see your products, chat with your Nexora, send enquiries and place orders. Orders land in Orders, enquiries in Leads.</Text>
