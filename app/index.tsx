@@ -9765,7 +9765,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
     loadConversations().catch(() => {});
   };
 
-  const handleForgotPassword=()=>{setAuthError('');setResetError('');setInfoMessage('');setResetEmail(loginEmail.trim().toLowerCase());setResetOtp('');setResetOtpDigits(['','','','']);setResetOtpTimer(60);setResetToken('');setResetPassword('');setResetConfirmPassword('');setResetStep('email');setScreen('forgotPassword');};
+  const handleForgotPassword=()=>{setAuthError('');setResetError('');setInfoMessage('');setResetEmail(loginEmail.trim().toLowerCase());setResetOtp('');setResetOtpDigits(['','','','']);setResetOtpTimer(60);setResetToken('');setResetPassword('');setResetConfirmPassword('');const em=loginEmail.trim().toLowerCase();setResetStep('email');setScreen('forgotPassword');if(EMAIL_REGEX.test(em))handleSendResetOtp(em);};
 
   // masks an email for display, e.g. "jo***@gmail.com"
   const maskEmail=(value:string)=>{
@@ -9802,7 +9802,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
     handleSendResetOtp();
   };
 
-  const handleSendResetOtp=async()=>{const cleanEmail=resetEmail.trim().toLowerCase();if(!cleanEmail||!EMAIL_REGEX.test(cleanEmail)){setResetError('Please enter a valid email address.');return}setResetError('');setInfoMessage('');setLoading(true);try{const response=await withTimeout(fetch(`${SUPABASE_FUNCTIONS_URL}/request-password-reset`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_ANON_KEY},body:JSON.stringify({email:cleanEmail})}),'Request timed out. Check your internet connection.');const result=await response.json();if(!response.ok||!result.success)throw new Error(result.message||result.error||'Unable to send verification code.');setResetEmail(cleanEmail);setResetOtpDigits(['','','','']);setResetOtp('');setResetOtpTimer(60);setResetStep('otp');setInfoMessage('A 4-digit verification code has been sent to your email.');}catch(error:any){setResetError(error?.message||'Unable to send verification code.');}finally{setLoading(false)}};
+  const handleSendResetOtp=async(emailArg?:string)=>{const cleanEmail=(emailArg??resetEmail).trim().toLowerCase();if(!cleanEmail||!EMAIL_REGEX.test(cleanEmail)){setResetError('Please enter a valid email address.');return}setResetError('');setInfoMessage('');setLoading(true);try{const response=await withTimeout(fetch(`${SUPABASE_FUNCTIONS_URL}/request-password-reset`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_ANON_KEY},body:JSON.stringify({email:cleanEmail})}),'Request timed out. Check your internet connection.');const result=await response.json();if(!response.ok||!result.success)throw new Error(result.message||result.error||'Unable to send verification code.');setResetEmail(cleanEmail);setResetOtpDigits(['','','','']);setResetOtp('');setResetOtpTimer(60);setResetStep('otp');setInfoMessage('A 4-digit verification code has been sent to your email.');}catch(error:any){setResetError(error?.message||'Unable to send verification code.');}finally{setLoading(false)}};
 
   const handleVerifyResetOtp=async()=>{const cleanEmail=resetEmail.trim().toLowerCase();const cleanOtp=resetOtp.trim();if(!/^\d{4}$/.test(cleanOtp)){setResetError('Enter the 4-digit verification code.');return}setResetError('');setInfoMessage('');setLoading(true);try{const response=await withTimeout(fetch(`${SUPABASE_FUNCTIONS_URL}/verify-otp`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_ANON_KEY},body:JSON.stringify({email:cleanEmail,otp:cleanOtp})}),'Request timed out. Check your internet connection.');const result=await response.json();if(!response.ok||!result.success)throw new Error(result.message||result.error||'Invalid or expired verification code.');if(!result.resetToken)throw new Error('Verification succeeded but no reset token was returned.');setResetToken(result.resetToken);setResetStep('password');setInfoMessage('Code verified. Create your new password.');}catch(error:any){setResetError(error?.message||'Invalid or expired verification code.');}finally{setLoading(false)}};
 
@@ -18943,193 +18943,97 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
   }
 
   if(screen==='forgotPassword'){
+    // Forgot password, drawn like the Figma "Password Authentication" frames: the log-in header and curve on top
+    // (the log-in frame itself, with its form covered), then the code, new password and done steps on the white card.
+    const k=scale;
+    const back=()=>{setAuthError('');setInfoMessage('');setResetError('');if(resetStep==='otp')setResetStep('email');else if(resetStep==='password')setResetStep('otp');else goToLogin();};
+    const pill=(focusedOrFilled:boolean,error=false)=>({height:INPUT_HEIGHT*k,borderRadius:INPUT_HEIGHT*k/2,borderWidth:1,borderColor:error?'#E5484D':focusedOrFilled?'#1E56A0':'#D5DEE8',paddingHorizontal:16*k,fontSize:13*k,color:'#0B1220',backgroundColor:'#FFFFFF'} as any);
+    const cta=(label:string,enabled:boolean,onPress:()=>void)=>(
+      <Pressable onPress={onPress} disabled={!enabled||loading} accessibilityRole="button" accessibilityState={{disabled:!enabled||loading}}
+        style={{height:INPUT_HEIGHT*k,borderRadius:INPUT_HEIGHT*k/2,backgroundColor:enabled&&!loading?'#1E56A0':'#96A6BE',alignItems:'center',justifyContent:'center',marginTop:18*k}}>
+        {loading?<ActivityIndicator color="#FFFFFF"/>:<Text style={{color:'#FFFFFF',fontSize:13*k,fontWeight:'600'}}>{label}</Text>}
+      </Pressable>
+    );
+    const title=(t:string,d:string)=>(<>
+      <Text style={{fontSize:22*k,fontWeight:'600',color:'#0B1220',textAlign:'center'}}>{t}</Text>
+      <Text style={{fontSize:11.5*k,lineHeight:16*k,color:'#5C6B7A',textAlign:'center',marginTop:8*k,marginBottom:22*k,paddingHorizontal:8*k}}>{d}</Text>
+    </>);
+    const eye=(on:boolean,toggle:()=>void)=>(
+      <Pressable onPress={toggle} hitSlop={8} accessibilityLabel={on?'Hide password':'Show password'} style={{position:'absolute',right:14*k,top:0,height:INPUT_HEIGHT*k,justifyContent:'center'}}>
+        <Ionicons name={on?'eye-outline':'eye-off-outline'} size={18*k} color="#5C6B7A"/>
+      </Pressable>
+    );
+    const mismatch=resetStep==='password'&&!!resetConfirmPassword&&resetPassword!==resetConfirmPassword;
+    const codeWrong=!!resetError&&resetOtp.length===4;
     return(
-      <View style={[styles.fullScreen,{backgroundColor:'#FFF'}]} onLayout={onRootLayout}>
-        <StatusBar style={resetStep==='success'?'light':'dark'}/>
-
-        <View style={styles.resetHeaderBar}>
-          <Pressable onPress={()=>{setAuthError('');setInfoMessage('');if(resetStep==='otp')setResetStep('email');else if(resetStep==='password')setResetStep('otp');else setScreen('login');}} hitSlop={12} accessibilityRole="button" accessibilityLabel="Back" style={{position:'absolute',left:16,bottom:0,top:0,justifyContent:'center',zIndex:5}}>
-            <Ionicons name="chevron-back" size={26} color="#FFFFFF"/>
+      <View style={styles.fullScreen} onLayout={onRootLayout}>
+        {realStatusBar('#0F2942')}
+        <View style={[styles.svgFrame,{width,height:Math.max(height,scaledHeight)}]}>
+          <LogInSVG width={width} height={scaledHeight} viewBox={SVG_VIEWBOX} preserveAspectRatio="xMidYMid meet"/>
+          {/* cover the log-in form, keeping the navy header, the logo and the card's curve */}
+          <View pointerEvents="none" style={{position:'absolute',left:0,top:198*k,width:330*k,bottom:0,backgroundColor:'#FFFFFF'}}/>
+          <View pointerEvents="none" style={{position:'absolute',left:0,right:0,top:244*k,bottom:0,backgroundColor:'#FFFFFF'}}/>
+          <Pressable onPress={back} hitSlop={10} accessibilityRole="button" accessibilityLabel={resetStep==='email'?'Back to log in':'Back'}
+            style={{position:'absolute',left:14*k,top:(insets.top||44*k)+6*k,width:36*k,height:36*k,alignItems:'center',justifyContent:'center',zIndex:30}}>
+            <Ionicons name="chevron-back" size={24*k} color="#FFFFFF"/>
           </Pressable>
-          <Text style={styles.resetHeaderLogo}>NEXORA.AI</Text>
-        </View>
-
-        <View style={styles.resetCard}>
-
-          {resetStep==='email'&&(
-            <>
-              <Text style={styles.resetTitle}>Forgot Password</Text>
-              <Text style={styles.resetDescription}>
-                Enter your registered email address to receive a verification code.
-              </Text>
-
-              <TextInput
-                value={resetEmail}
-                onChangeText={v=>{setResetEmail(v);setResetError('');setInfoMessage('')}}
-                keyboardType="email-address"
-                autoCapitalize="none"
-                autoCorrect={false}
-                placeholder="Email address"
-                placeholderTextColor="#8A97A6"
-                style={styles.resetInput}
-              />
-
-              <Pressable
-                disabled={loading||!resetEmailValid}
-                onPress={handleSendResetOtp}
-                style={[styles.resetButton,resetEmailValid&&!loading?styles.resetButtonEnabled:styles.resetButtonDisabled]}>
-                <Text style={styles.resetButtonText}>
-                  {loading?'Sending...':'Send Code'}
-                </Text>
-              </Pressable>
-            </>
-          )}
-
-          {resetStep==='otp'&&(
-            <>
-              <Text style={styles.resetTitle}>Enter 4 Digits Code</Text>
-              <Text style={styles.resetDescription}>
-                Enter the 4 digits code sent to your registered email {maskEmail(resetEmail)}
-              </Text>
-
-              <View style={styles.otpRow}>
+          <ScrollView style={{position:'absolute',left:0,right:0,top:206*k,bottom:0}} contentContainerStyle={{paddingHorizontal:INPUT_X*k,paddingBottom:40*k}} keyboardShouldPersistTaps="handled">
+            {resetStep==='email'&&(<>
+              {title('Forgot Password','Enter your registered email address and we will send you a 4 digits code.')}
+              <TextInput value={resetEmail} onChangeText={v=>{setResetEmail(v);setResetError('');setInfoMessage('')}} keyboardType="email-address" autoCapitalize="none" autoCorrect={false}
+                placeholder="Enter Email" placeholderTextColor="#A5AFBB" style={pill(!!resetEmail)} onSubmitEditing={()=>{if(resetEmailValid)handleSendResetOtp();}}/>
+              {cta('Send Code',resetEmailValid,()=>{handleSendResetOtp();})}
+            </>)}
+            {resetStep==='otp'&&(<>
+              {title('Enter 4 Digits Code',`Enter the 4 Digits Code sent to your registered email ${maskEmail(resetEmail)}`)}
+              <View style={{flexDirection:'row',justifyContent:'center',gap:14*k}}>
                 {resetOtpDigits.map((digit,index)=>(
-                  <TextInput
-                    key={index}
-                    ref={ref=>{otpRefs.current[index]=ref}}
-                    value={digit}
-                    onChangeText={v=>handleOtpDigitChange(index,v)}
-                    onKeyPress={e=>handleOtpKeyPress(index,e)}
-                    keyboardType="number-pad"
-                    maxLength={1}
-                    selectTextOnFocus
-                    style={[
-                      styles.otpBox,
-                      digit?styles.otpBoxFilled:null,
-                      resetError&&resetOtp.length===4?styles.otpBoxError:null
-                    ]}
-                  />
+                  <TextInput key={index} ref={ref=>{otpRefs.current[index]=ref}} value={digit} onChangeText={v=>handleOtpDigitChange(index,v)} onKeyPress={e=>handleOtpKeyPress(index,e)}
+                    keyboardType="number-pad" maxLength={1} selectTextOnFocus autoFocus={index===0} accessibilityLabel={`Digit ${index+1}`}
+                    style={{width:52*k,height:52*k,borderRadius:8*k,borderWidth:1.5,borderColor:codeWrong?'#E5484D':digit?'#1E56A0':'#C9D3DF',backgroundColor:'#FFFFFF',color:'#0B1220',fontSize:24*k,fontWeight:'600',textAlign:'center'}}/>
                 ))}
               </View>
-
-              <View style={styles.resendRow}>
+              <View style={{alignItems:'center',marginTop:14*k}}>
                 {resetOtpTimer>0?(
-                  <Text style={[styles.resendText,(resetError||resetOtpTimer<=9)?styles.resendTextError:null]}>
-                    Resend Code in <Text style={[styles.resendCount,resetOtpTimer<=9?styles.resendTextError:null]}>{resetOtpTimer}s</Text>
-                  </Text>
+                  <Text style={{fontSize:11.5*k,color:'#0B1220',fontWeight:'600'}}>Resend Code In <Text style={{color:resetOtpTimer<=9?'#E5484D':'#1E56A0'}}>{String(resetOtpTimer).padStart(2,'0')}</Text> secs.</Text>
                 ):(
-                  <Text style={styles.resendText}>
-                    Didn't receive code?{' '}
-                    <Text style={styles.resendLink} onPress={handleResendOtp}>Resend</Text>
-                  </Text>
+                  <Text style={{fontSize:11.5*k,color:'#0B1220',fontWeight:'600'}}>Didn't receive code?, <Text style={{color:'#1E56A0'}} onPress={handleResendOtp}>Resend.</Text></Text>
                 )}
               </View>
-
-              <Pressable
-                disabled={loading||!resetOtpValid}
-                onPress={handleVerifyResetOtp}
-                style={[styles.resetButton,resetOtpValid&&!loading?styles.resetButtonEnabled:styles.resetButtonDisabled]}>
-                <Text style={styles.resetButtonText}>
-                  {loading?'Verifying...':'Continue'}
-                </Text>
-              </Pressable>
-            </>
-          )}
-
-          {resetStep==='password'&&(
-            <>
-              <Text style={styles.resetTitle}>Reset Your Password</Text>
-              <Text style={styles.resetDescription}>
-                Enter New Password. Include uppercase letters, numbers, and symbols for a stronger password.
-              </Text>
-
-              <View style={styles.resetPasswordFieldWrapper}>
-                <TextInput
-                  value={resetPassword}
-                  onChangeText={v=>{setResetPassword(v);setResetError('')}}
-                  secureTextEntry={!showResetPassword}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  placeholder="Enter New Password"
-                  placeholderTextColor="#8A97A6"
-                  style={[styles.resetInput,styles.resetInputWithIcon]}
-                />
-                <Pressable onPress={()=>setShowResetPassword(v=>!v)} hitSlop={8} style={styles.resetEyeButton}>
-                  <Text style={styles.resetEyeIcon}>{showResetPassword?'🙈':'👁️'}</Text>
-                </Pressable>
+              {!!resetError&&<Text style={{marginTop:10*k,color:'#E5484D',fontSize:11.5*k,textAlign:'center'}}>{resetError}</Text>}
+              {cta('Continue',resetOtpValid,()=>{handleVerifyResetOtp();})}
+            </>)}
+            {resetStep==='password'&&(<>
+              {title('Reset Your Password','Enter New Password. Include uppercase letters, numbers, and symbols for a stronger password')}
+              <View>
+                <TextInput value={resetPassword} onChangeText={v=>{setResetPassword(v);setResetError('')}} secureTextEntry={!showResetPassword} autoCapitalize="none" autoCorrect={false}
+                  placeholder="Enter New Password" placeholderTextColor="#A5AFBB" style={[pill(!!resetPassword),{paddingRight:44*k}]}/>
+                {eye(showResetPassword,()=>setShowResetPassword(v=>!v))}
               </View>
-
-              <View style={styles.resetPasswordFieldWrapper}>
-                <TextInput
-                  value={resetConfirmPassword}
-                  onChangeText={v=>{setResetConfirmPassword(v);setResetError('')}}
-                  secureTextEntry={!showResetConfirmPassword}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  placeholder="Confirm New Password"
-                  placeholderTextColor="#8A97A6"
-                  style={[
-                    styles.resetInput,
-                    styles.resetInputWithIcon,
-                    resetError==='Passwords do not match.'?styles.resetInputError:null
-                  ]}
-                />
-                <Pressable onPress={()=>setShowResetConfirmPassword(v=>!v)} hitSlop={8} style={styles.resetEyeButton}>
-                  <Text style={styles.resetEyeIcon}>{showResetConfirmPassword?'🙈':'👁️'}</Text>
-                </Pressable>
+              <View style={{marginTop:14*k}}>
+                <TextInput value={resetConfirmPassword} onChangeText={v=>{setResetConfirmPassword(v);setResetError('')}} secureTextEntry={!showResetConfirmPassword} autoCapitalize="none" autoCorrect={false}
+                  placeholder="Confirm New Password" placeholderTextColor="#A5AFBB" style={[pill(!!resetConfirmPassword,mismatch||resetError==='Passwords do not match.'),{paddingRight:44*k}]}/>
+                {eye(showResetConfirmPassword,()=>setShowResetConfirmPassword(v=>!v))}
               </View>
-
-              {resetError ? <Text style={styles.resetError}>{resetError}</Text> : null}
-
-              <Pressable
-                disabled={loading||!resetPasswordValid}
-                onPress={handleUpdateResetPassword}
-                style={[styles.resetButton,resetPasswordValid&&!loading?styles.resetButtonEnabled:styles.resetButtonDisabled,{marginTop:resetError?14:0}]}>
-                <Text style={styles.resetButtonText}>
-                  {loading?'Updating...':'Continue'}
-                </Text>
-              </Pressable>
-            </>
-          )}
-
-          {resetStep==='success'&&(
-            <>
-              <View style={styles.successIconWrap}>
-                <View style={styles.successIconCircle}>
-                  <Text style={styles.successIconCheck}>✓</Text>
-                </View>
+              {(mismatch||!!resetError)&&<Text style={{marginTop:6*k,marginLeft:6*k,color:'#E5484D',fontSize:11*k}}>{mismatch?'Passwords does not match':resetError}</Text>}
+              {cta('Continue',resetPasswordValid&&!mismatch,()=>{handleUpdateResetPassword();})}
+            </>)}
+            {resetStep==='success'&&(<View style={{alignItems:'center'}}>
+              <View style={{width:72*k,height:72*k,borderRadius:36*k,backgroundColor:'#E9F8EE',alignItems:'center',justifyContent:'center',marginTop:6*k}}>
+                <Ionicons name="checkmark-circle" size={48*k} color="#1E9E6D"/>
               </View>
-
-              <Text style={styles.successTitle}>Password Reset Successfully</Text>
-
-              <Pressable onPress={goToLogin} style={[styles.resetButton,styles.resetButtonEnabled,{marginTop:28}]}>
-                <Text style={styles.resetButtonText}>Log In</Text>
+              <Text style={{fontSize:20*k,fontWeight:'600',color:'#0B1220',textAlign:'center',marginTop:14*k}}>Password Changed</Text>
+              <Text style={{fontSize:11.5*k,lineHeight:16*k,color:'#5C6B7A',textAlign:'center',marginTop:8*k}}>Your password has been reset. Log in with your new password.</Text>
+              <View style={{alignSelf:'stretch'}}>{cta('Log In',true,goToLogin)}</View>
+            </View>)}
+            {resetStep==='email'&&!!resetError&&<Text style={{marginTop:12*k,color:'#E5484D',fontSize:11.5*k,textAlign:'center'}}>{resetError}</Text>}
+            {resetStep!=='success'&&!resetError&&!!infoMessage&&<Text style={{marginTop:12*k,color:'#1E56A0',fontSize:11.5*k,textAlign:'center'}}>{infoMessage}</Text>}
+            {resetStep!=='success'&&(
+              <Pressable onPress={goToLogin} accessibilityRole="button" style={{alignItems:'center',marginTop:16*k,padding:6}}>
+                <Text style={{fontSize:12*k,color:'#1E56A0',fontWeight:'600'}}>Back to Log In</Text>
               </Pressable>
-            </>
-          )}
-
-          {resetStep!=='success'&&resetStep!=='password'&&resetError?(
-            <Text style={styles.resetError}>{resetError}</Text>
-          ):null}
-          {resetStep!=='success'&&!resetError&&infoMessage?(
-            <Text style={styles.resetInfo}>{infoMessage}</Text>
-          ):null}
-
-          {resetStep!=='success'&&(
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={resetStep === 'email' ? 'Return to login' : 'Go back one step'}
-              onPress={() => {
-                if (resetStep === 'otp') { setResetStep('email'); setResetError(''); }
-                else if (resetStep === 'password') { setResetStep('otp'); setResetError(''); }
-                else { goToLogin(); }
-              }}
-              style={styles.resetBackButton}>
-              <Text style={styles.resetBackText}>
-                {resetStep === 'email' ? 'Back to Login' : 'Back'}
-              </Text>
-            </Pressable>
-          )}
+            )}
+          </ScrollView>
         </View>
       </View>
     );
