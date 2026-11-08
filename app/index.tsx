@@ -4294,8 +4294,10 @@ function HomeScreenInner(){
     // FIX: this check now actually runs, since signupEnabled no longer
     // blocks the button on email format — bad email routes to the
     // "wrong email" screen, same as before it broke.
+    // The "Wrong email address" Figma frame is a picture with sample details (Ashley Caseras), so it hid what the
+    // person typed. The error now shows under the form, keeping their own details on screen.
     if(!EMAIL_REGEX.test(cleanEmail)){
-      setSignupIndex(3);
+      setAuthError('Enter a valid email address, like you@business.com.');
       navigatingRef.current=false;
       return;
     }
@@ -4344,9 +4346,9 @@ function HomeScreenInner(){
         navigatingRef.current=false;
       },1800);
     }catch(error:any){
-      setAuthError(error?.message||'Unable to create your account.');
+      setAuthError(/already registered|already exists/i.test(error?.message||'')?'This email already has an account. Tap Log In below.':error?.message||'Unable to create your account.');
       setLoading(false);
-      setSignupIndex(3);
+      setSignupIndex(0);
       navigatingRef.current=false;
     }
   };
@@ -19557,7 +19559,7 @@ const styles=StyleSheet.create({
   nativeButtonWrapper:{position:'absolute',zIndex:30},
   nativeButton:{flex:1,backgroundColor:BUTTON_COLOR,borderWidth:1,borderColor:BUTTON_BORDER,borderRadius:BUTTON_R,alignItems:'center',justifyContent:'center',overflow:'hidden'},
   nativeButtonText:{color:'#FFF',fontWeight:'600',textAlign:'center'},
-  signupInput:{position:'absolute',zIndex:100,backgroundColor:'transparent',color:'#0B1220',paddingLeft:16,paddingRight:16,paddingTop:0,paddingBottom:0,borderWidth:0,fontFamily:'Roboto',fontWeight:'400',textAlign:'left',textAlignVertical:'center',includeFontPadding:false},
+  signupInput:{position:'absolute',zIndex:100,backgroundColor:'transparent',color:'#0B1220',paddingLeft:16,paddingRight:16,paddingTop:0,paddingBottom:0,borderWidth:0,fontFamily:IS_WEB?undefined:'Roboto',fontWeight:'400',textAlign:'left',textAlignVertical:'center',includeFontPadding:false},
   signupControl:{position:'absolute',zIndex:120,backgroundColor:'transparent',alignItems:'center',justifyContent:'center'},
   eyeIcon:{textAlign:'center'},
   checkMark:{backgroundColor:'#1E56A0',alignItems:'center',justifyContent:'center'},
@@ -19579,7 +19581,7 @@ const styles=StyleSheet.create({
   generateLinkText:{color:'#1E56A0',fontWeight:'600',textDecorationLine:'underline'},
   passwordSuggestionBox:{position:'absolute',zIndex:150,backgroundColor:'#FFF',borderWidth:1,borderColor:'#5381BB',borderRadius:12,paddingVertical:10,paddingHorizontal:14,shadowColor:'#000',shadowOpacity:.15,shadowRadius:8,shadowOffset:{width:0,height:4},elevation:6},
   passwordSuggestionLabel:{color:'#5C6B7A',fontWeight:'500',marginBottom:4},
-  passwordSuggestionValue:{color:'#0B1220',fontWeight:'700',fontFamily:'Roboto',marginBottom:10,letterSpacing:.5},
+  passwordSuggestionValue:{color:'#0B1220',fontWeight:'700',fontFamily:IS_WEB?undefined:'Roboto',marginBottom:10,letterSpacing:.5},
   passwordSuggestionActions:{flexDirection:'row',justifyContent:'space-between',alignItems:'center'},
   passwordSuggestionAccept:{backgroundColor:'#1E56A0',borderRadius:16,paddingVertical:8,paddingHorizontal:14},
   passwordSuggestionAcceptText:{color:'#FFF',fontWeight:'600'},
