@@ -1,0 +1,11 @@
+// Desktop sidebar (web, signed in): the same menu as the phone drawer.
+const WEB_SIDEBAR_W = 248;
+function WebSidebar({ active }: { active: string }) {
+  return (
+    <View style={{ width: WEB_SIDEBAR_W, backgroundColor: '#0B1220', borderRightWidth: 1, borderRightColor: 'rgba(255,255,255,0.06)', paddingTop: 24, paddingHorizontal: 14 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 10, marginBottom: 26 }}>
+        <NexoraLockup letter={15} light />
+      </View>
+      <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 24 }}>
+        <AppMenu active={active} dark run={f => f()} />
+      </ScrollView>

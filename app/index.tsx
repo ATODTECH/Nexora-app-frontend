@@ -36,6 +36,8 @@ import { AIReception } from '../components/AIReception';
 import { CRMScreen } from '../components/CRM';
 import { ShopMore } from '../components/ShopMore';
 import { AIMarketing } from '../components/AIMarketing';
+import { IntroTrust, PartnerDirectory, PartnerExtrasForm, PartnerProjects } from '../components/PartnerHub';
+import { NO_EXTRAS, loadExtras, loadIntroProjects, myReviewedIntros, saveExtras, type Extras as NetExtras, type Partner as NetPartner } from '../lib/network';
 import { savePrompt } from '../lib/brainAssistant';
 import { openPaystackPopup } from '../lib/paystackPopup';
 import * as WebBrowser from 'expo-web-browser';
@@ -6606,7 +6608,12 @@ function HomeScreenInner(){
   type NetMatch = { user_id: string; display_name: string; industry: string; city: string; country: string; bio: string; offers: string; needs: string; tags: string[]; score: number; reason: string };
   type NetConnection = { id: string; direction: 'in' | 'out'; status: string; message: string; reason: string; created_at: string; other: { user_id: string; display_name: string; industry?: string; city?: string; country?: string; bio?: string; offers?: string }; contacts: null | { whatsapp: string; email: string; website: string } };
   const blankNet = (): NetForm => ({ display_name: workspace?.name || '', industry: workspace?.industry || '', city: '', country: workspace?.country || '', bio: '', offers: '', needs: '', tags: '', visible: true, whatsapp: '', email: '', website: '' });
-  const [netTab, setNetTab] = useState<'matches' | 'requests' | 'profile'>('matches');
+  // Capability 2.12: Directory and Projects tabs, partner details and portfolio, reviews and reports (components/PartnerHub).
+  const [netTab, setNetTab] = useState<'directory' | 'matches' | 'projects' | 'requests' | 'profile'>('directory');
+  const [netExtras, setNetExtras] = useState<NetExtras>(NO_EXTRAS);
+  const [netIntroProjects, setNetIntroProjects] = useState<Record<string, string>>({});
+  const [netReviewed, setNetReviewed] = useState<Set<string>>(new Set());
+  const [netStartDigital, setNetStartDigital] = useState(false);
   const [netForm, setNetForm] = useState<NetForm>(blankNet());
   const [netHasProfile, setNetHasProfile] = useState(false);
   const [netVisible, setNetVisible] = useState(false);
@@ -6677,8 +6684,12 @@ function HomeScreenInner(){
     ]);
   };
   const loadNetConnections = async () => {
+    loadIntroProjects().then(setNetIntroProjects, () => {});
+    if (userId) myReviewedIntros(userId).then(setNetReviewed, () => {});
     try { const r = await callFn('nexora-network', { action: 'connections' }); setNetConnections(r.connections ?? []); } catch { /* shown as empty */ }
   };
+  const openSoftwareBuild = () => { setNetStartDigital(true); setNetTab('projects'); openNetwork().catch(() => {}); };
+  const introduceNet = (p: NetPartner) => { setConnectTarget({ ...p, score: 0, reason: '' }); setConnectMsg(''); };
   const openNetwork = async () => {
     setScreen('network'); setNetError(''); setNetLoading(true);
     loadOwnerPrefs().catch(() => {});
@@ -6688,11 +6699,12 @@ function HomeScreenInner(){
         const p = r.profile, c = r.contacts ?? {};
         setNetForm({ display_name: p.display_name, industry: p.industry, city: p.city, country: p.country, bio: p.bio, offers: p.offers, needs: p.needs, tags: (p.tags ?? []).join(', '), visible: !!p.visible, whatsapp: c.whatsapp ?? '', email: c.email ?? '', website: c.website ?? '' });
         setNetHasProfile(true); setNetVisible(!!p.visible);
-        setNetTab(p.visible ? 'matches' : 'profile');
+        setNetTab(t => (p.visible ? t : t === 'matches' || t === 'directory' ? 'profile' : t));
         if (p.visible) loadNetMatches().catch(() => {});
       } else {
-        setNetForm(blankNet()); setNetHasProfile(false); setNetVisible(false); setNetTab('profile');
+        setNetForm(blankNet()); setNetHasProfile(false); setNetVisible(false); setNetTab(t => (t === 'matches' || t === 'directory' ? 'profile' : t));
       }
+      if (userId) loadExtras(userId).then(setNetExtras, () => {});
       loadNetConnections().catch(() => {});
     } catch (e: any) { setNetError(e?.message || "Couldn't open the partner network."); }
     finally { setNetLoading(false); }
@@ -6714,9 +6726,10 @@ function HomeScreenInner(){
     setNetBusy('save');
     try {
       await callFn('nexora-network', { action: 'save', profile: { ...f, tags: f.tags.split(',').map(t => t.trim()).filter(Boolean) }, contacts: { whatsapp: f.whatsapp, email: f.email, website: f.website } }, 60000);
+      if (userId) await saveExtras(userId, netExtras);
       setNetHasProfile(true); setNetVisible(f.visible);
       flash(f.visible ? 'Profile saved. Finding your matches…' : 'Profile saved (hidden from others)');
-      if (f.visible) { setNetTab('matches'); setNetMatches(null); loadNetMatches().catch(() => {}); }
+      if (f.visible) { setNetMatches(null); loadNetMatches().catch(() => {}); }
     } catch (e: any) { flash(e?.message || "Couldn't save your profile."); }
     finally { setNetBusy(''); }
   };
@@ -11958,6 +11971,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
         { label: 'Trending', icon: 'trending-up', onPress: openTrends },
         { label: 'Community', icon: 'people', badge: commUnread, onPress: openCommunity },
         { label: 'Find partners', icon: 'git-network', onPress: () => { openNetwork().catch(() => {}); } },
+        { label: 'Get software built', icon: 'code-slash', onPress: openSoftwareBuild },
         { label: 'Find Online', icon: 'globe', onPress: () => openExplore() },
       ] },
       { title: 'AI Tools', tiles: [
@@ -14866,16 +14880,16 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
         <StatusBar style="dark" />
         <View style={[styles.knowledgeHeader, headerSafe]}>
           <Pressable onPress={() => { setMainTab('brain'); setScreen('main'); }} hitSlop={8} accessibilityLabel="Back"><Ionicons name="chevron-back" size={24} color="#0B1220" /></Pressable>
-          <Text style={styles.knowledgeHeaderTitle}>Find partners</Text>
+          <Text style={styles.knowledgeHeaderTitle}>Partners and services</Text>
           <Pressable onPress={() => { openNetwork().catch(() => {}); }} hitSlop={8} accessibilityLabel="Refresh"><Ionicons name="refresh-outline" size={22} color="#0B1220" /></Pressable>
         </View>
-        <View style={{ flexDirection: 'row', gap: 8, paddingHorizontal: 20, paddingBottom: 10 }}>
-          {([['matches', 'Matches'], ['requests', `Requests${incoming.length ? ` (${incoming.length})` : ''}`], ['profile', 'My profile']] as const).map(([k, label]) => (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0 }} contentContainerStyle={{ flexDirection: 'row', gap: 8, paddingHorizontal: 20, paddingBottom: 10 }}>
+          {([['directory', 'Directory'], ['matches', 'Matches'], ['projects', 'Projects'], ['requests', `Introductions${incoming.length ? ` (${incoming.length})` : ''}`], ['profile', 'My profile']] as const).map(([k, label]) => (
             <Pressable key={k} onPress={() => { setNetTab(k); if (k === 'matches' && netVisible && netMatches === null) loadNetMatches().catch(() => {}); if (k === 'requests') loadNetConnections().catch(() => {}); }} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 18, backgroundColor: netTab === k ? '#1E56A0' : '#EAF1FB' }}>
               <Text style={{ color: netTab === k ? '#FFFFFF' : '#1E56A0', fontWeight: '600', fontSize: 13 }}>{label}</Text>
             </Pressable>
           ))}
-        </View>
+        </ScrollView>
         <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40 }]} keyboardShouldPersistTaps="handled">
           {netLoading && <ActivityIndicator color="#1E56A0" style={{ marginTop: 20 }} />}
           {!!netError && !netLoading && <Text style={[styles.attentionSubtitle, { color: '#C2760C', marginBottom: 10 }]}>{netError}</Text>}
@@ -15006,6 +15020,8 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
             </View>
           )}
 
+          {!netLoading && netTab === 'directory' && !!userId && <PartnerDirectory me={userId} onIntroduce={introduceNet} flash={flash} />}
+          {!netLoading && netTab === 'projects' && !!userId && <PartnerProjects me={userId} business={workspace?.name || netForm.display_name} startDigital={netStartDigital} onChanged={() => { setNetStartDigital(false); loadNetConnections().catch(() => {}); }} flash={flash} />}
           {!netLoading && netTab === 'requests' && (
             <>
               <Text style={styles.channelSectionLabel}>Waiting for you</Text>
@@ -15033,6 +15049,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                     {!!c.contacts?.website && <Pressable onPress={() => openInApp(c.contacts!.website, c.other.display_name)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16, backgroundColor: '#F1EAFE' }}><Ionicons name="globe-outline" size={15} color="#7C3AED" /><Text style={{ color: '#5B21B6', fontWeight: '600', fontSize: 13 }}>Website</Text></Pressable>}
                     {!c.contacts?.whatsapp && !c.contacts?.email && !c.contacts?.website && <Text style={styles.attentionSubtitle}>They haven't added contact details yet.</Text>}
                   </View>
+                  {!!userId && <IntroTrust me={userId} connectionId={c.id} other={c.other.user_id} otherName={c.other.display_name} reviewed={netReviewed.has(c.id)} project={netIntroProjects[c.id]} onReviewed={() => setNetReviewed(x => new Set(x).add(c.id))} flash={flash} />}
                 </View>
               ))}
               {outgoing.length > 0 && <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>Sent</Text>}
@@ -15066,6 +15083,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
               {field('WhatsApp number', 'whatsapp', '+1 555 123 4567', { keyboardType: 'phone-pad', max: 30 })}
               {field('Email', 'email', 'name@business.com', { keyboardType: 'email-address', max: 120 })}
               {field('Website', 'website', 'www.yourbusiness.com', { keyboardType: 'url', max: 200 })}
+              <PartnerExtrasForm x={netExtras} onChange={setNetExtras} />
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 16, padding: 12, borderRadius: 12, backgroundColor: '#F5F6F8' }}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.attentionTitle}>Visible to other members</Text>

@@ -1,0 +1,154 @@
+// The menu (company direction 6 Nov 2026): the same layout as the website, with "Home" first on the app. Every earlier
+// button keeps its name and still opens its screen in one tap; related tools sit underneath it and show while you are in
+// that area (or when you tap its arrow). New areas (Messages, Marketing, Automation, Settings) only open and close.
+// New capabilities go under the area they belong to. `go` keys are handled by drawerBridge.go; `screens` say where you are.
+type MenuLink = { go: string; label: string; screens: string[] };
+type MenuArea = { k: string; icon: string; label: string; go?: string; screens: string[]; items: MenuLink[]; line?: boolean };
+const MENU_AREAS: MenuArea[] = [
+  { k: 'home', icon: 'home-outline', label: 'Home', go: 'home', screens: ['home', 'quickActions'], items: [] },
+  { k: 'brain', icon: 'sparkles-outline', label: 'Brain', go: 'brain', screens: ['brain'], items: [
+    { go: 'assistant', label: 'AI tools and workflows', screens: ['brainAssistant'] },
+    { go: 'saved', label: 'Saved work', screens: [] },
+    { go: 'knowledge', label: 'Knowledge base', screens: ['knowledgeHealth', 'knowledgeList', 'itemDetail', 'itemEdit', 'addKnowledge', 'missingImages'] },
+    { go: 'learned', label: 'What Nexora learned', screens: ['learned'] },
+  ] },
+  { k: 'messages', icon: 'chatbubble-ellipses-outline', label: 'Messages', go: 'inbox', screens: ['inbox', 'inboxChat'], items: [
+    { go: 'approvals', label: 'Approvals', screens: ['approvals'] },
+  ] },
+  { k: 'customers', icon: 'people-outline', label: 'Customers', go: 'customers', screens: ['customersLive', 'customerDetail'], items: [
+    { go: 'leads', label: 'Leads', screens: ['leads', 'leadDetail'] },
+    { go: 'followups', label: 'Follow-ups', screens: ['followups'] },
+    { go: 'schedule', label: 'Tasks and schedule', screens: ['agenda', 'agendaPriority', 'agendaCreate'] },
+  ] },
+  { k: 'orders', icon: 'cube-outline', label: 'Orders', go: 'orders', screens: ['orders'], items: [
+    { go: 'products', label: 'Products and inventory', screens: [] },
+  ] },
+  { k: 'marketing', icon: 'megaphone-outline', label: 'Marketing', screens: [], items: [
+    { go: 'marketing', label: 'Campaigns', screens: ['aiMarketing', 'campaigns'] },
+    { go: 'publisher', label: 'Social publishing', screens: ['socialPublisher'] },
+    { go: 'broadcast', label: 'Broadcasts', screens: ['broadcast'] },
+  ] },
+  { k: 'shop', icon: 'qr-code-outline', label: 'AI shop link', go: 'shop', screens: ['storefront'], items: [
+    { go: 'website', label: 'Websites', screens: ['websiteIntegration'] },
+    { go: 'channels', label: 'WhatsApp and social accounts', screens: ['connectChannels'] },
+  ] },
+  { k: 'automation', icon: 'flash-outline', label: 'Automation', screens: [], items: [
+    { go: 'automations', label: 'Workflows', screens: ['automations'] },
+    { go: 'rules', label: 'What Nexora decides', screens: ['rules'] },
+  ] },
+  { k: 'insights', icon: 'stats-chart-outline', label: 'Business Insights', go: 'insights', screens: ['insights'], items: [
+    { go: 'planner', label: 'Business plans', screens: ['businessPlanner'] },
+    { go: 'trends', label: 'Opportunities', screens: ['trends', 'opportunities', 'opportunityDetail'] },
+  ] },
+  { k: 'market', icon: 'storefront-outline', label: 'Market', go: 'market', screens: ['market', 'explore', 'browser'], items: [
+    { go: 'community', label: 'Community', screens: ['community', 'communityPost'] },
+  ] },
+  { k: 'partners', icon: 'people-circle-outline', label: 'Find partners', go: 'network', screens: ['network'], items: [] },
+  { k: 'billing', icon: 'card-outline', label: 'Plans & billing', go: 'billing', screens: ['billing'], items: [], line: true },
+  { k: 'settings', icon: 'settings-outline', label: 'Settings', screens: [], items: [
+    { go: 'profile', label: 'Business profile', screens: ['profile', 'settings'] },
+    { go: 'ownerAlerts', label: 'Alerts to you', screens: ['ownerAlerts'] },
+    { go: 'activity', label: 'Activity log', screens: ['activityLog'] },
+  ] },
+];
+const menuAreaOf = (active: string) => MENU_AREAS.find(a => a.screens.includes(active) || a.items.some(i => i.screens.includes(active)))?.k ?? null;
+/** The menu, used by the phone drawer (light) and the computer sidebar (dark). `run` closes the drawer first on phones. */
+function AppMenu({ active, dark, run }: { active: string; dark: boolean; run: (f: () => void) => void }) {
+  const here = menuAreaOf(active);
+  // An area opened or closed by hand stays that way until you move to another screen.
+  const [pick, setPick] = useState<{ at: string; key: string | null } | null>(null);
+  const open = pick && pick.at === active ? pick.key : here;
+  const [, tick] = useState(0);
+  useEffect(() => { const f = () => tick(n => n + 1); brainNavSubs.add(f); return () => { brainNavSubs.delete(f); }; }, []);
+  const c = dark
+    ? { text: '#C9D6E6', strong: '#FFFFFF', icon: '#8FA3BC', iconOn: '#9CC3FF', sub: '#B8C7DA', muted: '#7F93AD', on: 'rgba(127,178,255,0.16)', hover: 'rgba(255,255,255,0.05)', line: 'rgba(255,255,255,0.10)' }
+    : { text: '#0B1220', strong: '#0B1220', icon: '#0B1220', iconOn: '#1E56A0', sub: '#3D4A5A', muted: '#8A97A6', on: '#EAF1FB', hover: '#F4F7FB', line: '#E6ECF3' };
+  const go = (k: string) => run(() => drawerBridge.go(k));
+  const sub = (key: string, label: string, onPress: () => void, sel: boolean, icon?: string) => (
+    <Pressable key={key} onPress={onPress} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected: sel }}
+      style={(st: any) => ({ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: dark ? 7 : 10, paddingHorizontal: 8, borderRadius: 8,
+        backgroundColor: sel ? c.on : st.hovered ? c.hover : 'transparent', cursor: 'pointer' } as any)}>
+      {!!icon && <Ionicons name={icon as any} size={14} color={icon === 'add' ? c.iconOn : c.muted} />}
+      <Text style={{ flex: 1, minWidth: 0, color: sel || icon === 'add' ? c.strong : c.sub, fontSize: dark ? 13 : 14, fontWeight: sel ? '700' : icon === 'add' ? '600' : '400' }} numberOfLines={1}>{label}</Text>
+    </Pressable>
+  );
+  const chats = brainNavBridge.chats;
+  return (
+    <>
+      {MENU_AREAS.map(a => {
+        const inArea = here === a.k, sel = a.screens.includes(active);
+        const more = a.items.length > 0 || a.k === 'brain', shown = more && open === a.k;
+        const toggle = () => setPick({ at: active, key: shown ? null : a.k });
+        return (
+          <View key={a.k} style={a.line ? { borderTopWidth: 1, borderTopColor: c.line, marginTop: 8, paddingTop: 8 } : undefined}>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <Pressable onPress={a.go ? () => go(a.go!) : toggle} accessibilityRole="button" accessibilityLabel={a.label} accessibilityState={{ selected: sel, expanded: !a.go ? shown : undefined }}
+                style={(st: any) => ({ flex: 1, flexDirection: 'row', alignItems: 'center', gap: dark ? 12 : 14, paddingVertical: dark ? 10 : 13, paddingLeft: dark ? 12 : 8, paddingRight: more ? 42 : 12, borderRadius: 10,
+                  backgroundColor: sel ? c.on : st.hovered ? c.hover : 'transparent', cursor: 'pointer' } as any)}>
+                <Ionicons name={a.icon as any} size={dark ? 18 : 22} color={inArea ? c.iconOn : c.icon} />
+                <Text style={{ flex: 1, color: inArea ? c.strong : c.text, fontSize: dark ? 14 : 15, fontWeight: inArea ? '700' : dark ? '500' : '600' }}>{a.label}</Text>
+              </Pressable>
+              {more && (
+                <Pressable onPress={toggle} hitSlop={6} accessibilityRole="button" accessibilityLabel={`${shown ? 'Hide' : 'Show'} more under ${a.label}`} accessibilityState={{ expanded: shown }}
+                  style={(st: any) => ({ position: 'absolute', right: 4, width: 32, height: 32, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: st.hovered ? c.hover : 'transparent', cursor: 'pointer' } as any)}>
+                  <Ionicons name={shown ? 'chevron-up' : 'chevron-down'} size={15} color={c.muted} />
+                </Pressable>
+              )}
+            </View>
+            {shown && (
+              <View style={{ marginLeft: dark ? 21 : 18, paddingLeft: 10, borderLeftWidth: 1, borderLeftColor: c.line, marginTop: 2, marginBottom: 4 }}>
+                {a.k === 'brain' && (
+                  <>
+                    {sub('new-chat', 'New chat', () => run(() => brainNavBridge.newChat()), false, 'add')}
+                    {chats?.slice(0, 5).map(ch => sub(`chat-${ch.key}`, ch.title, () => run(() => brainNavBridge.open(ch.key)), false, 'chatbubble-outline'))}
+                    {!!chats?.length && sub('all-chats', 'All chats', () => run(() => brainNavBridge.all()), false, 'time-outline')}
+                    <View style={{ height: 1, backgroundColor: c.line, marginVertical: 4, marginHorizontal: 8 }} />
+                  </>
+                )}
+                {a.items.map(i => sub(i.go, i.label, () => go(i.go), i.screens.includes(active)))}
+              </View>
+            )}
+          </View>
+        );
+      })}
+    </>
+  );
+}
+function DrawerHost() {
+  const [open, setOpen] = useState(false);
+  const [, tick] = useState(0);
+  useEffect(() => {
+    drawerOpenFn = () => setOpen(true);
+    drawerRefresh = () => tick(n => n + 1);
+    return () => { drawerOpenFn = () => {}; drawerRefresh = () => {}; };
+  }, []);
+  const run = (f: () => void) => { setOpen(false); setTimeout(f, 60); };
+  return (
+    <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)} statusBarTranslucent>
+      <View style={{ flex: 1, flexDirection: 'row' }}>
+        <View style={{ width: 296, backgroundColor: '#FFF', paddingTop: 64, paddingHorizontal: 20, paddingBottom: 28 }}>
+          <NexoraLockup letter={17} />
+          <Text style={{ fontSize: 12, color: '#8A97A6', marginTop: 10 }} numberOfLines={1}>{drawerBridge.name || 'AI Business Manager'}{drawerBridge.email ? `  ·  ${drawerBridge.email}` : ''}</Text>
+          <ScrollView style={{ marginTop: 18 }} showsVerticalScrollIndicator={false}>
+            {open && <AppMenu active={drawerBridge.active} dark={false} run={run} />}
+            <View style={{ height: 1, backgroundColor: '#EEF1F4', marginVertical: 10 }} />
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 8 }}>
+              <Ionicons name={drawerBridge.away ? 'moon' : 'sunny-outline'} size={22} color="#0B1220" />
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 15, fontWeight: '600', color: '#0B1220' }}>Away mode</Text>
+                <Text style={{ fontSize: 11, color: '#8A97A6' }}>Nexora answers customers for you</Text>
+              </View>
+              <Switch value={drawerBridge.away} onValueChange={v => { drawerBridge.setAway(v); }} accessibilityLabel="Away mode" />
+            </View>
+            <Pressable onPress={() => { setOpen(false); setTimeout(() => drawerBridge.signOut(), 60); }} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 14, marginTop: 6 }}>
+              <Ionicons name="log-out-outline" size={22} color="#D64545" />
+              <Text style={{ fontSize: 15, fontWeight: '600', color: '#D64545' }}>Log out</Text>
+            </Pressable>
+          </ScrollView>
+        </View>
+        <Pressable style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)' }} onPress={() => setOpen(false)} accessibilityLabel="Close menu" />
+      </View>
+    </Modal>
+  );
+}
+
