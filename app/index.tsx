@@ -37,6 +37,7 @@ import { CRMScreen } from '../components/CRM';
 import { ShopMore } from '../components/ShopMore';
 import { AIMarketing } from '../components/AIMarketing';
 import { IntroTrust, PartnerDirectory, PartnerExtrasForm, PartnerProjects } from '../components/PartnerHub';
+import { DigitalProjects } from '../components/DevProjects';
 import { NO_EXTRAS, loadExtras, loadIntroProjects, myReviewedIntros, saveExtras, type Extras as NetExtras, type Partner as NetPartner } from '../lib/network';
 import { savePrompt } from '../lib/brainAssistant';
 import { openPaystackPopup } from '../lib/paystackPopup';
@@ -6609,11 +6610,13 @@ function HomeScreenInner(){
   type NetConnection = { id: string; direction: 'in' | 'out'; status: string; message: string; reason: string; created_at: string; other: { user_id: string; display_name: string; industry?: string; city?: string; country?: string; bio?: string; offers?: string }; contacts: null | { whatsapp: string; email: string; website: string } };
   const blankNet = (): NetForm => ({ display_name: workspace?.name || '', industry: workspace?.industry || '', city: '', country: workspace?.country || '', bio: '', offers: '', needs: '', tags: '', visible: true, whatsapp: '', email: '', website: '' });
   // Capability 2.12: Directory and Projects tabs, partner details and portfolio, reviews and reports (components/PartnerHub).
-  const [netTab, setNetTab] = useState<'directory' | 'matches' | 'projects' | 'requests' | 'profile'>('directory');
+  const [netTab, setNetTab] = useState<'directory' | 'matches' | 'projects' | 'digital' | 'requests' | 'profile'>('directory');
   const [netExtras, setNetExtras] = useState<NetExtras>(NO_EXTRAS);
   const [netIntroProjects, setNetIntroProjects] = useState<Record<string, string>>({});
   const [netReviewed, setNetReviewed] = useState<Set<string>>(new Set());
   const [netStartDigital, setNetStartDigital] = useState(false);
+  // Capability 2.13: Digital projects (components/DevProjects). "Get software built" opens a new digital project.
+  const [netStartDev, setNetStartDev] = useState(false);
   const [netForm, setNetForm] = useState<NetForm>(blankNet());
   const [netHasProfile, setNetHasProfile] = useState(false);
   const [netVisible, setNetVisible] = useState(false);
@@ -6688,7 +6691,7 @@ function HomeScreenInner(){
     if (userId) myReviewedIntros(userId).then(setNetReviewed, () => {});
     try { const r = await callFn('nexora-network', { action: 'connections' }); setNetConnections(r.connections ?? []); } catch { /* shown as empty */ }
   };
-  const openSoftwareBuild = () => { setNetStartDigital(true); setNetTab('projects'); openNetwork().catch(() => {}); };
+  const openSoftwareBuild = () => { setNetStartDev(true); setNetTab('digital'); openNetwork().catch(() => {}); };
   const introduceNet = (p: NetPartner) => { setConnectTarget({ ...p, score: 0, reason: '' }); setConnectMsg(''); };
   const openNetwork = async () => {
     setScreen('network'); setNetError(''); setNetLoading(true);
@@ -14884,7 +14887,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
           <Pressable onPress={() => { openNetwork().catch(() => {}); }} hitSlop={8} accessibilityLabel="Refresh"><Ionicons name="refresh-outline" size={22} color="#0B1220" /></Pressable>
         </View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0 }} contentContainerStyle={{ flexDirection: 'row', gap: 8, paddingHorizontal: 20, paddingBottom: 10 }}>
-          {([['directory', 'Directory'], ['matches', 'Matches'], ['projects', 'Projects'], ['requests', `Introductions${incoming.length ? ` (${incoming.length})` : ''}`], ['profile', 'My profile']] as const).map(([k, label]) => (
+          {([['directory', 'Directory'], ['matches', 'Matches'], ['projects', 'Projects'], ['digital', 'Digital projects'], ['requests', `Introductions${incoming.length ? ` (${incoming.length})` : ''}`], ['profile', 'My profile']] as const).map(([k, label]) => (
             <Pressable key={k} onPress={() => { setNetTab(k); if (k === 'matches' && netVisible && netMatches === null) loadNetMatches().catch(() => {}); if (k === 'requests') loadNetConnections().catch(() => {}); }} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 18, backgroundColor: netTab === k ? '#1E56A0' : '#EAF1FB' }}>
               <Text style={{ color: netTab === k ? '#FFFFFF' : '#1E56A0', fontWeight: '600', fontSize: 13 }}>{label}</Text>
             </Pressable>
@@ -15021,6 +15024,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
           )}
 
           {!netLoading && netTab === 'directory' && !!userId && <PartnerDirectory me={userId} onIntroduce={introduceNet} flash={flash} />}
+          {!netLoading && netTab === 'digital' && !!userId && <DigitalProjects me={userId} business={workspace?.name || netForm.display_name} startNew={netStartDev} onStarted={() => setNetStartDev(false)} flash={flash} />}
           {!netLoading && netTab === 'projects' && !!userId && <PartnerProjects me={userId} business={workspace?.name || netForm.display_name} startDigital={netStartDigital} onChanged={() => { setNetStartDigital(false); loadNetConnections().catch(() => {}); }} flash={flash} />}
           {!netLoading && netTab === 'requests' && (
             <>
