@@ -131,7 +131,7 @@ const SCREEN_NEEDS: Record<string, Perm[] | 'owner'> = {
   addCustomer: ['customers_manage'], interactionHistory: ['customers_view'], leads: ['customers_view'], leadDetail: ['customers_view'], followups: ['customers_view'], crm: ['customers_view'],
   inboxChat: ['inbox_view'], 'tab:inbox': ['inbox_view'],
   campaigns: ['marketing_view'], broadcast: ['inbox_manage'],
-  activityLog: ['team_manage'],
+  activityLog: ['team_manage'], integrations: ['team_manage'],
   insights: 'owner', automations: 'owner', rules: 'owner', ownerAlerts: 'owner', learned: 'owner', storefront: 'owner', connectChannels: 'owner',
   channelSettings: 'owner', aiPermissions: 'owner', brainGallery: 'owner', brainAssistant: 'owner', businessPlanner: 'owner', socialPublisher: 'owner', websiteIntegration: 'owner', aiMarketing: 'owner', 'tab:brain': 'owner', quickActions: 'owner',
 };

@@ -39,6 +39,7 @@ import { AIMarketing } from '../components/AIMarketing';
 import { IntroTrust, PartnerDirectory, PartnerExtrasForm, PartnerProjects } from '../components/PartnerHub';
 import { DigitalProjects } from '../components/DevProjects';
 import { TeamWorkspace } from '../components/TeamWorkspace';
+import { Integrations } from '../components/Integrations';
 import { NO_EXTRAS, loadExtras, loadIntroProjects, myReviewedIntros, saveExtras, type Extras as NetExtras, type Partner as NetPartner } from '../lib/network';
 import { savePrompt } from '../lib/brainAssistant';
 import { openPaystackPopup } from '../lib/paystackPopup';
@@ -1181,7 +1182,7 @@ function BrandIcon({ platform, size = 36, ring = false }: { platform: Conversati
   );
 }
 
-type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'campaigns'|'automations'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules'|'opportunities'|'opportunityDetail'|'settings'|'quickActions'|'activityLog'|'approvals'|'brainAssistant'|'businessPlanner'|'socialPublisher'|'websiteIntegration'|'aiMarketing'|'aiReception'|'crm'|'inventory'|'teamWorkspace';
+type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'campaigns'|'automations'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules'|'opportunities'|'opportunityDetail'|'settings'|'quickActions'|'activityLog'|'approvals'|'brainAssistant'|'businessPlanner'|'socialPublisher'|'websiteIntegration'|'aiMarketing'|'aiReception'|'crm'|'inventory'|'teamWorkspace'|'integrations';
 type KnowledgeCategory='products'|'services'|'operations'|'policies'|'faqs';
 type KnowledgeField={label:string;value:string};
 // ---- Brain AI tools (company guide, 29 Oct 2026): organised tools instead of one crowded screen ----
@@ -3971,6 +3972,7 @@ function HomeScreenInner(){
       if (screen === 'settings') { settingsBack(); return true; }
       if (screen === 'activityLog') { setScreen('settings'); return true; }
       if (screen === 'teamWorkspace') { teamWsBackRef.current(); return true; }
+      if (screen === 'integrations') { integrationsBackRef.current(); return true; }
       if (screen === 'approvals') { if (approvalsFromRef.current === 'settings') setScreen('settings'); else goTab('home'); return true; }
       if (screen === 'brainAssistant') { goTab('brain'); return true; }
       if (screen === 'businessPlanner') { goTab('home'); return true; }
@@ -4094,6 +4096,9 @@ function HomeScreenInner(){
   // Capability 2.14: Team workspace (components/TeamWorkspace). Back returns to where it was opened from.
   const teamWsBackRef = useRef<() => void>(() => {});
   const openTeamWorkspace = (back: () => void) => { teamWsBackRef.current = back; setScreen('teamWorkspace'); };
+  // Capability 2.15: Integrations and Automation Centre (components/Integrations).
+  const integrationsBackRef = useRef<() => void>(() => {});
+  const openIntegrations = (back: () => void) => { integrationsBackRef.current = back; setScreen('integrations'); };
   const openApprovals = (from: 'home' | 'settings') => { approvalsFromRef.current = from; setScreen('approvals'); };
   /** A team member's action that waits for approval while the owner's rule for it is on (the owner never waits). */
   const needsApproval = (k: ApprovalKind) => !access.isOwner && approvalRules[k];
@@ -10635,6 +10640,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
               {prefRow({ icon: 'shield-checkmark-outline', title: 'Security & Privacy', sub: 'Password, two-factor, sessions and your data', onPress: () => openSettings('security') })}
               {prefRow({ icon: 'people-outline', title: 'Team & Access', sub: 'Team members, what they can do and team tasks', onPress: () => openSettings('team') })}
               {prefRow({ icon: 'briefcase-outline', title: 'Team workspace', sub: 'My work, tasks, notes, workflows, roles and access review', onPress: () => openTeamWorkspace(() => setScreen('settings')) })}
+              {prefRow({ icon: 'git-network-outline', title: 'Integrations and automation', sub: 'Everything connected, workflows, approvals, history and webhooks', onPress: () => openIntegrations(() => setScreen('settings')) })}
               {prefRow({ icon: 'gift-outline', title: 'Refer a business', sub: 'Share your link and see who joined', onPress: () => { openReferral().catch(() => {}); } })}
               <Modal visible={!!referral} transparent animationType="fade" onRequestClose={() => setReferral(null)} statusBarTranslucent>
                 <View style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)', justifyContent: 'center', padding: 16 }}>
@@ -11962,6 +11968,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
         { label: 'Automate', icon: 'git-branch', onPress: () => openAutomations() },
         { label: 'Team & Access', icon: 'people-circle', onPress: () => openSettings('team', { exit: () => openQuickActions(quickBackRef.current) }) },
         { label: 'Team workspace', icon: 'briefcase', onPress: () => openTeamWorkspace(() => openQuickActions(quickBackRef.current)) },
+        { label: 'Integrations', icon: 'git-network', onPress: () => openIntegrations(() => openQuickActions(quickBackRef.current)) },
         { label: 'Approvals', icon: 'checkmark-done-circle', onPress: () => openApprovals('home') },
       ] },
       // Every capability (2.1 to 2.9) has a tile here, so anything in Nexora can be found from one screen.
@@ -12468,6 +12475,9 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
   }
 
   if (screen === 'activityLog') return <ActivityLog onBack={() => setScreen('settings')} topInset={insets.top} />;
+  if (screen === 'integrations') return <Integrations me={userId ?? ''} isOwner={access.isOwner} flash={flash} topInset={insets.top} onBack={() => integrationsBackRef.current()}
+    links={{ onOpenConnect: () => openConnectChannels(), onOpenSocial: () => setScreen('socialPublisher'), onOpenWebsites: () => setScreen('websiteIntegration'), onOpenShop: () => setScreen('storefront'),
+      onOpenReception: () => setScreen('aiReception'), onOpenApprovals: () => openApprovals('home'), onOpenTeam: () => openTeamWorkspace(() => setScreen('integrations')) }} />;
   if (screen === 'teamWorkspace') return <TeamWorkspace businessId={workspace?.business_id || ''} me={userId ?? ''} access={access} flash={flash} topInset={insets.top} onBack={() => teamWsBackRef.current()}
     links={{ onOpenTeam: () => openSettings('team', { exit: () => setScreen('teamWorkspace') }), onOpenBilling: () => openBilling(() => setScreen('teamWorkspace')), onOpenSecurity: () => openSettings('security', { exit: () => setScreen('teamWorkspace') }),
       onOpenActivity: () => setScreen('activityLog'), onOpenApprovals: () => openApprovals('settings'), onOpenConnect: () => openConnectChannels(),
@@ -15930,6 +15940,8 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
     const recent = autoRuns.filter(r => r.status !== 'awaiting_approval').slice(0, 25);
     const f = autoForm;
     const describe = (a: { trigger: AutoTrigger; trigger_days: number; action: AutoAction; action_days: number; action_text: string }) =>
+      // 2.15: workflows with several steps or newer triggers are described in the Integrations and automation centre.
+      !AUTO_TRIGGERS[a.trigger] || !AUTO_ACTIONS[a.action] || (((a as { steps?: unknown[] }).steps?.length ?? 0) > 1) ? 'A workflow with several steps. Open Integrations and automation to see or change it.' :
       `When ${AUTO_TRIGGERS[a.trigger].label.charAt(0).toLowerCase()}${AUTO_TRIGGERS[a.trigger].label.slice(1)}${AUTO_TRIGGERS[a.trigger].days ? ` ${a.trigger_days} days` : ''}, ${AUTO_ACTIONS[a.action].label.charAt(0).toLowerCase()}${AUTO_ACTIONS[a.action].label.slice(1)}${AUTO_ACTIONS[a.action].days ? ` ${a.action_days} day${a.action_days === 1 ? '' : 's'}` : ''}${a.action === 'tag' && a.action_text ? ` "${a.action_text}"` : ''}.`;
     const chip = (on: boolean, text: string, onPress: () => void) => (
       <Pressable key={text} onPress={onPress} style={[styles.filterChip, { marginBottom: 0 }, on && styles.filterChipActive]}><Text style={[styles.filterChipText, on && styles.filterChipTextActive]}>{text}</Text></Pressable>
@@ -15989,6 +16001,11 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
         <StatusBar style="dark" />
         {renderPageHeader('Automations', 'Set a rule once and Nexora repeats it. Messages to customers always wait for your approval.', () => goTab('home'), { label: 'New automation', icon: 'add', onPress: () => setAutoForm({ name: '', trigger: 'order_new', trigger_days: 2, action: 'notify', action_days: 1, action_text: '', busy: false, error: '' }) })}
         <ScrollView style={styles.homeScroll} contentContainerStyle={[styles.homeScrollContent, { paddingBottom: 40, width: '100%', maxWidth: desktop ? 1240 : 820, alignSelf: 'center' }, desktop && { padding: 28, backgroundColor: '#F4F7FB', flexGrow: 1 }]} keyboardShouldPersistTaps="handled">
+          <Pressable onPress={() => openIntegrations(() => setScreen('automations'))} style={{ marginBottom: 12, padding: 14, borderRadius: 16, borderWidth: 1, borderColor: '#C7D7EE', backgroundColor: '#EAF1FB', flexDirection: 'row', alignItems: 'center', gap: 10 }} accessibilityRole="button">
+            <Ionicons name="flash-outline" size={20} color="#1E56A0" />
+            <Text style={{ flex: 1, color: '#1E56A0', fontSize: 13.5 }}><Text style={{ fontWeight: '800', color: '#1E56A0' }}>Need several steps? </Text>New enquiry → create lead → notify sales, approvals, history, retries and webhooks are in Integrations and automation.</Text>
+            <Ionicons name="chevron-forward" size={18} color="#1E56A0" />
+          </Pressable>
           {!desktop && <View style={{ borderRadius: 18, padding: 16, backgroundColor: '#0B1220' }}>
             <Text style={{ color: '#FFFFFF', fontSize: 17, fontWeight: '800' }}>Set it once, Nexora repeats it</Text>
             <Text style={{ color: '#B6C3D4', fontSize: 13, marginTop: 4, lineHeight: 19 }}>Rules like "when an order comes in, tell me". Nexora checks every 10 minutes and handles each order or customer once. Messages to customers are only drafted: nothing is sent until you approve it.</Text>
