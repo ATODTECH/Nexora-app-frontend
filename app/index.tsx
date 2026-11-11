@@ -2727,6 +2727,8 @@ const SHOP_PARAMS = (() => {
 })();
 function PublicShop({ slug }: { slug: string }) {
   const { width } = useWindowDimensions();
+  // Product photos whose link doesn't load show a clean placeholder (same as the website shop).
+  const [badImg, setBadImg] = useState<Record<string, true>>({});
   const [data, setData] = useState<ShopData | null>(null);
   const [error, setError] = useState('');
   const [msgs, setMsgs] = useState<{ role: 'user' | 'assistant'; content: string }[]>([]);
@@ -2864,7 +2866,8 @@ function PublicShop({ slug }: { slug: string }) {
     const qty = cart[it.id] || 0;
     return (
       <View key={it.id} style={[card, { width: wide ? '48.5%' : '100%', padding: 0, overflow: 'hidden' }]}>
-        {!!it.image && <Image source={{ uri: it.image }} style={{ width: '100%', height: 170, backgroundColor: '#EEF2F7' }} resizeMode="cover" />}
+        {!!it.image && !badImg[it.image] ? <Image source={{ uri: it.image }} onError={() => setBadImg(b => ({ ...b, [it.image!]: true }))} style={{ width: '100%', height: 170, backgroundColor: '#EEF2F7' }} resizeMode="cover" />
+          : <View style={{ width: '100%', height: 170, backgroundColor: '#F2F4F7', alignItems: 'center', justifyContent: 'center', gap: 4 }}><Ionicons name="bag-handle-outline" size={34} color="#98A2B3" /><Text style={{ fontSize: 12, fontWeight: '600', color: '#98A2B3' }}>Photo coming soon</Text></View>}
         <View style={{ padding: 14 }}>
           <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8 }}>
             <Text style={{ flex: 1, fontSize: 15, fontWeight: '800', color: '#0B1220' }}>{it.name}</Text>
