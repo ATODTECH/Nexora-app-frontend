@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Linking, Pressable, Share, StyleSheet, Switch, View } from 'react-native';
+import { ActivityIndicator, Image, Linking, Pressable, Share, StyleSheet, Switch, View } from 'react-native';
 import { Text, TextInput } from '../lib/inter';
 import { ChoiceChip } from './AutopilotCard';
 
@@ -9,13 +9,31 @@ import { ChoiceChip } from './AutopilotCard';
 // Same server calls and rules as the website's /shop.
 type Call = (fn: string, body: Record<string, unknown>, timeoutMs?: number) => Promise<any>;
 type Shop = Record<string, any> & { slug: string; enabled: boolean };
-type Item = { id: string; name: string; price: string; category: string; image: string; overview: string; featured: boolean; hidden: boolean; stats: { views: number; carts: number; sold: number } };
+type Item = { id: string; kind?: string; name: string; price: string; category: string; image: string; images?: string[]; overview: string; featured: boolean; hidden: boolean; stats: { views: number; carts: number; sold: number } };
 type Paystack = { connected: boolean; mode: string; last4: string };
 type Tab = 'products' | 'pay' | 'report' | 'domain';
 const errMsg = (e: unknown) => (e as Error)?.message || 'Something went wrong.';
 
-export function ShopMore({ shop, shopUrl, callFn, flash, onSaved }: { shop: Shop; shopUrl: (slug: string) => string; callFn: Call; flash: (t: string) => void; onSaved: (s: Shop) => void }) {
+/** Items on the shop with no working photo (none, or a link that doesn't load). Nexora never takes pictures from the
+ *  internet for a product (they may show a different item); it asks the owner for real photos instead. */
+function useMissingPhotos(items: Item[] | null): Set<string> {
+  const [missing, setMissing] = useState<Set<string>>(new Set());
+  const key = (items ?? []).map(i => `${i.id}:${i.image || ''}`).join('|');
+  useEffect(() => {
+    let live = true;
+    const next = new Set<string>();
+    Promise.all((items ?? []).map(i => (!i.image ? (next.add(i.id), Promise.resolve()) : Promise.race([
+      Image.prefetch(i.image).then(ok => { if (!ok) next.add(i.id); }, () => { next.add(i.id); }),
+      new Promise<void>(res => setTimeout(res, 8000)),   // slow photo: treat as fine
+    ])))).then(() => { if (live) setMissing(next); });
+    return () => { live = false; };
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  return missing;
+}
+
+export function ShopMore({ shop, shopUrl, callFn, flash, onSaved, pickPhoto, onNoPhoto, focusNoPhoto }: { shop: Shop; shopUrl: (slug: string) => string; callFn: Call; flash: (t: string) => void; onSaved: (s: Shop) => void; pickPhoto?: () => Promise<string | null>; onNoPhoto?: (n: number) => void; focusNoPhoto?: number }) {
   const [tab, setTab] = useState<Tab>('products');
+  useEffect(() => { if (focusNoPhoto) setTab('products'); }, [focusNoPhoto]);
   // The screen's callFn and flash change on every render; keep stable versions so the sections load once.
   const fnRef = useRef(callFn), flashRef = useRef(flash);
   useEffect(() => { fnRef.current = callFn; flashRef.current = flash; });
@@ -27,7 +45,7 @@ export function ShopMore({ shop, shopUrl, callFn, flash, onSaved }: { shop: Shop
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
         {([['products', 'Products'], ['pay', 'Delivery & payment'], ['report', 'Report'], ['domain', 'Links & web address']] as const).map(([k, l]) => <ChoiceChip key={k} on={tab === k} label={l} onPress={() => setTab(k)} />)}
       </View>
-      {tab === 'products' && <Products shop={shop} shopUrl={shopUrl} callFn={call} flash={say} />}
+      {tab === 'products' && <Products shop={shop} shopUrl={shopUrl} callFn={call} flash={say} pickPhoto={pickPhoto} onNoPhoto={onNoPhoto} focusNoPhoto={focusNoPhoto} />}
       {tab === 'pay' && <Pay shop={shop} callFn={call} flash={say} onSaved={onSaved} />}
       {tab === 'report' && <Report callFn={call} />}
       {tab === 'domain' && <Domain shop={shop} shopUrl={shopUrl} callFn={call} flash={say} onSaved={onSaved} />}
@@ -35,7 +53,7 @@ export function ShopMore({ shop, shopUrl, callFn, flash, onSaved }: { shop: Shop
   );
 }
 
-function Products({ shop, shopUrl, callFn, flash }: { shop: Shop; shopUrl: (slug: string) => string; callFn: Call; flash: (t: string) => void }) {
+function Products({ shop, shopUrl, callFn, flash, pickPhoto, onNoPhoto, focusNoPhoto }: { shop: Shop; shopUrl: (slug: string) => string; callFn: Call; flash: (t: string) => void; pickPhoto?: () => Promise<string | null>; onNoPhoto?: (n: number) => void; focusNoPhoto?: number }) {
   const [items, setItems] = useState<Item[] | null>(null);
   const [drafts, setDrafts] = useState<{ id: string; name: string }[]>([]);
   const [busy, setBusy] = useState('');
@@ -43,6 +61,21 @@ function Products({ shop, shopUrl, callFn, flash }: { shop: Shop; shopUrl: (slug
   const [listing, setListing] = useState<{ id: string; description: string; features: string[] } | null>(null);
   const reload = useCallback(() => callFn('nexora-shop', { action: 'products' }).then(r => { setItems(r.items ?? []); setDrafts(r.drafts ?? []); }).catch(e => { flash(errMsg(e)); setItems([]); }), [callFn, flash]);
   useEffect(() => { reload(); }, [reload]);
+  const missing = useMissingPhotos(items);
+  const noPhoto = (items ?? []).filter(i => !i.hidden && missing.has(i.id));
+  const noPhotoProducts = noPhoto.filter(i => (i.kind ?? 'product') === 'product').length;
+  useEffect(() => { if (items) onNoPhoto?.(noPhotoProducts); }, [items, noPhotoProducts]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [onlyNoPhoto, setOnlyNoPhoto] = useState(false);
+  useEffect(() => { if (focusNoPhoto) setOnlyNoPhoto(true); }, [focusNoPhoto]);
+  const addPhoto = async (it: Item) => {
+    if (!pickPhoto) return;
+    setBusy(`photo:${it.id}`);
+    try {
+      const url = await pickPhoto();
+      if (url) { await callFn('nexora-shop', { action: 'set_item', item_id: it.id, images: [...(it.images ?? []).filter(u => u !== it.image), url].slice(0, 7) }); flash('Photo added'); reload(); }
+    } catch (e) { flash(errMsg(e)); }
+    setBusy('');
+  };
   const setItem = async (id: string, patch: Record<string, unknown>, ok: string) => {
     setItems(l => l && l.map(x => (x.id === id ? { ...x, ...('hidden' in patch ? { hidden: !!patch.hidden } : {}), ...('featured' in patch ? { featured: !!patch.featured } : {}) } : x)));
     try { await callFn('nexora-shop', { action: 'set_item', item_id: id, ...patch }); flash(ok); if (patch.publish) reload(); } catch (e) { flash(errMsg(e)); reload(); }
@@ -63,7 +96,14 @@ function Products({ shop, shopUrl, callFn, flash }: { shop: Shop; shopUrl: (slug
         <Text style={s.bold}>Drafts (not on your shop yet)</Text>
         {drafts.map(d => <View key={d.id} style={[s.row, { marginTop: 8 }]}><Text style={[s.small, { flex: 1 }]} numberOfLines={1}>{d.name}</Text><Pressable onPress={() => setItem(d.id, { publish: true }, `${d.name} is on your shop`)}><Text style={s.link}>Publish</Text></Pressable></View>)}
       </View>}
-      {!items ? <ActivityIndicator color="#1E56A0" /> : items.length === 0 ? <Text style={s.small}>No products or services yet. Items Nexora learned from chats never show on your shop.</Text> : items.map(it => (
+      {(noPhoto.length > 0 || onlyNoPhoto) && (
+        <View style={[s.card, { borderColor: '#F3C77A', backgroundColor: '#FFF8EA' }]}>
+          <Text style={s.bold}>{noPhoto.length ? `${noPhoto.length} item${noPhoto.length === 1 ? '' : 's'} on your shop ${noPhoto.length === 1 ? 'has' : 'have'} no photo` : 'Every item on your shop has a photo'}</Text>
+          <Text style={s.small}>Take a clear picture of the actual product on your phone and tap Add photo. Nexora never uses pictures from the internet for your products, so customers see exactly what they will get.</Text>
+          <Pressable onPress={() => setOnlyNoPhoto(v => !v)} style={[s.mini, { alignSelf: 'flex-start', marginTop: 8 }]}><Text style={s.miniText}>{onlyNoPhoto ? 'Show all items' : 'Show only items without a photo'}</Text></Pressable>
+        </View>
+      )}
+      {!items ? <ActivityIndicator color="#1E56A0" /> : items.length === 0 ? <Text style={s.small}>No products or services yet. Items Nexora learned from chats never show on your shop.</Text> : (onlyNoPhoto ? noPhoto : items).map(it => (
         <View key={it.id} style={[s.card, it.hidden && { opacity: 0.65 }]}>
           <View style={s.row}>
             <View style={{ flex: 1 }}>
@@ -73,6 +113,7 @@ function Products({ shop, shopUrl, callFn, flash }: { shop: Shop; shopUrl: (slug
             </View>
           </View>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+            {!!pickPhoto && <Pressable disabled={busy === `photo:${it.id}`} onPress={() => addPhoto(it)} style={[s.mini, missing.has(it.id) && !it.hidden && { borderColor: '#B7791F' }]}>{busy === `photo:${it.id}` ? <ActivityIndicator size="small" color="#1E56A0" /> : <Text style={s.miniText}>{missing.has(it.id) ? 'Add photo' : 'Add another photo'}</Text>}</Pressable>}
             <Pressable onPress={() => setItem(it.id, { hidden: !it.hidden }, it.hidden ? 'Back on your shop' : 'Hidden from your shop')} style={s.mini}><Text style={s.miniText}>{it.hidden ? 'Show' : 'Hide'}</Text></Pressable>
             <Pressable onPress={() => setItem(it.id, { featured: !it.featured }, it.featured ? 'No longer featured' : 'Featured at the top')} style={s.mini}><Text style={s.miniText}>{it.featured ? 'Unfeature' : 'Feature'}</Text></Pressable>
             <Pressable disabled={busy === it.id} onPress={async () => {

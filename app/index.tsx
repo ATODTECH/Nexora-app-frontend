@@ -7432,6 +7432,9 @@ function HomeScreenInner(){
   };
   const loadShopStats = async () => { try { const r = await callFn('nexora-shop', { action: 'stats', days: 30 }); setShopStats(r); } catch { /* optional */ } };
   const [myShop, setMyShop] = useState<MyShop | null>(null);
+  // AI shop link → Getting started: products on the shop without a working photo (Nexora asks for real photos, never web pictures).
+  const [shopNoPhoto, setShopNoPhoto] = useState<number | null>(null);
+  const [shopPhotoFocus, setShopPhotoFocus] = useState(0);
   const [shopForm, setShopForm] = useState<MyShop | null>(null);
   const [shopLoading, setShopLoading] = useState(false);
   const [shopBusy, setShopBusy] = useState(false);
@@ -16284,6 +16287,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
       { done: priced.length > 0, label: 'Add products or services with prices in Train AI', onPress: () => openFeature('operations') },
       { done: !!(f.payment_info || '').trim() || f.accept_orders === false, label: 'Write how customers pay you', onPress: () => {} },
       { done: !!myShop?.enabled, label: 'Switch your shop on and share the link', onPress: () => { if (!myShop?.enabled) saveShop({ enabled: true }); } },
+      ...(shopNoPhoto === null ? [] : [{ done: shopNoPhoto === 0, label: shopNoPhoto ? `${shopNoPhoto} product${shopNoPhoto === 1 ? '' : 's'} on your shop ${shopNoPhoto === 1 ? 'has' : 'have'} no photo. Add real photos below` : 'Every product on your shop has a photo', onPress: () => { if (shopNoPhoto) setShopPhotoFocus(n => n + 1); } }]),
     ] : [];
     const SWATCHES = ['#1E56A0', '#0F2942', '#0E7490', '#15803D', '#B45309', '#B42318', '#7C3AED', '#DB2777'];
     const st = shopStats;
@@ -16495,7 +16499,8 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                 ))}
               </View>
 
-              {!!myShop && <ShopMore shop={myShop} shopUrl={shopUrl} callFn={callFn} flash={flash} onSaved={sv => { setMyShop(sv as MyShop); setShopForm(sv as MyShop); }} />}
+              {!!myShop && <ShopMore shop={myShop} shopUrl={shopUrl} callFn={callFn} flash={flash} onSaved={sv => { setMyShop(sv as MyShop); setShopForm(sv as MyShop); }}
+                pickPhoto={async () => { const uri = await pickLibraryImage(); return uri ? uploadKnowledgeImage(uri) : null; }} onNoPhoto={setShopNoPhoto} focusNoPhoto={shopPhotoFocus} />}
               <Text style={[styles.attentionSubtitle, { marginTop: 12 }]}>Your shop shows products and services from Train AI that are Verified or Need review, with their photos, prices and stock, plus your FAQs and policies. Drafts, hidden items and facts Nexora learned from chats stay private. Chats are answered only from this information.</Text>
               <Pressable onPress={() => openFeature('operations')} style={{ marginTop: 10 }}><Text style={{ color: '#1E56A0', fontWeight: '700' }}>Add or edit products in Train AI ›</Text></Pressable>
             </>
