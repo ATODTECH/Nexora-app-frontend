@@ -38,6 +38,7 @@ import { ShopMore } from '../components/ShopMore';
 import { AIMarketing } from '../components/AIMarketing';
 import { IntroTrust, PartnerDirectory, PartnerExtrasForm, PartnerProjects } from '../components/PartnerHub';
 import { DigitalProjects } from '../components/DevProjects';
+import { TeamWorkspace } from '../components/TeamWorkspace';
 import { NO_EXTRAS, loadExtras, loadIntroProjects, myReviewedIntros, saveExtras, type Extras as NetExtras, type Partner as NetPartner } from '../lib/network';
 import { savePrompt } from '../lib/brainAssistant';
 import { openPaystackPopup } from '../lib/paystackPopup';
@@ -1180,7 +1181,7 @@ function BrandIcon({ platform, size = 36, ring = false }: { platform: Conversati
   );
 }
 
-type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'campaigns'|'automations'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules'|'opportunities'|'opportunityDetail'|'settings'|'quickActions'|'activityLog'|'approvals'|'brainAssistant'|'businessPlanner'|'socialPublisher'|'websiteIntegration'|'aiMarketing'|'aiReception'|'crm'|'inventory';
+type Screen='launch'|'onboarding'|'signup'|'login'|'forgotPassword'|'main'|'knowledgeHealth'|'knowledgeList'|'itemDetail'|'itemEdit'|'addKnowledge'|'brainGallery'|'socialMedia'|'inboxChat'|'connectChannels'|'calendar'|'schedule2'|'createSchedule'|'schedule3'|'conflictTime'|'channelSettings'|'aiPermissions'|'callSummary'|'activeCall'|'customers'|'customerProfile'|'addCustomer'|'interactionHistory'|'demoInvite'|'truth'|'broadcast'|'orders'|'missingImages'|'agenda'|'agendaPriority'|'agendaCreate'|'billing'|'leads'|'leadDetail'|'customersLive'|'customerDetail'|'browser'|'explore'|'trends'|'learned'|'network'|'community'|'communityPost'|'storefront'|'campaigns'|'automations'|'followups'|'verifyEmail'|'terms'|'insights'|'ownerAlerts'|'rules'|'opportunities'|'opportunityDetail'|'settings'|'quickActions'|'activityLog'|'approvals'|'brainAssistant'|'businessPlanner'|'socialPublisher'|'websiteIntegration'|'aiMarketing'|'aiReception'|'crm'|'inventory'|'teamWorkspace';
 type KnowledgeCategory='products'|'services'|'operations'|'policies'|'faqs';
 type KnowledgeField={label:string;value:string};
 // ---- Brain AI tools (company guide, 29 Oct 2026): organised tools instead of one crowded screen ----
@@ -3969,6 +3970,7 @@ function HomeScreenInner(){
       if (screen === 'communityPost') { setScreen('community'); return true; }
       if (screen === 'settings') { settingsBack(); return true; }
       if (screen === 'activityLog') { setScreen('settings'); return true; }
+      if (screen === 'teamWorkspace') { teamWsBackRef.current(); return true; }
       if (screen === 'approvals') { if (approvalsFromRef.current === 'settings') setScreen('settings'); else goTab('home'); return true; }
       if (screen === 'brainAssistant') { goTab('brain'); return true; }
       if (screen === 'businessPlanner') { goTab('home'); return true; }
@@ -4089,6 +4091,9 @@ function HomeScreenInner(){
   const [orderPending, setOrderPending] = useState<Approval[]>([]);
   // Approvals opens from Home (or a notification) and from Team & Access; Back returns there.
   const approvalsFromRef = useRef<'home' | 'settings'>('home');
+  // Capability 2.14: Team workspace (components/TeamWorkspace). Back returns to where it was opened from.
+  const teamWsBackRef = useRef<() => void>(() => {});
+  const openTeamWorkspace = (back: () => void) => { teamWsBackRef.current = back; setScreen('teamWorkspace'); };
   const openApprovals = (from: 'home' | 'settings') => { approvalsFromRef.current = from; setScreen('approvals'); };
   /** A team member's action that waits for approval while the owner's rule for it is on (the owner never waits). */
   const needsApproval = (k: ApprovalKind) => !access.isOwner && approvalRules[k];
@@ -10629,6 +10634,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
               {prefRow({ icon: 'notifications-outline', title: 'Notifications', sub: 'Alerts, reminders and AI activity', onPress: () => openSettings('notifications') })}
               {prefRow({ icon: 'shield-checkmark-outline', title: 'Security & Privacy', sub: 'Password, two-factor, sessions and your data', onPress: () => openSettings('security') })}
               {prefRow({ icon: 'people-outline', title: 'Team & Access', sub: 'Team members, what they can do and team tasks', onPress: () => openSettings('team') })}
+              {prefRow({ icon: 'briefcase-outline', title: 'Team workspace', sub: 'My work, tasks, notes, workflows, roles and access review', onPress: () => openTeamWorkspace(() => setScreen('settings')) })}
               {prefRow({ icon: 'gift-outline', title: 'Refer a business', sub: 'Share your link and see who joined', onPress: () => { openReferral().catch(() => {}); } })}
               <Modal visible={!!referral} transparent animationType="fade" onRequestClose={() => setReferral(null)} statusBarTranslucent>
                 <View style={{ flex: 1, backgroundColor: 'rgba(11,18,32,0.45)', justifyContent: 'center', padding: 16 }}>
@@ -11955,6 +11961,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
         { label: 'Schedule', icon: 'calendar', onPress: () => handleCommandCenterPress('Schedule') },
         { label: 'Automate', icon: 'git-branch', onPress: () => openAutomations() },
         { label: 'Team & Access', icon: 'people-circle', onPress: () => openSettings('team', { exit: () => openQuickActions(quickBackRef.current) }) },
+        { label: 'Team workspace', icon: 'briefcase', onPress: () => openTeamWorkspace(() => openQuickActions(quickBackRef.current)) },
         { label: 'Approvals', icon: 'checkmark-done-circle', onPress: () => openApprovals('home') },
       ] },
       // Every capability (2.1 to 2.9) has a tile here, so anything in Nexora can be found from one screen.
@@ -12461,6 +12468,10 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
   }
 
   if (screen === 'activityLog') return <ActivityLog onBack={() => setScreen('settings')} topInset={insets.top} />;
+  if (screen === 'teamWorkspace') return <TeamWorkspace businessId={workspace?.business_id || ''} me={userId ?? ''} access={access} flash={flash} topInset={insets.top} onBack={() => teamWsBackRef.current()}
+    links={{ onOpenTeam: () => openSettings('team', { exit: () => setScreen('teamWorkspace') }), onOpenBilling: () => openBilling(() => setScreen('teamWorkspace')), onOpenSecurity: () => openSettings('security', { exit: () => setScreen('teamWorkspace') }),
+      onOpenActivity: () => setScreen('activityLog'), onOpenApprovals: () => openApprovals('settings'), onOpenConnect: () => openConnectChannels(),
+      onOpenRecord: r => { const id = r.related_id; if (r.related_type === 'order' && id) { openOrders('All'); setOrderOpenId(id); const o = orders.find(x => x.id === id); setOrderForm({ tracking: o?.tracking || '', delivery_fee: String(o?.delivery_fee || ''), discount: String(o?.discount || ''), refund: '', cancel_reason: '', note: '' }); } else if (r.related_type === 'customer') openCustomers(() => setScreen('teamWorkspace')); else if (r.related_type === 'product') setScreen('inventory'); } }} />;
   if (screen === 'brainAssistant') {
     const findTool = (k: string) => AI_TOOL_GROUPS.flatMap(g => g.tools).find(t => t.key === k) ?? null;
     return <BrainAssistant userId={userId ?? ''} flash={flash} topInset={insets.top} wide={isDesktopWeb}

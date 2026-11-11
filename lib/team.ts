@@ -4,7 +4,7 @@ import { supabase } from './supabase';
 // src/lib/team.ts. The database enforces every permission; these helpers only decide what each person's screens show.
 export type Perm =
   | 'orders_view' | 'orders_manage' | 'customers_view' | 'customers_manage' | 'customers_sensitive' | 'products_view' | 'products_manage'
-  | 'knowledge_manage' | 'inbox_view' | 'inbox_manage' | 'marketing_view' | 'marketing_manage' | 'export' | 'team_manage' | 'approvals_manage';
+  | 'knowledge_manage' | 'inbox_view' | 'inbox_manage' | 'marketing_view' | 'marketing_manage' | 'export' | 'team_manage' | 'approvals_manage' | 'own_customers_only';
 export type Perms = Partial<Record<Perm, boolean>>;
 export type JobRole = 'owner' | 'admin' | 'manager' | 'sales' | 'support' | 'inventory' | 'marketing' | 'analyst' | 'custom';
 export type StaffRole = Exclude<JobRole, 'owner'>;
@@ -32,6 +32,7 @@ export const EXTRAS: { key: Perm; label: string; sub: string; ownerOnly?: boolea
   { key: 'knowledge_manage', label: 'Train AI', sub: 'Edit policies, FAQs and how the business works' },
   { key: 'customers_sensitive', label: 'See contact details', sub: 'See customers’ phone numbers, emails, addresses and birthdays (each look is logged)' },
   { key: 'export', label: 'Export data', sub: 'Download orders, customers and other lists' },
+  { key: 'own_customers_only', label: 'Only customers assigned to them', sub: 'They see only the customers and leads given to them (and ones they add). Others stay hidden.' },
   { key: 'team_manage', label: 'Manage the team', sub: 'Invite, change access, suspend, and see the activity log', ownerOnly: true },
   { key: 'approvals_manage', label: 'Approve team requests', sub: 'Approve or reject refunds, cancellations, stock corrections, campaign posts and bulk messages', ownerOnly: true },
 ];
