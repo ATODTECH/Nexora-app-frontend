@@ -8,6 +8,7 @@ import {
   stepInfo, stepsOf, testWebhook, triggerLabel, updateWebhook,
   type Delivery, type Run, type Status, type Step, type StepType, type Webhook, type WebhookEvent, type Workflow, type WorkflowForm,
 } from '../lib/integrations';
+import { loadRoles } from '../lib/workspace';
 
 // Capability 2.15 in the app: the Integrations and Automation Centre. Same data and rules as the website's /integrations page:
 // Connections (everything connected, with where to change it), Workflows (several steps, on/off, Pause all, templates),
@@ -111,7 +112,7 @@ type P = { me: string; flash: (t: string) => void; reload: () => Promise<void> }
 // ---------- Connections ----------
 type Row = { name: string; ok: boolean | null; detail: string };
 function Group({ icon, title, rows, onPress, action, children }: { icon: keyof typeof Ionicons.glyphMap; title: string; rows: Row[]; onPress?: () => void; action?: string; children?: React.ReactNode }) {
-  const n = rows.filter(r => r.ok).length;
+  const n = rows.filter(r => r.ok !== false).length;
   return (
     <View style={s.card}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
@@ -167,7 +168,7 @@ function Connections({ st, owner, links, go, flash, reload }: { st: Status; owne
       <Group icon="bar-chart-outline" title="Analytics" rows={[
         { name: 'Google Analytics 4 on your shop link', ok: !!st.analytics.ga_id, detail: st.analytics.ga_id || 'Not added' },
         { name: 'Meta Pixel on your shop link', ok: !!st.analytics.meta_pixel_id, detail: st.analytics.meta_pixel_id || 'Not added' },
-        { name: 'Nexora website stats', ok: st.websites.length > 0, detail: st.websites.length ? `${st.analytics.site_views_30d} page views in 30 days` : 'Connect a website to count its visits' },
+        { name: 'Nexora website stats', ok: st.websites.length > 0, detail: st.websites.length ? `${st.analytics.site_views_30d} page view${st.analytics.site_views_30d === 1 ? '' : 's'} in 30 days` : 'Connect a website to count its visits' },
       ]}>
         {owner && !!shop && (
           <View>
@@ -216,12 +217,14 @@ function Workflows({ list, paused, me, flash, reload, links }: { list: Workflow[
       <Text style={[s.label, { marginTop: 16 }]}>START FROM A TEMPLATE</Text>
       {TEMPLATES.map(t => <Pressable key={t.name} onPress={() => setEdit({ f: { ...t, steps: t.steps.map(x => ({ ...x })) } })} style={s.card}><Text style={s.bodyBold}>{t.name}</Text><Text style={s.small}>{t.description}</Text></Pressable>)}
       <Pressable onPress={links.onOpenTeam} style={{ marginTop: 10 }}><Text style={s.link}>Team task workflows are in Team workspace → Workflows ›</Text></Pressable>
-      {edit && <Editor init={edit.f} onClose={() => setEdit(null)} onSave={async f => { await saveWorkflow(me, f, edit.id); flash(edit.id ? 'Workflow saved' : 'Workflow on'); setEdit(null); await reload(); }} />}
+      {edit && <Editor init={edit.f} isNew={!edit.id} onClose={() => setEdit(null)} onSave={async f => { await saveWorkflow(me, f, edit.id); flash(edit.id ? 'Workflow saved' : 'Workflow on'); setEdit(null); await reload(); }} />}
     </View>
   );
 }
-function Editor({ init, onClose, onSave }: { init: WorkflowForm; onClose: () => void; onSave: (f: WorkflowForm) => Promise<void> }) {
+function Editor({ init, isNew, onClose, onSave }: { init: WorkflowForm; isNew: boolean; onClose: () => void; onSave: (f: WorkflowForm) => Promise<void> }) {
   const [f, setF] = useState<WorkflowForm>(init);
+  const [ownRoles, setOwnRoles] = useState<string[]>([]);
+  useEffect(() => { loadRoles().then(r => setOwnRoles(r.map(x => x.name)), () => {}); }, []);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const record = TRIGGERS.find(t => t.k === f.trigger)?.record;
@@ -229,7 +232,7 @@ function Editor({ init, onClose, onSave }: { init: WorkflowForm; onClose: () => 
   const move = (i: number, d: number) => { const a = [...f.steps]; const [x] = a.splice(i, 1); a.splice(i + d, 0, x); setF({ ...f, steps: a }); };
   const fits = (k: StepType) => { const n = stepInfo(k)?.needs; return !n || n === record || (n === 'customer' && (record === 'order' || record === 'enquiry')); };
   return (
-    <Sheet title={init.name ? `Workflow: ${init.name}` : 'New workflow'} onClose={onClose}>
+    <Sheet title={isNew ? 'New workflow' : `Workflow: ${init.name}`} onClose={onClose}>
       <Field label="Name" value={f.name} onChangeText={v => setF({ ...f, name: v })} maxLength={120} />
       <Field label="What it's for (optional)" value={f.description} onChangeText={v => setF({ ...f, description: v })} maxLength={300} />
       <Text style={[s.label, { marginTop: 12 }]}>When</Text>
@@ -248,7 +251,7 @@ function Editor({ init, onClose, onSave }: { init: WorkflowForm; onClose: () => 
             </View>
             <View style={s.wrap}>{STEPS.map(x => <Chip key={x.k} on={st.type === x.k} label={x.label} disabled={!fits(x.k)} onPress={() => setStep(i, { type: x.k, approval: false })} />)}</View>
             <Text style={s.small}>{info?.hint}</Text>
-            {info?.role && <View style={s.wrap}>{TEAM_ROLES.map(r => <Chip key={r} on={st.role === r} label={r === 'owner' ? 'The owner' : `${r.charAt(0).toUpperCase()}${r.slice(1)}`} onPress={() => setStep(i, { role: r })} />)}</View>}
+            {info?.role && <View style={s.wrap}>{TEAM_ROLES.map(r => <Chip key={r} on={st.role === r} label={r === 'owner' ? 'The owner' : `${r.charAt(0).toUpperCase()}${r.slice(1)}`} onPress={() => setStep(i, { role: r })} />)}{ownRoles.map(r => <Chip key={`own-${r}`} on={st.role === r} label={r} onPress={() => setStep(i, { role: r })} />)}</View>}
             {info?.segment && <View style={s.wrap}>{SEGMENTS.map(g => <Chip key={g} on={st.segment === g} label={g === 'All' ? 'All customers' : g} onPress={() => setStep(i, { segment: g })} />)}</View>}
             {info?.days && <Field label={info.days} value={String(st.days ?? 0)} keyboardType="number-pad" onChangeText={v => setStep(i, { days: Math.min(90, Number(v.replace(/\D/g, '')) || 0) })} />}
             {info?.text && <Field label={info.text} value={st.text ?? ''} onChangeText={v => setStep(i, { text: v })} multiline={st.type === 'draft_message' || st.type === 'bulk_message'} maxLength={1000} />}
@@ -280,12 +283,15 @@ function Approvals({ runs, workflows, flash, reload }: { runs: Run[]; workflows:
       {!runs.length ? <View style={s.card}><Text style={s.muted}>Nothing is waiting for you.</Text></View> : runs.map(r => {
         const p = r.payload || {};
         const draft = p.kind === 'message' || (!p.kind && !!p.message);
+            const w = workflows.find(x => x.id === r.automation_id);
+            const nextStep = w ? stepsOf(w)[r.step_index] : undefined;
+            const stepText = nextStep ? describeStep(nextStep).replace(/^./, c => c.toUpperCase()) : String(p.step || 'the next step');
         return (
           <View key={r.id} style={[s.card, { borderColor: '#FEDF89' }]}>
             <Text style={[s.small, { color: AMBER, fontWeight: '700' }]}>{name(r.automation_id)} · {ago(r.updated_at)}</Text>
             <Text style={s.bodyBold}>{r.title}</Text>
-            <Text style={s.small}>{draft ? `Message to ${p.to || 'the customer'}` : p.step ? `Next step: ${p.step}` : 'Next step'}</Text>
-            <View style={[s.card, { backgroundColor: '#F7F9FC' }]}><Text style={s.body}>{draft ? p.message : p.kind === 'mass_tag' ? `Add the tag “${p.tag}” to ${p.count} customers${p.segment && p.segment !== 'All' ? ` in ${p.segment}` : ''}.` : p.kind === 'bulk_message' ? `Prepare this message in Campaigns for ${p.count} customers${p.segment && p.segment !== 'All' ? ` in ${p.segment}` : ''}:\n\n${p.message}` : r.detail}</Text></View>
+            <Text style={s.small}>{draft ? `Message to ${p.to || 'the customer'}` : `Next step: ${stepText}`}</Text>
+            <View style={[s.card, { backgroundColor: '#F7F9FC' }]}><Text style={s.body}>{draft ? p.message : p.kind === 'mass_tag' ? `Add the tag “${p.tag}” to ${p.count} customers${p.segment && p.segment !== 'All' ? ` in ${p.segment}` : ''}.` : p.kind === 'bulk_message' ? `Prepare this message in Campaigns for ${p.count} customers${p.segment && p.segment !== 'All' ? ` in ${p.segment}` : ''}:\n\n${p.message}` : `Nexora will ${stepText.charAt(0).toLowerCase()}${stepText.slice(1)} once you approve.`}</Text></View>
             <View style={s.wrap}>
               {draft ? (['whatsapp', 'email'] as const).map(v => { const link = sendDraftLink(r, v); return link ? <Btn key={v} label={`Send on ${v === 'whatsapp' ? 'WhatsApp' : 'email'}`} busy={busy === r.id} onPress={() => { Linking.openURL(link).catch(() => {}); decide(r, true, 'Marked as sent. The rest of the workflow carries on.'); }} /> : null; })
                 : <Btn label="Approve and run" busy={busy === r.id} onPress={() => decide(r, true, 'Approved. Nexora is doing it now.')} />}

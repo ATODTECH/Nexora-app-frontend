@@ -7312,7 +7312,7 @@ function HomeScreenInner(){
   const [shopUpgraded, setShopUpgraded] = useState(true);
   const [shopCaptions, setShopCaptions] = useState<{ platform: string; busy: boolean; captions: string[]; error: string } | null>(null);
   const [shopCampaign, setShopCampaign] = useState('instagram');
-  // ---- Automation Centre: "When <something happens>, do <something>" (runs on the server every 10 minutes) ----
+  // ---- Automation Centre: "When <something happens>, do <something>" (runs on the server every 2 minutes) ----
   type AutoTrigger = 'order_new' | 'order_unpaid' | 'lead_new' | 'low_stock' | 'followup_due' | 'customer_inactive';
   type AutoAction = 'notify' | 'followup' | 'task' | 'draft_message' | 'tag';
   type Automation = { id: string; name: string; trigger: AutoTrigger; trigger_days: number; action: AutoAction; action_days: number; action_text: string; enabled: boolean; runs: number; last_run_at: string | null; created_at: string };
@@ -7355,7 +7355,7 @@ function HomeScreenInner(){
     const { busy: _b, error: _e, ...row } = f;
     const { error } = await supabase.from('automations').insert({ ...row, name: f.name.trim(), user_id: userId });
     if (error) { setAutoForm(x => x && { ...x, busy: false, error: /does not exist|schema cache/i.test(error.message) ? 'Run the automation SQL script in Supabase first.' : /50 automations/.test(error.message) ? error.message : "Couldn't save it." }); return; }
-    setAutoForm(null); flash('Automation on. It checks every 10 minutes.'); loadAutomations().catch(() => {});
+    setAutoForm(null); flash('Automation on. It checks every 2 minutes.'); loadAutomations().catch(() => {});
   };
   const approveRun = async (r: AutoRun, via: 'whatsapp' | 'email' | 'share') => {
     const p = r.payload || {};
@@ -15936,7 +15936,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
 
   if (screen === 'automations') {
     const list = automations ?? [];
-    const waiting = autoRuns.filter(r => r.status === 'awaiting_approval');
+    const waiting = autoRuns.filter(r => r.status === 'awaiting_approval' && (!r.payload?.kind || r.payload.kind === 'message'));
     const recent = autoRuns.filter(r => r.status !== 'awaiting_approval').slice(0, 25);
     const f = autoForm;
     const describe = (a: { trigger: AutoTrigger; trigger_days: number; action: AutoAction; action_days: number; action_text: string }) =>
@@ -16008,7 +16008,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
           </Pressable>
           {!desktop && <View style={{ borderRadius: 18, padding: 16, backgroundColor: '#0B1220' }}>
             <Text style={{ color: '#FFFFFF', fontSize: 17, fontWeight: '800' }}>Set it once, Nexora repeats it</Text>
-            <Text style={{ color: '#B6C3D4', fontSize: 13, marginTop: 4, lineHeight: 19 }}>Rules like "when an order comes in, tell me". Nexora checks every 10 minutes and handles each order or customer once. Messages to customers are only drafted: nothing is sent until you approve it.</Text>
+            <Text style={{ color: '#B6C3D4', fontSize: 13, marginTop: 4, lineHeight: 19 }}>Rules like "when an order comes in, tell me". Nexora checks every 2 minutes and handles each order or customer once. Messages to customers are only drafted: nothing is sent until you approve it.</Text>
           </View>}
           {autoError === 'setup' && (
             <View style={{ marginTop: 12, padding: 12, borderRadius: 12, backgroundColor: '#FFF6E5' }}>

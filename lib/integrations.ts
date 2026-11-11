@@ -9,8 +9,9 @@ import { supabase } from './supabase';
 const fail = (e: { message: string } | null, fallback: string) => {
   if (!e) return;
   if (/does not exist|schema cache|not find/i.test(e.message)) throw new Error('The automation centre is being set up. Try again in a few minutes.');
-  const m = e.message.replace(/^.*?: /, '');
-  throw new Error(/^(Only|Use|Choose|Unknown|You can|Webhook|This|Check|Set up|Give)/.test(m) ? m : fallback);
+  const ours = /^(Only|Use|Choose|Unknown|You can|Webhook|This|Check|Set up|Give)/;
+  const m = ours.test(e.message) ? e.message : e.message.replace(/^.*?: /, '');
+  throw new Error(ours.test(m) ? m : fallback);
 };
 
 // ---------- Workflows ----------
@@ -46,7 +47,7 @@ export const STEPS: { k: StepType; label: string; hint: string; risky?: boolean;
   { k: 'mass_tag', label: 'Tag a whole customer group', hint: 'Higher risk (mass update): always waits for your approval', risky: true, segment: true, text: 'Tag' },
 ];
 export const stepInfo = (k: string) => STEPS.find(s => s.k === k);
-const roleName = (r?: string) => (!r ? 'someone' : r === 'owner' ? 'the owner' : `the next ${r.charAt(0).toUpperCase()}${r.slice(1)} person`);
+const roleName = (r?: string) => (!r ? 'someone' : r === 'owner' ? 'the owner' : TEAM_ROLES.includes(r) ? `the next ${r.charAt(0).toUpperCase()}${r.slice(1)} person` : `the next “${r}”`);
 export function describeStep(s: Step): string {
   switch (s.type) {
     case 'notify_team': return `notify ${roleName(s.role)}${s.text ? `: “${s.text}”` : ''}`;
