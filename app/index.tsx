@@ -40,6 +40,9 @@ import { IntroTrust, PartnerDirectory, PartnerExtrasForm, PartnerProjects } from
 import { DigitalProjects } from '../components/DevProjects';
 import { TeamWorkspace } from '../components/TeamWorkspace';
 import { Integrations } from '../components/Integrations';
+// Capability 2.16: Plans, billing and Nexora One (components/Billing, lib/billing).
+import { BillingMore, BillingNotices, BillingPayment, BillSheets, planAction, renewalLine, type BillSheet } from '../components/Billing';
+import { USAGE_LABELS, USAGE_ORDER, loadBilling, loadBillingAlert, planEnded, fmtDay as billDay, type Addon, type Billing, type BillingAlert } from '../lib/billing';
 import { NO_EXTRAS, loadExtras, loadIntroProjects, myReviewedIntros, saveExtras, type Extras as NetExtras, type Partner as NetPartner } from '../lib/network';
 import { savePrompt } from '../lib/brainAssistant';
 import { openPaystackPopup } from '../lib/paystackPopup';
@@ -3857,6 +3860,8 @@ function HomeScreenInner(){
   type Plan = {
     key: string; name: string; price_usd: number; price_ngn: number | null; price_usd_year: number | null; price_ngn_year: number | null;
     staff_seats: number | null; max_users: number | null; monthly_ai_messages: number | null; blurb: string; features: string[]; contact_sales: boolean;
+    connected_accounts?: number | null; customer_records?: number | null; active_workflows?: number | null; knowledge_sources?: number | null;
+    monthly_posts?: number | null; monthly_call_minutes?: number | null; storage_mb?: number | null;
   };
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   // Home (company feedback 8 Nov 2026): the All window, and View All on the two lists that now show 4 rows.
@@ -3872,9 +3877,14 @@ function HomeScreenInner(){
   // What the business uses of each plan limit (null limit = custom / not capped).
   type PlanUsage = Record<string, { used: number; limit: number | null }>;
   const [planUsage, setPlanUsage] = useState<PlanUsage | null>(null);
-  type PayConfig = { ready: boolean; currency: string; test_mode: boolean; reason: string; prices: Record<string, number | null>; prices_year?: Record<string, number | null> };
+  type PayConfig = { ready: boolean; currency: string; test_mode: boolean; reason: string; prices: Record<string, number | null>; prices_year?: Record<string, number | null>; addon_prices?: Record<string, number | null> };
   const [payConfig, setPayConfig] = useState<PayConfig | null>(null);
   const [paidUntil, setPaidUntil] = useState<string | null>(null);
+  // 2.16: renewal, saved card, add-ons and plan changes (my_billing), the Dashboard's billing line, and the pay / switch sheets.
+  const [bill, setBill] = useState<Billing | null>(null);
+  const [billAlert, setBillAlert] = useState<BillingAlert>(null);
+  const [billSheet, setBillSheet] = useState<BillSheet | null>(null);
+  const [billRefresh, setBillRefresh] = useState(0);
   const pendingPaymentRef = useRef<string>('');
   const [billingBusy, setBillingBusy] = useState<string | null>(null);
   const [bizForm, setBizForm] = useState({ name: '', industry: '', country: '' });
@@ -5103,6 +5113,9 @@ function HomeScreenInner(){
       supabase.rpc('my_plan_usage'),
     ]);
     setPlanUsage(usR.error ? null : ((usR.data as PlanUsage | null) ?? null));
+    loadBilling().then(setBill, () => setBill(null));
+    loadBillingAlert().then(setBillAlert, () => setBillAlert(null));
+    setBillRefresh(n => n + 1);
     if (wsR.error && __DEV__) console.log('[workspace]', wsR.error.message);
     const row = Array.isArray(wsR.data) ? wsR.data[0] : wsR.data;
     setWorkspace((row as any) ?? null);
@@ -5121,6 +5134,7 @@ function HomeScreenInner(){
     setScreen('billing');
   };
   const rpcError = (e: any, fallback: string) => String(e?.message || fallback).replace(/^.*?exception:\s*/i, '');
+  const reloadBilling = () => { loadWorkspaceInfo().catch(() => {}); loadPayConfig().catch(() => {}); };
   const createBusiness = async (): Promise<boolean> => {
     const name = bizForm.name.trim();
     if (!name) { flash('Enter your company name'); return false; }
@@ -5166,13 +5180,13 @@ function HomeScreenInner(){
     const body = `Hi Nexora team,\n\nWe'd like a quote for the ${plan.name} plan.\n\nCompany: ${workspace?.name || ''}\nCountry: ${workspace?.country || ''}\nNumber of users:\nTools we want to connect:\n`;
     Linking.openURL(`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`).catch(() => flash(`Email us at ${SUPPORT_EMAIL}`));
   };
-  const startCheckout = async (plan: Plan) => {
-    if (plan.contact_sales) { contactSales(plan); return; }
+  const startCheckout = async (plan: Plan | null, extra: { addon?: Addon; saveCard?: boolean } = {}) => {
+    if (plan?.contact_sales) { contactSales(plan); return; }
     if (payConfig && !payConfig.ready) { flash('Payments are not switched on yet'); return; }
-    setBillingBusy(plan.key);
+    setBillingBusy(plan?.key ?? extra.addon?.key ?? 'addon');
     try {
       const returnUrl = IS_WEB && typeof window !== 'undefined' ? `${window.location.origin}/?payment=paystack` : 'nexora://billing';
-      const out = await callFn('paystack-checkout', { action: 'start', plan: plan.key, interval: billingInterval, return_url: returnUrl });
+      const out = await callFn('paystack-checkout', { action: 'start', ...(extra.addon ? { addon: extra.addon.key } : { plan: plan!.key, interval: billingInterval }), save_card: !!extra.saveCard, return_url: returnUrl });
       if (!out?.url) throw new Error("We couldn't start the checkout.");
       pendingPaymentRef.current = out.reference;
       if (IS_WEB && typeof window !== 'undefined') {
@@ -5208,7 +5222,8 @@ function HomeScreenInner(){
         if (IS_WEB) { try { window.localStorage.removeItem(PENDING_PAY_KEY); } catch { /* ignore */ } }
         await loadWorkspaceInfo(); await loadPayConfig();
         const until = r.current_period_end ? new Date(r.current_period_end).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '';
-        flash(`Payment confirmed. ${r.plan_name || plans.find(p => p.key === r.plan)?.name || 'Your'} plan is active${until ? ` until ${until}` : ''}.`);
+        if (r.kind === 'addon') flash('Payment confirmed. Your add-on is active now.');
+        else flash(`Payment confirmed. ${r.plan_name || plans.find(p => p.key === r.plan)?.name || 'Your'} plan is active${until ? ` until ${until}` : ''}${r.bonus_days ? ` (includes ${r.bonus_days} extra days for unused time)` : ''}.${r.saved_card ? ' Your card is saved for automatic renewal.' : ''}`);
         return;
       }
       if (r.status === 'pending' && tries > 1) { await new Promise(res => setTimeout(res, 4000)); return verifyPayment(reference, tries - 1); }
@@ -11562,6 +11577,8 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
       const lowStock = lowStockItems;
       const noPhoto = offers.filter(i => !i.image).length;
       const todo = [
+        // 2.16: a failed renewal, an ended plan or a plan ending within 3 days (owners only).
+        !!billAlert && { icon: 'card-outline', color: '#B42318', title: billAlert.title, sub: billAlert.sub, action: billAlert.action, onPress: () => openBilling(() => goTab('home')) },
         // Status that used to sit as strips under the Ask box (company feedback 2 Nov 2026: they can't stay at the top).
         !!myShop && !myShop.enabled && { icon: 'storefront-outline', color: '#B45309', title: 'Your AI shop link is switched off', sub: 'Customers can’t see your products or order yet', action: shopBusy ? 'Switching on…' : 'Switch on', onPress: () => { if (!shopBusy) saveShop({ enabled: true }).catch(() => {}); } },
         awayMode && { icon: 'moon', color: '#B7791F', title: 'Away mode is on', sub: `Nexora is answering customers for you${awayStats ? ` · ${awayStats.actions} replies, ${awayStats.opportunities} opportunities so far` : ''}`, action: 'View', onPress: () => goTab('profile') },
@@ -18191,9 +18208,14 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
     const ws = workspace;
     const isOwner = ws?.role === 'owner';
     const onFree = ws?.plan === 'free';
-    const statusLabel = !ws ? '' : onFree ? 'Free forever'
-      : ws.subscription_status === 'active' ? 'Active' : ws.subscription_status === 'past_due' ? 'Payment overdue' : 'Canceled';
-    const statusColor = !ws ? '#5C6B7A' : ws.subscription_status === 'active' ? '#1E9E6D' : '#D64545';
+    const ended = planEnded(bill);
+    const statusLabel = !ws ? '' : onFree ? 'Free forever' : bill?.in_grace ? 'Payment being retried'
+      : ended || ws.subscription_status === 'past_due' ? 'Ended: renew to restore' : bill?.cancel_at_period_end ? 'Cancelled'
+      : ws.subscription_status === 'active' ? 'Active' : 'Canceled';
+    const statusColor = !ws || onFree ? '#5C6B7A' : bill?.in_grace || ended || ws.subscription_status !== 'active' ? '#D64545' : bill?.cancel_at_period_end ? '#B54708' : '#1E9E6D';
+    const showNgnAll = (payConfig?.currency ?? (/nigeria/i.test(ws?.country || '') || (!ws?.country && LOCAL_NGN) ? 'NGN' : 'USD')) === 'NGN';
+    const usersLimit = planUsage?.users ? planUsage.users.limit : ws?.staff_seats == null ? null : ws.staff_seats + 1;
+    const renewText = renewalLine(bill, plans);
     return (
       <View style={styles.mainScreen}>
         <StatusBar style="dark" />
@@ -18233,16 +18255,18 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                 <Text style={[styles.attentionTitle, { fontSize: 18 }]}>{ws.name}</Text>
                 <Text style={styles.attentionSubtitle}>{[ws.industry, ws.country].filter(Boolean).join(' · ') || (isOwner ? 'You own this workspace' : `Owner: ${ws.owner_name}`)}</Text>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 }}>
-                  <Text style={styles.attentionTitle}>{plans.find(p => p.key === ws.plan)?.name ?? ws.plan} plan</Text>
+                  <Text style={styles.attentionTitle}>{plans.find(p => p.key === ws.plan)?.name ?? ws.plan} plan{bill?.interval ? ` · ${bill.interval === 'year' ? 'yearly' : 'monthly'}` : ''}</Text>
                   <Text style={{ color: statusColor, fontWeight: '700', fontSize: 12 }}>{statusLabel}</Text>
                 </View>
                 {!planUsage && ws.monthly_ai_messages !== null && (
                   <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}>{(ws.ai_messages_used ?? 0).toLocaleString()} of {ws.monthly_ai_messages.toLocaleString()} AI tasks used this month</Text>
                 )}
-                <Text style={[styles.attentionSubtitle, { marginTop: 2 }]}>{ws.staff_seats === null ? 'Custom user limit' : `Up to ${ws.staff_seats + 1} user${ws.staff_seats === 0 ? '' : 's'}`} · You are the {ws.role}</Text>
+                <Text style={[styles.attentionSubtitle, { marginTop: 2 }]}>{usersLimit === null ? 'Custom user limit' : `Up to ${usersLimit} user${usersLimit === 1 ? '' : 's'}`} · You are the {ws.role}</Text>
+                {!!renewText && <Text style={[styles.attentionSubtitle, { marginTop: 4, color: '#334155' }]}>{renewText}</Text>}
                 {!!planUsage && (
                   <View style={{ marginTop: 12, gap: 10 }}>
-                    {([['ai_tasks', 'AI tasks this month'], ['connected_accounts', 'Connected accounts'], ['customer_records', 'Customer records'], ['active_workflows', 'Active automations'], ['knowledge_sources', 'Knowledge documents']] as const).map(([k, label]) => {
+                    {USAGE_ORDER.map(k => {
+                      const label = USAGE_LABELS[k];
                       const u = planUsage[k];
                       if (!u) return null;
                       const notIncluded = u.limit === 0;   // e.g. automations on Free: not part of the plan, not "used up"
@@ -18252,7 +18276,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                         <View key={k}>
                           <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
                             <Text style={{ fontSize: 12.5, color: '#4B5563' }}>{label}</Text>
-                            <Text style={{ fontSize: 12.5, fontWeight: notIncluded ? '600' : '700', color: full ? '#D64545' : notIncluded ? '#8A97A6' : '#0B1220' }}>{notIncluded ? 'Not on this plan' : `${u.used.toLocaleString()}${u.limit !== null ? ` / ${u.limit.toLocaleString()}` : ' · no limit'}`}</Text>
+                            <Text style={{ fontSize: 12.5, fontWeight: notIncluded ? '600' : '700', color: full ? '#D64545' : notIncluded ? '#8A97A6' : '#0B1220' }}>{notIncluded ? 'Not on this plan' : `${u.used.toLocaleString()}${u.limit !== null ? ` / ${u.limit.toLocaleString()}` : ' · tracked, no limit'}`}</Text>
                           </View>
                           {u.limit !== null && !notIncluded && (
                             <View style={{ height: 6, borderRadius: 3, backgroundColor: '#EEF2F7', marginTop: 4, overflow: 'hidden' }}>
@@ -18263,8 +18287,14 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                       );
                     })}
                     {Object.values(planUsage).some(u => !!u && u.limit !== null && u.limit > 0 && u.used >= u.limit) && (
-                      <Text style={{ fontSize: 12.5, color: '#B42318', lineHeight: 18 }}>{isOwner ? 'You have reached a limit on your plan. Upgrade below to keep growing.' : 'Your business has reached a limit on its plan. Ask the owner to upgrade.'}</Text>
+                      <Text style={{ fontSize: 12.5, color: '#B42318', lineHeight: 18 }}>{isOwner ? 'You have reached a limit on your plan. Upgrade below, or add a one-off add-on where offered.' : 'Your business has reached a limit on its plan. Ask the owner to upgrade.'}</Text>
                     )}
+                  </View>
+                )}
+                {!!bill?.addons.length && (
+                  <View style={{ marginTop: 12, paddingTop: 10, borderTopWidth: 1, borderTopColor: '#E3E8EF' }}>
+                    <Text style={{ fontSize: 12, fontWeight: '700', color: '#8A97A6' }}>Active add-ons</Text>
+                    {bill.addons.map((a, i) => <Text key={i} style={{ fontSize: 12.5, color: '#4B5563', marginTop: 3 }}>{a.name} · until {billDay(a.ends_at)}</Text>)}
                   </View>
                 )}
               </View>
@@ -18272,10 +18302,11 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                 <Text style={[styles.attentionSubtitle, { marginTop: 8 }]}>{ws.owner_name || 'The business owner'} manages your company's plan.</Text>
               ) : (
                 <>
-                  {ws.subscription_status === 'active' && !!paidUntil && (
+                  <BillingNotices bill={bill} plans={plans} flash={flash} reload={reloadBilling} />
+                  {!bill && ws.subscription_status === 'active' && !!paidUntil && (
                     <Text style={[styles.attentionSubtitle, { marginTop: 8 }]}>Paid until {new Date(paidUntil).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}. Pay again any time to add another month or year.</Text>
                   )}
-                  {ws.subscription_status === 'past_due' && (
+                  {!bill && ws.subscription_status === 'past_due' && (
                     <View style={{ marginTop: 12, padding: 12, borderRadius: 14, backgroundColor: '#FDECEC' }}>
                       <Text style={{ color: '#B42318', fontWeight: '700' }}>Your paid month has ended</Text>
                       <Text style={{ color: '#7A271A', fontSize: 13, marginTop: 2 }}>Your business is on the Free plan's limits until you renew. Your data is safe: renew below to get your full plan back.</Text>
@@ -18292,6 +18323,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                       <Text style={{ color: '#1E56A0', fontSize: 13 }}>Test mode: no real money is charged. Use Paystack's test card 4084 0840 8408 4081, any future date, CVV 408.</Text>
                     </View>
                   )}
+                  {IN_APP_SUBSCRIBE_ENABLED && <View style={{ marginTop: 12 }}><BillingPayment bill={bill} flash={flash} reload={reloadBilling} /></View>}
                   {onFree && (
                     <View style={{ marginTop: 12, padding: 16, borderRadius: 16, backgroundColor: '#EAF1FB', borderWidth: 1, borderColor: '#C9DBF2' }}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
@@ -18303,7 +18335,7 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                       </Text>
                     </View>
                   )}
-                  <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>{onFree ? 'Upgrade your plan' : 'Choose a plan'}</Text>
+                  <Text style={[styles.channelSectionLabel, { marginTop: 18 }]}>{onFree ? 'Upgrade your plan' : 'Change your plan'}</Text>
                   <View style={{ flexDirection: 'row', backgroundColor: '#EEF2F7', borderRadius: 12, padding: 4, marginBottom: 10 }}>
                     {(['month', 'year'] as const).map(iv => (
                       <Pressable key={iv} onPress={() => setBillingInterval(iv)} accessibilityRole="button" accessibilityState={{ selected: billingInterval === iv }}
@@ -18332,7 +18364,8 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                       `${msgs(p.monthly_ai_messages)} AI tasks a month`,
                     ];
                     const tag = isFree ? 'Free forever' : p.contact_sales ? 'Custom for large organizations' : p.key === 'starter' ? 'Best for getting started' : p.key === 'pro' ? 'Most popular' : p.key === 'business' ? 'Best for teams' : '';
-                    const payLabel = paidCurrent ? `Pay for another ${yearly ? 'year' : 'month'}` : current && ws.subscription_status === 'past_due' ? `Renew ${p.name}` : onFree || ws.subscription_status !== 'active' ? `Upgrade to ${p.name}` : `Switch to ${p.name}`;
+                    // 2.16: cheaper plans switch at renewal, Free cancels at the end of the period, everything else is paid now (after a quote).
+                    const act = planAction(p, { current: ws.plan, bill, plans, yearly });
                     const payBlocked = !p.contact_sales && !!payConfig && !payConfig.ready;
                     return (
                       <View key={p.key} style={[styles.detailCard, current && { borderWidth: 1.5, borderColor: '#1E56A0' }, p.key === 'pro' && !current && { borderWidth: 1.5, borderColor: '#F2C17D' }]}>
@@ -18357,18 +18390,25 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
                         {isFree && !current && (
                           <Text style={{ fontSize: 12.5, color: '#5C6B7A', marginTop: 10, lineHeight: 18 }}>If your paid plan isn't renewed, your business moves to the Free plan's limits and keeps its data.</Text>
                         )}
-                        {!isFree && (IN_APP_SUBSCRIBE_ENABLED || p.contact_sales) && (
-                          <Pressable disabled={!!billingBusy || payBlocked} onPress={() => startCheckout(p)} style={[styles.resetButton, payBlocked ? null : styles.resetButtonEnabled, { marginTop: 12, minHeight: 42 }, payBlocked ? { backgroundColor: '#C7D2DE' } : null]}>
-                            {billingBusy === p.key ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>{p.contact_sales ? 'Contact sales' : payLabel}</Text>}
+                        {act.kind !== 'none' && (IN_APP_SUBSCRIBE_ENABLED || p.contact_sales) && (act.kind === 'switch' || act.kind === 'cancel' ? (
+                          <Pressable disabled={!!billingBusy || act.waiting} onPress={() => setBillSheet({ kind: 'change', plan: p })} accessibilityRole="button"
+                            style={{ marginTop: 12, minHeight: 42, borderRadius: 999, borderWidth: 1, borderColor: act.waiting ? '#E3E8EF' : '#9DB8DD', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 16 }}>
+                            <Text style={{ color: act.waiting ? '#8A97A6' : '#1E56A0', fontWeight: '700', fontSize: 15 }}>{act.label}</Text>
                           </Pressable>
-                        )}
+                        ) : (
+                          <Pressable disabled={!!billingBusy || (payBlocked && act.kind === 'buy')} onPress={() => (act.kind === 'contact' ? startCheckout(p) : setBillSheet({ kind: 'buy', plan: p }))} style={[styles.resetButton, payBlocked ? null : styles.resetButtonEnabled, { marginTop: 12, minHeight: 42 }, payBlocked ? { backgroundColor: '#C7D2DE' } : null]}>
+                            {billingBusy === p.key ? <ActivityIndicator color="#FFF" /> : <Text style={styles.resetButtonText}>{act.label}</Text>}
+                          </Pressable>
+                        ))}
                       </View>
                     );
                   })}
                   {IN_APP_SUBSCRIBE_ENABLED && <Text style={[styles.attentionSubtitle, { marginTop: 4 }]}>Payments are processed securely by Paystack (card, bank transfer or USSD) and charged in your local currency at checkout. Monthly payments cover 30 days and yearly payments cover 365 days (paying early adds the time to your current period), and your plan updates as soon as Paystack confirms it. If a paid plan isn't renewed, your business moves to the Free plan's limits and keeps its data.</Text>}
+                  <BillingMore bill={bill} plans={plans} current={ws.plan} yearly={billingInterval === 'year'} showNgn={showNgnAll} payConfig={payConfig} siteUrl={SITE_URL} refreshKey={billRefresh}
+                    onBuyAddon={a => (IN_APP_SUBSCRIBE_ENABLED ? setBillSheet({ kind: 'buy', addon: a }) : flash('Add-ons can be bought on the Nexora website.'))} />
                   <Text style={[styles.channelSectionLabel, { marginTop: 20 }]}>Your team</Text>
                   <Pressable onPress={() => openSettings('team', { exit: () => setScreen('billing') })} style={[styles.detailCard, { flexDirection: 'row', alignItems: 'center', gap: 10 }]} accessibilityRole="button">
-                    <Text style={[styles.attentionSubtitle, { flex: 1 }]}>Invite staff with a role (Sales, Support, Inventory…), change what they can do, or suspend them in Team & Access.</Text>
+                    <Text style={[styles.attentionSubtitle, { flex: 1 }]}>Invite staff with a role (Sales, Support, Inventory…), change what they can do, or suspend them in Team & Access. The Business plan is built for teams: up to 10 users, roles and permissions, admin controls and audit logs, and dashboards each person can arrange.</Text>
                     <Ionicons name="chevron-forward" size={18} color="#8A97A6" />
                   </Pressable>
                 </>
@@ -18376,6 +18416,8 @@ ${o.payment_status !== 'paid' && myShop?.payment_info ? `<p><b>How to pay:</b><b
             </>
           )}
         </ScrollView>
+        <BillSheets sheet={billSheet} onClose={() => setBillSheet(null)} bill={bill} plans={plans} yearly={billingInterval === 'year'} payConfig={payConfig} showNgn={showNgnAll}
+          flash={flash} reload={reloadBilling} onPay={({ plan, addon, saveCard }) => { startCheckout((plan as Plan | undefined) ?? null, { addon, saveCard }).catch(() => {}); }} />
       </View>
     );
   }
